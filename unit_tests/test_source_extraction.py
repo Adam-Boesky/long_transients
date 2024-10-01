@@ -1,11 +1,13 @@
 import os
+
 import numpy as np
 import pytest
 from astropy.io import fits
 from astropy.table import Table
 from astropy.wcs import WCS
-from Source_Extractor import Source_Extractor, img_flux_to_ab_mag, get_pstar_sources, make_nan, query_cone_ps1
 
+from Extracting.Source_Extractor import (Source_Extractor, query_cone_ps1)
+from utils import img_flux_to_ab_mag
 
 # Sample FITS file for testing
 @pytest.fixture
@@ -84,17 +86,6 @@ def test_source_extractor_plot_segmap(sample_fits_file, tmp_path):
     segmap_file = tmp_path / "segmap.png"
     se.plot_segmap(fpath=str(segmap_file))
     assert os.path.exists(segmap_file)
-
-def test_get_pstar_sources(mocker):
-    ra_range = (10.0, 20.0)
-    dec_range = (-10.0, 10.0)
-    mock_jobs = mocker.Mock()
-    mocker.patch('source_extraction.MastCasJobs', return_value=mock_jobs)
-    mock_jobs.quick.return_value = Table({'ra': [15.0], 'dec': [0.0]})    
-    sources = get_pstar_sources(ra_range, dec_range)
-
-    assert isinstance(sources, Table)
-    mock_jobs.quick.assert_called_once_with(mocker.ANY, task_name="PanSTARRS_DR2_RA_DEC_Query")
 
 def test_query_cone_ps1():
     ra_deg = 10.0

@@ -1,6 +1,10 @@
+from unittest.mock import Mock, patch
+
 from astropy.table import Table
-from unittest.mock import patch, Mock
-from Catalogs import Catalog, PSTARR_Catalog, ZTF_Catalog, get_pstar_sources, associate_tables_by_coordinates
+
+from Catalogs import (Catalog, PSTARR_Catalog, ZTF_Catalog,
+                      associate_tables_by_coordinates, get_pstar_sources)
+
 
 def test_catalog_init():
     catalog = Catalog()

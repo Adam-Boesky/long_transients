@@ -1,11 +1,40 @@
 import os
 import pathlib
-import numpy as np
+from typing import Tuple, Union, Optional
 
-from typing import Tuple, Union
+import numpy as np
 
 
 def get_credentials(fname: str) -> Union[Tuple[str, str], str]:
     """Retrieves credentials from a specified file in my ~/vault/directory."""
     key_location = os.path.join(pathlib.Path.home(), f'vault/{fname}')
     return np.genfromtxt(key_location, dtype = 'str')
+
+
+def img_flux_to_ab_mag(flux: np.ndarray, zero_point: float, fluxerr: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    Convert image flux to AB magnitude.
+
+    Parameters:
+    flux (np.ndarray): The flux values of the image.
+    zero_point (float): The zero point for the magnitude calculation.
+    fluxerr (Optional[np.ndarray]): The flux error values of the image, by default None.
+
+    Returns:
+        1. The AB magnitudes corresponding to the input fluxes.
+        2. If `fluxerr` is provided, the AB magnitude error.
+    """
+    mag = -2.5 * np.log10(flux) + zero_point
+    if fluxerr is not None:
+        magerr = 2.5 * fluxerr / (np.log(10) * flux)
+        return mag, magerr
+    return mag
+
+
+def img_ab_mag_to_flux(mag: np.ndarray, zero_point: np.ndarray, magerr: Optional[np.ndarray] = None) -> np.ndarray:
+    """Inverse of img_flux_to_ab_mag."""
+    flux = 10 ** ((mag - zero_point) / -2.5)
+    if magerr is not None:
+        fluxerr = (magerr * (np.log(10) * flux)) / 2.5
+        return flux, fluxerr
+    return flux
