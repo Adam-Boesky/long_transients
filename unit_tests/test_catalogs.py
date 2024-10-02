@@ -1,8 +1,7 @@
 from unittest.mock import Mock, patch
 
 from astropy.table import Table
-
-from Catalogs import (Catalog, PSTARR_Catalog, ZTF_Catalog,
+from Extracting.Catalogs import (Catalog, PSTARR_Catalog, ZTF_Catalog,
                       associate_tables_by_coordinates, get_pstar_sources)
 
 

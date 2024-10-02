@@ -1,7 +1,7 @@
 from typing import Iterable, Optional
 
-from Catalogs import (PSTARR_Catalog, ZTF_Catalog,
-                      associate_tables_by_coordinates)
+from Extracting.Catalogs import (PSTARR_Catalog, ZTF_Catalog,
+                                 associate_tables_by_coordinates)
 
 
 class Tile():
@@ -28,6 +28,7 @@ class Tile():
     @property
     def data_dicts(self) -> dict:
         if self._data_dicts is None:
+            # TODO: Parallelize?
             self._data_dicts = {
                 band: associate_tables_by_coordinates(
                     self.ztf_catalogs[band].data,

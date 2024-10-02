@@ -9,10 +9,10 @@ import numpy as np
 import pandas as pd
 import requests
 from astropy.coordinates import SkyCoord, match_coordinates_sky
-from astropy.table import Table, vstack, join
+from astropy.table import Table, join, vstack
 from mastcasjobs import MastCasJobs
 
-from Source_Extractor import Source_Extractor
+from Extracting.Source_Extractor import Source_Extractor
 from utils import get_credentials
 
 
@@ -70,6 +70,7 @@ class PSTARR_Catalog(Catalog):
             query = f"""
             SELECT o.objID, {addtl_cols}
             m.{band}KronMag, m.{band}KronMagErr,
+            m.{band}ApMag, m.{band}ApMagErr,
             m.{band}PSFMag, m.{band}PSFMagErr
             FROM ObjectThin o INNER JOIN StackObjectThin m on o.objid=m.objid
             WHERE o.raMean BETWEEN {self.ra_range[0]} AND {self.ra_range[1]}

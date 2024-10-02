@@ -1,9 +1,12 @@
+from unittest.mock import Mock, patch
+
 import numpy as np
 import pytest
 from astropy.table import Table
-from unittest.mock import Mock, patch
-from Catalogs import PSTARR_Catalog, ZTF_Catalog, associate_tables_by_coordinates
+from Extracting.Catalogs import PSTARR_Catalog, ZTF_Catalog
+
 from Extracting.Tile import Tile
+
 
 @pytest.fixture
 def mock_catalogs(mocker):

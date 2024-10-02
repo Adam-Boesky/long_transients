@@ -5,16 +5,16 @@ from typing import Optional, Tuple, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import sep
-from astropy.io import fits
 from astropy.coordinates import SkyCoord
+from astropy.io import fits
 from astropy.table import Table, unique
 from astropy.wcs import WCS
 from mastcasjobs import MastCasJobs
 from matplotlib.patches import Ellipse
-from photutils.psf import (IntegratedGaussianPRF, PSFPhotometry,
-                           make_psf_model_image)
+from photutils.psf import IntegratedGaussianPRF, PSFPhotometry
 from scipy.interpolate import NearestNDInterpolator
-from utils import img_flux_to_ab_mag
+
+from utils import img_ab_mag_to_flux, img_flux_to_ab_mag
 
 
 class Source_Extractor():
@@ -107,7 +107,7 @@ class Source_Extractor():
 
         return res
 
-    def get_kron_mags(self) -> np.ndarray:
+    def get_kron_mags(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Perform photometry on detected self.sources in the image and update the self.sources array with photometric results.
         This method calculates the Kron flux and circular flux for detected self.sources in the image, converts the flux to 
@@ -116,8 +116,9 @@ class Source_Extractor():
         Returns:
             np.ndarray: Updated self.sources array with additional fields for Kron magnitude, Kron flux, and Kron flux error.
         """
-        # Get Kron radius
         print('Calculating Kron magnitudes...')
+
+        # Get Kron radius
         self.sources['theta'][self.sources['theta'] > np.pi / 2] -= np.pi
         self.sources['theta'][self.sources['theta'] < -1 * np.pi / 2] += np.pi / 2
         kronrad, _ = sep.kron_radius(
@@ -131,16 +132,16 @@ class Source_Extractor():
         )
 
         # Kron flux for sources with a radius smaller than 1.0 are circular
-        r_min = 0.5  # minimum diameter = 1
+        r_min = 1.5  # minimum diameter = 1
         use_circle = kronrad * np.sqrt(self.sources['a'] * self.sources['b']) < r_min
-        flux, fluxerr, _ = sep.sum_ellipse(
+        ncflux, ncfluxerr, _ = sep.sum_ellipse(
             self.image_sub,
             self.sources['x'][~use_circle],
             self.sources['y'][~use_circle],
             self.sources['a'][~use_circle],
             self.sources['b'][~use_circle],
             self.sources['theta'][~use_circle],
-            1.0,
+            2.5*kronrad[~use_circle],
             err=self.bkg.globalrms,
             gain=self.gain,
         )
@@ -153,15 +154,24 @@ class Source_Extractor():
             err=self.bkg.globalrms,
             gain=self.gain,
         )
-        flux = np.hstack((flux, cflux))
-        fluxerr = np.hstack((fluxerr, cfluxerr))
+
+        # Concatenate the fluxes
+        flux = np.zeros(len(self.sources)) * np.nan
+        fluxerr = np.zeros(len(self.sources)) * np.nan
+        flux[~use_circle] = ncflux
+        flux[use_circle] = cflux
+        fluxerr[~use_circle] = ncfluxerr
+        fluxerr[use_circle] = cfluxerr
 
         # Add mag and magerrs
         mag, magerr = img_flux_to_ab_mag(flux, self.zero_pt_mag, fluxerr=fluxerr)
 
-        return mag, magerr
+        # Make all the negative fluxes have mag -999.0
+        mag[flux < 0] = -999.0
 
-    def get_psf_mags(self) -> np.ndarray:
+        return mag, magerr, use_circle.astype(int)
+
+    def get_psf_mags(self, kron_mags: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Perform PSF photometry on detected self.sources in the image and update the self.sources array with photometric results.
         This method calculates the PSF flux for detected self.sources in the image, converts the flux to magnitudes, and updates 
@@ -170,24 +180,26 @@ class Source_Extractor():
         Returns:
             np.ndarray: Updated self.sources array with additional fields for PSF magnitude and PSF flux error.
         """
+        print('Calculating PSF magnitudes...')
 
+        # Convert kron mags to fluxes
+        init_fluxes = img_ab_mag_to_flux(kron_mags, self.zero_pt_mag)
+        init_fluxes[kron_mags == -999.0] = 0.0
+
+        # Get the initial parameters for the PSF model
+        init_params = self.sources[['x', 'y']]
+        init_params['flux_init'] = init_fluxes
+
+        # Fit the PSF model and get the fluxes
         psf_model = IntegratedGaussianPRF()
         fit_shape = (5, 5)
-        psfphot = PSFPhotometry(psf_model, fit_shape, init_params=self.sources[['x', 'y']])
+        psfphot = PSFPhotometry(psf_model, fit_shape)
+        phot = psfphot(self.image_sub, error=self.bkg.rms(), init_params=init_params)
 
-        # Initialize arrays to store PSF flux and flux error
-        psf_flux = np.zeros(len(self.sources))
-        psf_fluxerr = np.zeros(len(self.sources))
+        # Convert to magnitudes
+        mag, magerr = img_flux_to_ab_mag(phot['flux_fit'], self.zero_pt_mag, fluxerr=phot['flux_err'])
 
-        # Perform PSF photometry on each source
-        for i, source in enumerate(self.sources):
-            x, y = source['x'], source['y']
-            psf_flux[i], psf_fluxerr[i] = sep.sum_circle(self.image_sub, x, y, self.r_fwhm, err=self.bkg.globalrms, gain=self.gain)
-
-        # Convert flux to magnitudes
-        psf_mag, psf_magerr = img_flux_to_ab_mag(psf_flux, self.zero_pt_mag, fluxerr=psf_fluxerr)
-
-        return psf_mag, psf_magerr
+        return mag, magerr
 
     def get_sources_ra_dec(self) -> np.ndarray:
         coords = self.pix_to_ra_dec(self.sources['x'], self.sources['y'])
@@ -204,7 +216,7 @@ class Source_Extractor():
         coords = self.wcs.world_to_pixel(coords)
         return coords
 
-    def store_coords(self, fpath: str, coord_system: str = 'ra_dec'):
+    def store_coords(self, fpath: str, coord_system: str = 'ra_dec', mask: Optional[np.ndarray] = None):
         """Store the coordinates of the detected self.sources in a text file."""
         # Get the coordinates of the self.sources
         if coord_system == 'ra_dec':
@@ -216,8 +228,9 @@ class Source_Extractor():
             raise ValueError("Invalid coordinate system. Must be 'ra_dec' or 'pixel'.")
 
         # Store the coordinates in a text file
+        mask = np.ones(len(self.sources), dtype=bool) if mask is None else mask
         with open(fpath, 'w') as f:
-            for s in coords:
+            for s in coords[mask]:
                 f.write(f"{s[0]} {s[1]}\n")
 
     def plot_segmap(self, show_sources: bool = True, show_source_shapes: bool = False, fpath: Optional[str] = None, source_mask: Optional[np.ndarray] = None):
@@ -263,16 +276,17 @@ class Source_Extractor():
         self.get_sources()
         coords = self.get_sources_ra_dec()
 
-        # Get the photometry
-        kron_mags, kron_magerrs = self.get_kron_mags()
-
-        # Create the table
+        # Add the magnitudes to the table
         data_table = Table(self.sources)
-        if include_kron:
+        if include_kron or include_psf:  # note that the kron mags are used when calculating the psf mags
+            kron_mags, kron_magerrs, circle_flag = self.get_kron_mags()
             data_table[f'{self.band}KronMag'] = kron_mags
             data_table[f'{self.band}KronMagErr'] = kron_magerrs
+            data_table[f'{self.band}KronCircleFlag'] = circle_flag
         if include_psf:
-            ... # TODO: implement psf photometry stuff
+            psf_mags, psf_magerrs = self.get_psf_mags(kron_mags)
+            data_table[f'{self.band}PSFMag'] = psf_mags
+            data_table[f'{self.band}PSFMagErr'] = psf_magerrs
         data_table['ra'] = coords[:, 0]
         data_table['dec'] = coords[:, 1]
 
