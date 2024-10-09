@@ -2,7 +2,7 @@
 import atexit
 import os
 import tempfile
-from io import StringIO
+from io import StringIO, BytesIO
 from typing import Dict, Iterable, Optional, Tuple
 
 import numpy as np
@@ -10,6 +10,7 @@ import pandas as pd
 import requests
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from astropy.table import Table, join, vstack
+from astropy.io import ascii
 from mastcasjobs import MastCasJobs
 
 from Extracting.Source_Extractor import Source_Extractor
@@ -61,34 +62,75 @@ class PSTARR_Catalog(Catalog):
         # SQL query to get sources within the RA and DEC range
         # Get the PS1 MAST username and password from /Users/username/3PI_key.txt
         wsid, password = get_credentials('mast_login.txt')
-        bands = ['g', 'r', 'i']
-        results_list = []
 
-        print(f"Querying Pan-STARRS DR2 for the RA and DEC range in the ZTF image.")
-        for i, band in enumerate(bands):
-            addtl_cols = 'o.raMean, o.decMean,' if i == 0 else ''  # no need to get ra and dec for all queries
+        # Make sure we haven't already made this exact query
+        ra_range_strs = [str(ra).replace('.', '_').replace('-', 'n')[:5] for ra in self.ra_range]      # formatting coords
+        dec_range_strs = [str(dec).replace('.', '_').replace('-', 'n')[:5] for dec in self.dec_range]  # formatting coords
+        tab_string = f'pstarr_sources_ra{ra_range_strs[0]}_{ra_range_strs[1]}_dec{dec_range_strs[0]}_{dec_range_strs[1]}'
+        tab_url = f'https://ps1images.stsci.edu/datadelivery/outgoing/casjobs/csv/{tab_string}_adam-boesky.csv'
+        res = requests.get(tab_url)
+        if res.status_code != 200:
+
+            # Execute queries using mastcasjobs
+            print(f"Querying Pan-STARRS DR2 for the RA and DEC range in the ZTF image.")
             query = f"""
-            SELECT o.objID, {addtl_cols}
-            m.{band}KronMag, m.{band}KronMagErr,
-            m.{band}ApMag, m.{band}ApMagErr,
-            m.{band}PSFMag, m.{band}PSFMagErr
-            FROM ObjectThin o INNER JOIN StackObjectThin m on o.objid=m.objid
-            WHERE o.raMean BETWEEN {self.ra_range[0]} AND {self.ra_range[1]}
-            AND o.decMean BETWEEN {self.dec_range[0]} AND {self.dec_range[1]}
-            AND (o.nStackDetections > 0 OR o.nDetections > 1)
+WITH ranked AS (
+    SELECT
+        o.objID, o.raMean, o.decMean,
+        m.gKronMag, m.rKronMag, m.iKronMag,
+        m.gKronMagErr, m.rKronMagErr, m.iKronMagErr,
+        m.gApMag, m.rApMag, m.iApMag,
+        m.gApMagErr, m.rApMagErr, m.iApMagErr,
+        m.gPSFMag, m.rPSFMag, m.iPSFMag,
+        m.gPSFMagErr, m.rPSFMagErr, m.iPSFMagErr,
+        m.primaryDetection,
+        ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) as rn into mydb.{tab_string}
+    FROM ObjectThin o
+    INNER JOIN StackObjectThin m ON o.objID = m.objID
+    WHERE o.raMean BETWEEN {self.ra_range[0]} AND {self.ra_range[1]}
+    AND o.decMean BETWEEN {self.dec_range[0]} AND {self.dec_range[1]}
+    AND (o.nStackDetections > 0 OR o.nDetections > 1)
+)
+SELECT * FROM ranked
+WHERE rn = 1
             """
 
-            # Execute the query using mastcasjobs
+            # Execute the query using mastcasjobs, and wait until it's done
             jobs = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password)
-            results = jobs.quick(query, task_name=f"PanSTARRS_DR2_RA_DEC_Query_{band}")
-            results_list.append(results)
+            jobid = jobs.submit(query, task_name=f"PanSTARRS_DR2_RA_DEC_Query")
+            jobs.monitor(jobid)
 
-        # Combine the results into one table by matching objID
-        combined_results: Table = results_list[0]
-        for result in results_list[1:]:
-            combined_results = join(combined_results, result, keys='objID', join_type='inner', metadata_conflicts='silent')
+            # Get the results of the query
+            res = requests.get(tab_url)
+            if res.status_code != 200:
+                raise RuntimeError(f"Failed to retrieve data from {tab_url}. Status code: {res.status_code}")
 
-        return combined_results
+        # Convert the response content to a string and then to a file-like object
+        content_file = BytesIO(res.content)
+        final_table = ascii.read(content_file, format='csv', delimiter=',')
+        if 'rn' in final_table.columns: final_table.remove_column('rn')  # drop residual row number column
+
+
+        # # # Take the primary detections for each object, and if there are none, take the first detection
+        # # final_table = None
+        # # for id in np.unique(results['objID']):
+        # #     objs = results[results['objID'] == id]
+
+        # #     # If there's a primary detection for the object ID, take it
+        # #     if np.any(objs['primaryDetection'] == 1):
+        # #         objs = objs[objs['primaryDetection'] == 1]
+        # #     else:
+        # #         objs = objs[[0]]
+        # #     final_table = objs if final_table == None else vstack((final_table, objs))
+
+        # results_list.append(results)
+
+        # # Combine the results into one table by matching objID
+        # combined_results: Table = results_list[0]
+        # for result in results_list[1:]:
+        #     combined_results = join(combined_results, result, keys='objID', join_type='inner', metadata_conflicts='silent')
+
+        return final_table
 
 
 class ZTF_Catalog(Catalog):
@@ -142,7 +184,7 @@ class ZTF_Catalog(Catalog):
         username, password = get_credentials('irsa_login.txt')
 
         # Get a metadata table for the specified RA and DEC
-        cutout_halfwidth = 301 * 0.000277778  # 301 arcseconds in degrees
+        cutout_halfwidth = 301 * 0.8888889  # 1/2 of the quadrant width in fields
         filtercode = f'z{band}'
         ra_min, ra_max = ra - cutout_halfwidth, ra + cutout_halfwidth
         dec_min, dec_max = dec - cutout_halfwidth, dec + cutout_halfwidth
@@ -167,6 +209,9 @@ class ZTF_Catalog(Catalog):
 
         # File path where the image will be saved
         file_path = os.path.join(self.data_dirpath, f'ztf_{paddedfield}_{filtercode}_c{paddedccdid}_q{qid}_refimg.fits')
+        if os.path.exists(file_path):
+            print(f"Image already downloaded and saved at {file_path}")
+            return file_path
         response = requests.get(image_url, auth=(username, password), stream=True)
         if response.status_code == 200:
             if os.path.exists(file_path):
@@ -182,32 +227,6 @@ class ZTF_Catalog(Catalog):
         return file_path
 
 
-def get_pstar_sources(ra_range: Tuple[float, float], dec_range: Tuple[float, float]) -> Table:
-    # Query Pan-STARRS DR2 using the specified RA and DEC range
-    # 'panstarrs_dr2' is the catalog name for Pan-STARRS DR2
-    # Limit the search to the desired RA and DEC range
-    # return Catalogs.query_criteria(catalog='PanSTARRS', criteria=f'RA > {ra_range[0]} and RA < {ra_range[1]} and '
-    #                                 f'DEC > {dec_range[0]} and DEC < {dec_range[1]}', limit=100)
-    # SQL query to get sources within the RA and DEC range
-    # Get the PS1 MAST username and password from /Users/username/3PI_key.txt
-    wsid, password = get_credentials('mast_login.txt')
-
-    query = f"""
-    SELECT o.objID, o.raMean, o.decMean, o.nDetections, o.qualityFlag
-    FROM ObjectThin o
-    WHERE o.raMean BETWEEN {ra_range[0]} AND {ra_range[1]}
-    AND o.decMean BETWEEN {dec_range[0]} AND {dec_range[1]}
-    AND o.nStackDetections > 0
-    """
-    # INNER JOIN StackObjectThin m on o.objid=m.objid
-    # OR o.nDetections > 1
-    # Execute the query using mastcasjobs
-    jobs = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password)
-    results = jobs.quick(query, task_name="PanSTARRS_DR2_RA_DEC_Query")
-
-    return results
-
-
 def associate_tables_by_coordinates(table1: Table, table2: Table, max_sep: float = 1.0, prefix1: str = '', prefix2: str = '') -> Table:
     """
     Associate rows of two Astropy tables by ensuring that the objects are within a specified separation (in arcseconds).
@@ -221,19 +240,25 @@ def associate_tables_by_coordinates(table1: Table, table2: Table, max_sep: float
     - A new Astropy Table with rows from table1 and corresponding rows from table2 that are within the specified separation.
     """
 
+    # Make copies of the input tables
+    table1 = table1.copy()
+    table2 = table2.copy()
+
     # Add prefixes to all the columns
     if prefix1 != '':
         for colname in table1.colnames:
-            if colname in ('ra', 'dec'):
-                table1[f'{prefix1}_{colname}'] = table1[colname]  # Make a copy of the ra and dec columns
-            else:
-                table1.columns[colname].name = f'{prefix1}_{colname}'
+            prefixed_colname1 = f'{prefix1}_{colname}'
+            if colname in ('ra', 'dec') and prefixed_colname1 not in table1.colnames:
+                table1[prefixed_colname1] = table1[colname]  # Make a copy of the ra and dec columns
+            elif colname[:len(prefix1)] != prefix1:  # Make sure that the prefixed column isn't already in the table
+                table1.columns[colname].name = prefixed_colname1
     if prefix2 != '':
         for colname in table2.colnames:
-            if colname in ('ra', 'dec'):
-                table2[f'{prefix2}_{colname}'] = table2[colname]  # Make a copy of the ra and dec columns
-            else:
-                table2.columns[colname].name = f'{prefix2}_{colname}'
+            prefixed_colname2 = f'{prefix2}_{colname}'
+            if colname in ('ra', 'dec') and prefixed_colname2 not in table2.colnames:
+                table2[prefixed_colname2] = table2[colname]  # Make a copy of the ra and dec columns
+            elif colname[:len(prefix2)] != prefix2:  # Make sure that the prefixed column isn't already in the table
+                    table2.columns[colname].name = prefixed_colname2
 
     coords1 = SkyCoord(ra=table1['ra'], dec=table1['dec'], unit='deg')
     coords2 = SkyCoord(ra=table2['ra'], dec=table2['dec'], unit='deg')
@@ -279,3 +304,22 @@ def associate_tables_by_coordinates(table1: Table, table2: Table, max_sep: float
     combined_table = combined_table[['ra', 'dec'] + cols]
 
     return combined_table
+
+
+def query_split_pstarr_field(fstring_query: str, ra_range: Tuple[float], dec_range: Tuple[float], n_segments: int = 2) -> Table:
+    """Function used to break up queries into multiple segments to avoid timeouts."""
+    wsid, password = get_credentials('mast_login.txt')
+
+    ra_edges = np.linspace(ra_range[0], ra_range[1], num=n_segments+1)
+    results = []
+    for i in range(len(ra_edges)):
+        ps_score_query = fstring_query.format(ra_min=ra_edges[i], ra_max=ra_edges[i+1], dec_min=dec_range[0], dec_max=dec_range[1])
+        print(ps_score_query)
+        jobs = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password)
+        results.append(jobs.quick(ps_score_query, task_name=f"PanSTARRS_DR2_RA_DEC_Query_ps_scores"))
+
+    combined_results = results[0]
+    for result in results[1:]:
+        combined_results = join(combined_results, result, keys='objID', join_type='inner', metadata_conflicts='silent')
+
+    return combined_results

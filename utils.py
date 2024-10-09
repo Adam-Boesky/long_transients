@@ -38,3 +38,7 @@ def img_ab_mag_to_flux(mag: np.ndarray, zero_point: np.ndarray, magerr: Optional
         fluxerr = (magerr * (np.log(10) * flux)) / 2.5
         return flux, fluxerr
     return flux
+
+def get_snr_from_mag(mag, magerr, zp):
+        flux, fluxerr = img_ab_mag_to_flux(mag, zero_point=zp, magerr=magerr)
+        return flux / fluxerr

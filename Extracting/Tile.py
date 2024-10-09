@@ -1,3 +1,5 @@
+import numpy as np
+
 from typing import Iterable, Optional
 
 from Extracting.Catalogs import (PSTARR_Catalog, ZTF_Catalog,
@@ -29,6 +31,13 @@ class Tile():
     def data_dicts(self) -> dict:
         if self._data_dicts is None:
             # TODO: Parallelize?
+
+            # Set the point source scores for the PSF construction
+            for band in self.bands:
+                self.ztf_catalogs[band].sextractors[band].set_sources_for_psf(
+                    self.pstar_catalog.data[['ra', 'dec', f'{band}KronMag', f'{band}KronMagErr', f'{band}PSFMag']]
+                )
+
             self._data_dicts = {
                 band: associate_tables_by_coordinates(
                     self.ztf_catalogs[band].data,
@@ -38,3 +47,19 @@ class Tile():
             }
 
         return self._data_dicts
+
+    def store_unassociated(self, fpath: str):
+        for band in self.bands:
+
+            # ZTF
+            only_ztf_sources = self.data_dicts[band][self.data_dicts[band]['Catalog'] == 'ZTF']
+            with open(f'ZTF{band}_{fpath}', 'w') as f:
+                for row in only_ztf_sources:
+                    f.write(f"{row['ZTF_x']} {row['ZTF_y']}\n")
+
+            # PanSTARRS
+            only_pstarr_sources = self.data_dicts[band][self.data_dicts[band]['Catalog'] == 'PSTARR']
+            with open(f'PSTARR{band}_{fpath}', 'w') as f:
+                for row in only_pstarr_sources:
+                    x, y = self.ztf_catalogs[band].sextractors[band].ra_dec_to_pix(row['PSTARR_ra'], row['PSTARR_dec'])
+                    f.write(f"{x} {y}\n")

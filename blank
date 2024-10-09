@@ -1,0 +1,74 @@
+\fixlen = T
+\RowsRetrieved = 1
+\QUERY_STATUS = 'OK'
+\ infobits
+\ ___ Info bit flags
+\ field
+\ ___ ZTF field number
+\ ccdid
+\ ___ CCD number (1..16)
+\ qid
+\ ___ Quadrant ID (1..4)
+\ rcid
+\ ___ Readout-channel ID (0..63)
+\ fid
+\ ___ Filter ID
+\ filtercode
+\ ___ Filter code (abbreviated name)
+\ rfid
+\ ___ Reference product ID
+\ nframes
+\ ___ Number of exposures used to create reference product
+\ maglimit (mag)
+\ ___ Magnitude limit
+\ startobsdate
+\ ___ UT date/time of earliest exposure used to create reference product
+\ endobsdate
+\ ___ UT date/time of latest exposure used to create reference product
+\ crpix1 (pix)
+\ ___ Reference pixel value for axis 1
+\ crpix2 (pix)
+\ ___ Reference pixel value for axis 2
+\ crval1 (deg)
+\ ___ Reference position right ascension at crpix1,crpix2
+\ crval2 (deg)
+\ ___ Reference position declination at crpix1,crpix2
+\ cd11 (deg/pix)
+\ ___ CD matrix element 1,1
+\ cd12 (deg/pix)
+\ ___ CD matrix element 1,2
+\ cd21 (deg/pix)
+\ ___ CD matrix element 2,1
+\ cd22 (deg/pix)
+\ ___ CD matrix element 2,2
+\ ra (deg)
+\ ___ Right ascension of image center
+\ dec (deg)
+\ ___ Declination of image center
+\ ra1 (deg)
+\ ___ Right ascension of first image corner
+\ dec1 (deg)
+\ ___ Declination of first image corner
+\ ra2 (deg)
+\ ___ Right ascension of second image corner
+\ dec2 (deg)
+\ ___ Declination of second image corner
+\ ra3 (deg)
+\ ___ Right ascension of third image corner
+\ dec3 (deg)
+\ ___ Declination of third image corner
+\ ra4 (deg)
+\ ___ Right ascension of fourth image corner
+\ dec4 (deg)
+\ ___ Declination of fourth image corner
+\ ipac_pub_date
+\ ___ UT date/time of raw product release
+\ ipac_gid
+\ ___ IPAC Group ID
+\ meta_id
+\ ___ Metadata record ID
+|infobits|field|ccdid| qid|rcid| fid|filtercode|         rfid|nframes|  maglimit|              startobsdate|                endobsdate|crpix1|crpix2|            crval1|    crval2|                  cd11|                   cd12|                   cd21|                   cd22|                ra|       dec|               ra1|              dec1|               ra2|              dec2|               ra3|       dec3|               ra4|       dec4|         ipac_pub_date|ipac_gid|  meta_id|
+|     int|  int|  int| int| int| int|      char|         long|    int|     float|                      char|                      char| float| float|            double|    double|                double|                 double|                 double|                 double|            double|    double|            double|            double|            double|            double|            double|     double|            double|     double|                  char|     int|     long|
+|        |     |     |    |    |    |          |             |       |       mag|                          |                          |   pix|   pix|               deg|       deg|               deg/pix|                deg/pix|                deg/pix|                deg/pix|               deg|       deg|               deg|               deg|               deg|               deg|               deg|        deg|               deg|        deg|                      |        |         |
+|    null| null| null|null|null|null|      null|         null|   null|      null|                      null|                      null|  null|  null|              null|      null|                  null|                   null|                   null|                   null|              null|      null|              null|              null|              null|              null|              null|       null|              null|       null|                  null|    null|     null|
+        0  1557     1    1    0    1         zg 1001557130100      89 22.4673996 2018-09-23 09:45:53.296+00 2024-01-18 06:40:11.985+00 1600.5 1600.5 90.281066199999998 12.9087376 0.00027775079560160001 -3.8716107546860003e-06 -3.8716107546860003e-06 -0.00027775079560160001 90.281066199999998 12.9087376 89.830695109999994 13.358926240000001 90.744146830000005 13.346515419999999 90.729816740000004 12.45778086 89.819606120000003 12.47014764 2020-12-09 00:00:00+00       -1 934662261 

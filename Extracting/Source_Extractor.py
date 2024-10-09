@@ -9,12 +9,13 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.table import Table, unique
 from astropy.wcs import WCS
+from astropy.nddata import NDData
 from mastcasjobs import MastCasJobs
 from matplotlib.patches import Ellipse
-from photutils.psf import IntegratedGaussianPRF, PSFPhotometry
+from photutils.psf import IntegratedGaussianPRF, PSFPhotometry, EPSFBuilder, EPSFFitter, extract_stars
 from scipy.interpolate import NearestNDInterpolator
 
-from utils import img_ab_mag_to_flux, img_flux_to_ab_mag
+from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag
 
 
 class Source_Extractor():
@@ -26,10 +27,6 @@ class Source_Extractor():
         self.wcs = WCS(self.header)
 
         # Interpolate NaNs
-        # mask = np.where(~np.isnan(self.image_data))
-        # interp = NearestNDInterpolator(np.transpose(mask), self.image_data[mask])
-        # self.image_data = interp(*np.indices(self.image_data.shape))
-        # self.image_data[np.isnan(self.image_data)] = np.nanmax(self.image_data)
         self.nan_mask = np.isnan(self.image_data)
         notnan_inds = np.where(~self.nan_mask)
         interp = NearestNDInterpolator(np.transpose(notnan_inds), self.image_data[notnan_inds])
@@ -52,6 +49,11 @@ class Source_Extractor():
         self._sources = None
         self._image_sub = None
         self._bkg = None
+        self._point_source_coords = None
+
+        # The PSF photometry tool and the PSF model
+        self.psfphot = None
+        self.epsf = None
 
     @property
     def bkg(self) -> sep.Background:
@@ -107,14 +109,35 @@ class Source_Extractor():
 
         return res
 
+    def set_sources_for_psf(self, pstarr_table: Table):
+        """Set the sources for the PSF photometry. Will do so by making a cut on SNR > 3, psf mag - kron mag < 0.05, and psf mag brighter than 10."""
+        # Cut on SNR, psf mag - kron mag, and psf mag upper limit
+        snr = get_snr_from_mag(pstarr_table[f'{self.band}KronMag'], pstarr_table[f'{self.band}KronMagErr'], self.zero_pt_mag)
+        pstarr_table = pstarr_table[(snr >= 3) & (pstarr_table[f'{self.band}PSFMag'] - pstarr_table[f'{self.band}KronMag'] < 0.05) & (pstarr_table[f'{self.band}PSFMag'] < 17)]
+
+        # Make sure sources aren't don't have any nans in the pixels around them
+        xs, ys = self.ra_dec_to_pix(pstarr_table['ra'], pstarr_table['dec'])
+        not_nan = np.zeros(len(pstarr_table))
+        for i, (x, y) in enumerate(zip(xs, ys)):
+            x, y = int(x), int(y)
+            if not np.any(self.nan_mask[y-4:y+4, x-4:x+4]):
+                not_nan[i] = 1
+        pstarr_table = pstarr_table[not_nan.astype(bool)]
+
+        # Convert to x and y coords, and store
+        self._point_source_coords = SkyCoord(pstarr_table['ra'], pstarr_table['dec'], unit='deg')
+
     def get_kron_mags(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Perform photometry on detected self.sources in the image and update the self.sources array with photometric results.
-        This method calculates the Kron flux and circular flux for detected self.sources in the image, converts the flux to 
-        magnitudes, and updates the self.sources array to include the new photometric fields.
+        Perform photometry on detected self.sources in the image.
 
         Returns:
-            np.ndarray: Updated self.sources array with additional fields for Kron magnitude, Kron flux, and Kron flux error.
+            np.ndarray: AB Kron magnitudes.
+            np.ndarray: AB Kron magnitude errors.
+            np.ndarray: Flag indicating whether the used Kron apeture is circular.
+
+        NOTE: Sometimes the flux is calculated to be negative for sources because background subtraction makes faint
+              sources ever so slightly negative. In these cases, we set the magnitude to -999.0.
         """
         print('Calculating Kron magnitudes...')
 
@@ -171,14 +194,14 @@ class Source_Extractor():
 
         return mag, magerr, use_circle.astype(int)
 
-    def get_psf_mags(self, kron_mags: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def get_psf_mags(self, kron_mags: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Perform PSF photometry on detected self.sources in the image and update the self.sources array with photometric results.
-        This method calculates the PSF flux for detected self.sources in the image, converts the flux to magnitudes, and updates 
-        the self.sources array to include the new photometric fields.
+        Perform PSF photometry on detected self.sources in the image.
 
         Returns:
-            np.ndarray: Updated self.sources array with additional fields for PSF magnitude and PSF flux error.
+            np.ndarray: PSF Kron magnitudes.
+            np.ndarray: PSF Kron magnitude errors.
+            np.ndarray: Flags from https://photutils.readthedocs.io/en/stable/api/photutils.psf.PSFPhotometry.html#photutils.psf.PSFPhotometry.__call__
         """
         print('Calculating PSF magnitudes...')
 
@@ -190,18 +213,25 @@ class Source_Extractor():
         init_params = self.sources[['x', 'y']]
         init_params['flux_init'] = init_fluxes
 
-        # Fit the PSF model and get the fluxes
-        psf_model = IntegratedGaussianPRF()
-        fit_shape = (5, 5)
-        psfphot = PSFPhotometry(psf_model, fit_shape)
-        phot = psfphot(self.image_sub, error=self.bkg.rms(), init_params=init_params)
+        # Fit the PSF model on a sample of just stars
+        print(f'Fitting PSF model using {len(self._point_source_coords)} stars...')
+        data_for_fit = NDData(data=self.image_sub, wcs=self.wcs)
+        stars = extract_stars(data_for_fit, Table([self._point_source_coords], names=['skycoord']), size=45)
+        fitter = EPSFFitter(fit_boxsize=13)
+        epsf_builder = EPSFBuilder(fitter=fitter)
+        self.epsf, _ = epsf_builder(stars)
+
+        # Perform the PSF photometry with the fitted model
+        self.psfphot = PSFPhotometry(self.epsf, fit_shape=(5, 5))
+        phot = self.psfphot(self.image_sub, error=self.bkg.rms(), init_params=init_params)
 
         # Convert to magnitudes
         mag, magerr = img_flux_to_ab_mag(phot['flux_fit'], self.zero_pt_mag, fluxerr=phot['flux_err'])
 
-        return mag, magerr
+        return mag, magerr, phot['flags']
 
     def get_sources_ra_dec(self) -> np.ndarray:
+        """Get the RA and DEC of the detected self.sources."""
         coords = self.pix_to_ra_dec(self.sources['x'], self.sources['y'])
         return np.vstack(coords).T
 
@@ -284,9 +314,10 @@ class Source_Extractor():
             data_table[f'{self.band}KronMagErr'] = kron_magerrs
             data_table[f'{self.band}KronCircleFlag'] = circle_flag
         if include_psf:
-            psf_mags, psf_magerrs = self.get_psf_mags(kron_mags)
+            psf_mags, psf_magerrs, psf_flags = self.get_psf_mags(kron_mags)
             data_table[f'{self.band}PSFMag'] = psf_mags
             data_table[f'{self.band}PSFMagErr'] = psf_magerrs
+            data_table[f'{self.band}PSFFlags'] = psf_flags
         data_table['ra'] = coords[:, 0]
         data_table['dec'] = coords[:, 1]
 
