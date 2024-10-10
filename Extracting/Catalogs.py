@@ -43,7 +43,7 @@ class Catalog():
 
 
 class PSTARR_Catalog(Catalog):
-    def __init__(self, ra_range: Tuple[float], dec_range: Tuple[float]):
+    def __init__(self, ra_range: Tuple[float], dec_range: Tuple[float], prefetch: bool = False):
         super().__init__()
         self.catalog_name = 'PanSTARR'
         self.ra_range = ra_range    # (ra_min, ra_max) [deg]
@@ -53,6 +53,11 @@ class PSTARR_Catalog(Catalog):
         assert (self.ra_range[1] > self.ra_range[0]) and (self.dec_range[1] > self.dec_range[0]), "The ranges must be \
             of the form (min, max) but are (max, min)."
 
+        if prefetch:
+            print('Prefetching the PanSTARRS data.')
+            self._data = self.get_data()
+            self.rename_columns()
+
     def get_data(self) -> Table:
         # Query Pan-STARRS DR2 using the specified RA and DEC range
         # 'panstarrs_dr2' is the catalog name for Pan-STARRS DR2
@@ -60,18 +65,23 @@ class PSTARR_Catalog(Catalog):
         # return Catalogs.query_criteria(catalog='PanSTARRS', criteria=f'RA > {ra_range[0]} and RA < {ra_range[1]} and '
         #                                 f'DEC > {dec_range[0]} and DEC < {dec_range[1]}', limit=100)
         # SQL query to get sources within the RA and DEC range
-        # Get the PS1 MAST username and password from /Users/username/3PI_key.txt
+        # Get the PS1 MAST username and password
         wsid, password = get_credentials('mast_login.txt')
 
-        # Make sure we haven't already made this exact query
-        ra_range_strs = [str(ra).replace('.', '_').replace('-', 'n')[:5] for ra in self.ra_range]      # formatting coords
-        dec_range_strs = [str(dec).replace('.', '_').replace('-', 'n')[:5] for dec in self.dec_range]  # formatting coords
-        tab_string = f'pstarr_sources_ra{ra_range_strs[0]}_{ra_range_strs[1]}_dec{dec_range_strs[0]}_{dec_range_strs[1]}'
-        tab_url = f'https://ps1images.stsci.edu/datadelivery/outgoing/casjobs/csv/{tab_string}_adam-boesky.csv'
-        res = requests.get(tab_url)
-        if res.status_code != 200:
+        # Set up casjobs object
+        jobs = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password)
 
-            # Execute queries using mastcasjobs
+        # Make the table name
+        ra_range_strs = [str(ra).replace('.', 'p').replace('-', 'n')[:6] for ra in self.ra_range]      # formatting coords
+        dec_range_strs = [str(dec).replace('.', 'p').replace('-', 'n')[:6] for dec in self.dec_range]  # formatting coords
+        table_name = f'pstarr_sources_ra{ra_range_strs[0]}_{ra_range_strs[1]}_dec{dec_range_strs[0]}_{dec_range_strs[1]}'
+
+        # If the table is there, grab it. Else, submit the query and then grab it
+        try:
+            final_table = jobs.get_table(table_name, format='csv')
+        except ValueError:
+
+            # Execute the query and wait for it to complete
             print(f"Querying Pan-STARRS DR2 for the RA and DEC range in the ZTF image.")
             query = f"""
 WITH ranked AS (
@@ -84,7 +94,7 @@ WITH ranked AS (
         m.gPSFMag, m.rPSFMag, m.iPSFMag,
         m.gPSFMagErr, m.rPSFMagErr, m.iPSFMagErr,
         m.primaryDetection,
-        ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) as rn into mydb.{tab_string}
+        ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) as rn into mydb.{table_name}
     FROM ObjectThin o
     INNER JOIN StackObjectThin m ON o.objID = m.objID
     WHERE o.raMean BETWEEN {self.ra_range[0]} AND {self.ra_range[1]}
@@ -94,21 +104,14 @@ WITH ranked AS (
 SELECT * FROM ranked
 WHERE rn = 1
             """
-
-            # Execute the query using mastcasjobs, and wait until it's done
-            jobs = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password)
             jobid = jobs.submit(query, task_name=f"PanSTARRS_DR2_RA_DEC_Query")
             jobs.monitor(jobid)
 
             # Get the results of the query
-            res = requests.get(tab_url)
-            if res.status_code != 200:
-                raise RuntimeError(f"Failed to retrieve data from {tab_url}. Status code: {res.status_code}")
+            final_table = jobs.get_table(table_name, format='csv')
 
-        # Convert the response content to a string and then to a file-like object
-        content_file = BytesIO(res.content)
-        final_table = ascii.read(content_file, format='csv', delimiter=',')
-        if 'rn' in final_table.columns: final_table.remove_column('rn')  # drop residual row number column
+        # Drop residual row number column
+        if 'rn' in final_table.columns: final_table.remove_column('rn')
 
 
         # # # Take the primary detections for each object, and if there are none, take the first detection
@@ -184,7 +187,7 @@ class ZTF_Catalog(Catalog):
         username, password = get_credentials('irsa_login.txt')
 
         # Get a metadata table for the specified RA and DEC
-        cutout_halfwidth = 301 * 0.8888889  # 1/2 of the quadrant width in fields
+        cutout_halfwidth = 0.8888889 / 2  # 1/2 of the quadrant width in fields
         filtercode = f'z{band}'
         ra_min, ra_max = ra - cutout_halfwidth, ra + cutout_halfwidth
         dec_min, dec_max = dec - cutout_halfwidth, dec + cutout_halfwidth
@@ -227,7 +230,7 @@ class ZTF_Catalog(Catalog):
         return file_path
 
 
-def associate_tables_by_coordinates(table1: Table, table2: Table, max_sep: float = 1.0, prefix1: str = '', prefix2: str = '') -> Table:
+def associate_tables_by_coordinates(table1: Table, table2: Table, max_sep: float = 2.0, prefix1: str = '', prefix2: str = '') -> Table:
     """
     Associate rows of two Astropy tables by ensuring that the objects are within a specified separation (in arcseconds).
 
