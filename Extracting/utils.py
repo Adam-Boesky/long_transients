@@ -46,3 +46,9 @@ def get_snr_from_mag(mag: np.ndarray, magerr: np.ndarray, zp: float) -> np.ndarr
 def on_cluster() -> bool:
     """Check if the code is running on the cluster."""
     return os.path.exists('/n/home04')
+
+def get_data_path() -> str:
+    """Get the path to the data directory."""
+    if on_cluster():
+        return '/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients'
+    return '/Users/adamboesky/Research/long_transients/Data'
