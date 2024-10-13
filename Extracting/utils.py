@@ -39,6 +39,10 @@ def img_ab_mag_to_flux(mag: np.ndarray, zero_point: np.ndarray, magerr: Optional
         return flux, fluxerr
     return flux
 
-def get_snr_from_mag(mag, magerr, zp):
+def get_snr_from_mag(mag: np.ndarray, magerr: np.ndarray, zp: float) -> np.ndarray:
         flux, fluxerr = img_ab_mag_to_flux(mag, zero_point=zp, magerr=magerr)
         return flux / fluxerr
+
+def on_cluster() -> bool:
+    """Check if the code is running on the cluster."""
+    return os.path.exists('/n/home04')

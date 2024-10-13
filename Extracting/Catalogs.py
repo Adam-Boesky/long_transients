@@ -13,7 +13,7 @@ from astropy.table import Table, join, vstack
 from astropy.io import ascii
 from mastcasjobs import MastCasJobs
 
-from Extracting.Source_Extractor import Source_Extractor
+from Source_Extractor import Source_Extractor
 from utils import get_credentials
 
 
@@ -41,6 +41,9 @@ class Catalog():
     def get_coordinate_range(self) -> Tuple[Tuple[float, float], Tuple[float, float]]:
         return self.ra_range, self.dec_range
 
+    def prefetch(self):
+        self.data
+
 
 class PSTARR_Catalog(Catalog):
     def __init__(self, ra_range: Tuple[float], dec_range: Tuple[float], prefetch: bool = False):
@@ -54,9 +57,7 @@ class PSTARR_Catalog(Catalog):
             of the form (min, max) but are (max, min)."
 
         if prefetch:
-            print('Prefetching the PanSTARRS data.')
-            self._data = self.get_data()
-            self.rename_columns()
+            self.prefetch()
 
     def get_data(self) -> Table:
         # Query Pan-STARRS DR2 using the specified RA and DEC range
@@ -142,6 +143,7 @@ class ZTF_Catalog(Catalog):
         self.catalog_name = 'ZTF'
         self.column_map = {'objID': 'PanSTARR_ID', 'raMean': 'ra', 'decMean': 'dec'}
         self.sextractors: Dict[str, Source_Extractor] = {}
+        self.image_metadata = {}
 
         # Set up the data directory and download the images
         if data_dir is None:
@@ -153,7 +155,7 @@ class ZTF_Catalog(Catalog):
             self.data_dirpath = data_dir
         self.bands = catalog_bands if catalog_bands is not None else ('g', 'r', 'i')
         for band in self.bands:
-            fname = self.download_image(ra, dec, band=band)
+            fname, self.image_metadata[band] = self.download_image(ra, dec, band=band)
             if fname is not None:
                 self.sextractors[band] = Source_Extractor(fname, band=band)
         if len(self.sextractors) == 0:
@@ -181,7 +183,7 @@ class ZTF_Catalog(Catalog):
 
         return big_table
 
-    def download_image(self, ra: float, dec: float, band: str) -> str:
+    def download_image(self, ra: float, dec: float, band: str) -> Tuple[str, dict]:
 
         # Get the authentication credentials
         username, password = get_credentials('irsa_login.txt')
@@ -198,7 +200,7 @@ class ZTF_Catalog(Catalog):
         metadata_table.sort_values(by=['nframes'], ascending=False, inplace=True)
         if len(metadata_table) == 0:
             print(f"No {band} images found for the specified RA and DEC.")
-            return None
+            return None, None
 
         # Download the image
         qid = metadata_table['qid'].iloc[0]
@@ -207,6 +209,7 @@ class ZTF_Catalog(Catalog):
         paddedfield = str(field).zfill(6)
         fieldprefix = paddedfield[:6 - len(str(field))]
         image_url = f'https://irsa.ipac.caltech.edu/ibe/data/ztf/products/deep/{fieldprefix}/field{paddedfield}/{filtercode}/ccd{paddedccdid}/q{qid}/ztf_{paddedfield}_{filtercode}_c{paddedccdid}_q{qid}_refimg.fits'
+        metadata_dict = {'field': paddedfield, 'ccid': paddedccdid, 'qid': qid, 'filtercode': filtercode}
 
         print(f"Downloading image from {image_url}")
 
@@ -214,7 +217,7 @@ class ZTF_Catalog(Catalog):
         file_path = os.path.join(self.data_dirpath, f'ztf_{paddedfield}_{filtercode}_c{paddedccdid}_q{qid}_refimg.fits')
         if os.path.exists(file_path):
             print(f"Image already downloaded and saved at {file_path}")
-            return file_path
+            return file_path, metadata_dict
         response = requests.get(image_url, auth=(username, password), stream=True)
         if response.status_code == 200:
             if os.path.exists(file_path):
@@ -227,7 +230,7 @@ class ZTF_Catalog(Catalog):
         else:
             print(f"Failed to download image from {image_url}. Status code: {response.status_code}")
 
-        return file_path
+        return file_path, metadata_dict
 
 
 def associate_tables_by_coordinates(table1: Table, table2: Table, max_sep: float = 2.0, prefix1: str = '', prefix2: str = '') -> Table:

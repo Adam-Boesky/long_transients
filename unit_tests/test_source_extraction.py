@@ -7,7 +7,7 @@ from astropy.table import Table
 from astropy.wcs import WCS
 
 from Extracting.Source_Extractor import Source_Extractor, query_cone_ps1
-from utils import img_flux_to_ab_mag
+from Extracting.utils import img_flux_to_ab_mag
 
 
 # Sample FITS file for testing

@@ -1,10 +1,10 @@
-import numpy as np
+import os
 
 from typing import Iterable, Optional, Tuple
 from astropy.table import Table
 from concurrent.futures import ThreadPoolExecutor
 
-from Extracting.Catalogs import (PSTARR_Catalog, ZTF_Catalog,
+from Catalogs import (PSTARR_Catalog, ZTF_Catalog,
                                  associate_tables_by_coordinates)
 
 
@@ -41,7 +41,7 @@ class Tile():
 
     #     return self._data
     @property
-    def data_dicts(self) -> dict:
+    def data_dicts(self) -> dict[str, Table]:
         if self._data_dicts is None:
 
             # Function to process each band
@@ -79,3 +79,47 @@ class Tile():
                 for row in only_pstarr_sources:
                     x, y = self.ztf_catalogs[band].sextractors[band].ra_dec_to_pix(row['PSTARR_ra'], row['PSTARR_dec'])
                     f.write(f"{x} {y}\n")
+
+    def prefecth_catalogs(self):
+        # Prefetch PanSTARRS
+        self.pstar_catalog.prefetch()
+
+        # Set the PSF sources
+        def _set_sources_for_psf(band: str):
+            self.ztf_catalogs[band].sextractors[band].set_sources_for_psf(
+                self.pstar_catalog.data[['ra', 'dec', f'{band}KronMag', f'{band}KronMagErr', f'{band}PSFMag']]
+            )
+
+        def _prefetch_ztf(band: str):
+            self.ztf_catalogs[band].prefetch()
+
+        if self.parallel:
+            with ThreadPoolExecutor() as executor:
+                executor.map(_set_sources_for_psf, self.bands)
+                executor.map(_prefetch_ztf, self.bands)
+        else:
+            for band in self.bands:
+                _set_sources_for_psf(band)
+                _prefetch_ztf(band)
+
+    def store_catalogs(self, out_parent_dir: str, overwrite: bool = False):
+        """Store the ZTF and PanSTARRS catalogs."""
+        # Prefetch catalogs
+        self.prefecth_catalogs()
+
+        # Make a subdir... overwrite if told
+        out_subdir = f"{self.ztf_catalogs[self.bands[0]].image_metadata[self.bands[0]]['field']}_{self.ztf_catalogs[self.bands[0]].image_metadata[self.bands[0]]['ccid']}_{self.ztf_catalogs[self.bands[0]].image_metadata[self.bands[0]]['qid']}"
+        outdir = os.path.join(out_parent_dir, out_subdir)
+        if os.path.exists(outdir):
+            if not overwrite:
+                raise FileExistsError(f"Directory {outdir} already exists.")
+            else:
+                os.rmdir(outdir)
+        os.makedirs(outdir)
+
+        # Store the PanSTARR catalog
+        self.pstar_catalog.data.write(os.path.join(outdir, f'PSTARR.ecsv'))
+
+        # Store the ZTF catalogs
+        for band in self.bands:
+            self.ztf_catalogs[band].data.write(os.path.join(outdir, f'ZTF_{band}.ecsv'))
