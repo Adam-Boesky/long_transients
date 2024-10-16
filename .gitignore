@@ -143,3 +143,4 @@ Data/
 ztfquery/
 *.fits
 *.txt
+training_logs/
