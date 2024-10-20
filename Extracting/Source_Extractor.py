@@ -107,6 +107,9 @@ class Source_Extractor():
         else:
             self._sources = Table(res)
 
+        # Rename flag column
+        res.rename_column('flag', 'sepExtractionFlag')  # Flags are explained here https://sep.readthedocs.io/en/v1.1.x/api/sep.extract.html?highlight=extract
+
         return res
 
     def set_sources_for_psf(self, pstarr_table: Table):
@@ -318,6 +321,7 @@ class Source_Extractor():
             data_table[f'{self.band}PSFMag'] = psf_mags
             data_table[f'{self.band}PSFMagErr'] = psf_magerrs
             data_table[f'{self.band}PSFFlags'] = psf_flags
+        data_table[f'{self.band}_zero_pt_mag'] = self.zero_pt_mag
         data_table['ra'] = coords[:, 0]
         data_table['dec'] = coords[:, 1]
 

@@ -1,6 +1,7 @@
 import os
+import numpy as np
 
-from typing import Iterable, Optional, Tuple
+from typing import Iterable, Optional, Tuple, Union
 from astropy.table import Table
 from concurrent.futures import ThreadPoolExecutor
 
@@ -123,3 +124,29 @@ class Tile():
         # Store the ZTF catalogs
         for band in self.bands:
             self.ztf_catalogs[band].data.write(os.path.join(outdir, f'ZTF_{band}.ecsv'))
+
+        # Store the ZTF nan map
+        for band in self.bands:
+            np.save(os.path.join(outdir, f'ZTF_{band}_nan_mask.npy'), self.ztf_catalogs[band].sextractors[band].nan_mask)
+
+    def nan_is_nearby(self, ra: Union[np.ndarray, float], dec: Union[np.ndarray, float], band: str, pix_radius: int = 2) -> bool:
+        """Check if there are any NaN values in the catalogs within a given pixel radius."""
+        if band not in ('g', 'r', 'i'):
+            raise ValueError(f"Band must be one of ('g', 'r', 'i'), got {band}.")
+
+        if isinstance(ra, (float, int)):
+            ra = np.array([ra])
+        if isinstance(dec, (float, int)):
+            dec = np.array([dec])
+
+        xs, ys = self.ztf_catalogs[band].sextractors[band].ra_dec_to_pix(ra, dec)
+        nan_nearby = []
+        for x, y in zip(xs, ys):
+            nan_nearby.append(
+                np.any(
+                    self.ztf_catalogs[band].sextractors[band].nan_mask[
+                        y-pix_radius:y+pix_radius+1,
+                        x-pix_radius:x+pix_radius+1,
+                    ]
+                )
+            )

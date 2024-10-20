@@ -310,22 +310,3 @@ def associate_tables_by_coordinates(table1: Table, table2: Table, max_sep: float
     combined_table = combined_table[['ra', 'dec'] + cols]
 
     return combined_table
-
-
-def query_split_pstarr_field(fstring_query: str, ra_range: Tuple[float], dec_range: Tuple[float], n_segments: int = 2) -> Table:
-    """Function used to break up queries into multiple segments to avoid timeouts."""
-    wsid, password = get_credentials('mast_login.txt')
-
-    ra_edges = np.linspace(ra_range[0], ra_range[1], num=n_segments+1)
-    results = []
-    for i in range(len(ra_edges)):
-        ps_score_query = fstring_query.format(ra_min=ra_edges[i], ra_max=ra_edges[i+1], dec_min=dec_range[0], dec_max=dec_range[1])
-        print(ps_score_query)
-        jobs = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password)
-        results.append(jobs.quick(ps_score_query, task_name=f"PanSTARRS_DR2_RA_DEC_Query_ps_scores"))
-
-    combined_results = results[0]
-    for result in results[1:]:
-        combined_results = join(combined_results, result, keys='objID', join_type='inner', metadata_conflicts='silent')
-
-    return combined_results
