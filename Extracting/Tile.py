@@ -132,7 +132,7 @@ class Tile():
         # Store the ZTF nan map
         for band in self.bands:
             np.save(os.path.join(outdir, 'nan_masks', f'ZTF_{band}_nan_mask.npy'), self.ztf_catalogs[band].sextractors[band].nan_mask)
-            with open(os.path.join(outdir, 'nan_masks', f'ZTF_{band}_wcs.pkl'), 'wb') as f:
+            with open(os.path.join(outdir, 'WCSs', f'ZTF_{band}_wcs.pkl'), 'wb') as f:
                 pickle.dump(self.ztf_catalogs[band].sextractors[band].wcs, f)
 
     def nan_is_nearby(self, ra: Union[np.ndarray, float], dec: Union[np.ndarray, float], band: str, pix_radius: int = 2) -> bool:
