@@ -1,20 +1,30 @@
 import os
 import re
+import pickle
 import argparse
 import numpy as np
 
 from typing import List
+from astropy.wcs import WCS
 from astropy.io import ascii
 from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 
-from utils import get_data_path
+try:
+    from utils import get_data_path
+except ModuleNotFoundError:
+    from .utils import get_data_path
 
 CATALOG_DIR = os.path.join(get_data_path(), 'catalog_results')
 BANDS = ('g', 'r', 'i')
 
 
-def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, max_sep: float = 1.0) -> Table:
+def nan_nearby(row: int, column: int, radius: int, nan_mask: np.ndarray) -> bool:
+    """Check if there are any NaN values in the nearby pixels."""
+    return np.any(nan_mask[row - radius:row + radius + 1, column - radius:column + radius + 1])
+
+
+def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs: WCS, max_sep: float = 1.0) -> Table:
     """
     Associate rows of two Astropy tables by ensuring that the objects are within a specified separation (in arcseconds).
 
@@ -101,18 +111,23 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, max
     in_pstarr_mask = combined_table['Catalog_Flag'] == 'PSTARR'
 
     # Check if panstarrs is nan -- we will approximate this by checking if there are any sources within an arcminute
-    pstarr_coords = SkyCoord(ra=combined_table[in_ztf_mask]['PSTARR_ra'], dec=combined_table[in_ztf_mask]['PSTARR_ra'], unit='deg')
-    _, sep_to_other_sources, _ = match_coordinates_sky(pstarr_coords, pstarr_coords)
-    combined_table['Catalog_Flag'][in_ztf_mask & (np.min(sep_to_other_sources.arcminute > 1.0))] = 3
+    pstarr_coords = SkyCoord(ra=combined_table[in_pstarr_mask]['PSTARR_ra'], dec=combined_table[in_pstarr_mask]['PSTARR_dec'], unit='deg')
+    ztf_coords = SkyCoord(ra=combined_table[in_ztf_mask]['ZTF_dec'], dec=combined_table[in_ztf_mask]['ZTF_dec'], unit='deg')
+    _, sep_to_other_sources, _ = match_coordinates_sky(ztf_coords, pstarr_coords)
+    combined_table['Catalog_Flag'][in_ztf_mask][sep_to_other_sources.arcminute > 1.0] = 3
 
     # Check if nan in ZTF
-    ztf_coords = combined_table[in_pstarr_mask][['ZTF_x', 'ZTF_y']]
-    is_nan_in_ztf = ztf_nan_mask[ztf_coords]
-    combined_table['Catalog_Flag'][in_pstarr_mask & is_nan_in_ztf] = 3
+    pstarr_pix_coords = wcs.world_to_pixel(pstarr_coords)
+    pstarr_xs = pstarr_pix_coords[0].round().astype(int)
+    pstarr_ys = pstarr_pix_coords[1].round().astype(int)
+    in_wcs = (pstarr_xs < ztf_nan_mask.shape[0]) & (pstarr_ys < ztf_nan_mask.shape[1])
+    is_nan_in_ztf = np.array([nan_nearby(x, y, 2, ztf_nan_mask) if b else True for x, y, b in zip(pstarr_xs, pstarr_ys, in_wcs)])
+    combined_table['Catalog_Flag'][in_pstarr_mask][is_nan_in_ztf] = 3
 
     # Map the remaining clean sources
-    combined_table['Catalog_Flag']['Catalog_Flag' == 'ZTF'] = 1
-    combined_table['Catalog_Flag']['Catalog_Flag' == 'PSTARR'] = 2
+    combined_table['Catalog_Flag'][combined_table['Catalog_Flag'] == 'ZTF'] = 1
+    combined_table['Catalog_Flag'][combined_table['Catalog_Flag'] == 'PSTARR'] = 2
+    combined_table['Catalog_Flag'] = combined_table['Catalog_Flag'].astype(int)
 
     return combined_table
 
@@ -128,12 +143,16 @@ def cross_match_quadrant(quadrant_dirpath: str):
         full_fpath = os.path.join(quadrant_dirpath, fname)
         if os.path.exists(full_fpath):
 
-            # Load and associate the ZTF table
+            # Load the ZTF data, nan mask, and WCS
             ztf_tab = ascii.read(full_fpath)
+            # ztf_nan_mask = np.load(os.path.join(quadrant_dirpath, 'nan_masks', f'ZTF_{band}_nan_mask.npy'))
+            # with open(os.path.join(quadrant_dirpath, 'WCSs', f'ZTF_{band}_nan_mask.npy'), 'rb') as f:
             ztf_nan_mask = np.load(os.path.join(quadrant_dirpath, f'ZTF_{band}_nan_mask.npy'))
-            associated_tab = associate_tables(ztf_tab, pstar_tab, ztf_nan_mask)
+            with open(os.path.join(quadrant_dirpath, 'nan_masks', f'ZTF_{band}_wcs.pkl'), 'rb') as f:
+                wcs = pickle.load(f)
 
             # Save the associated table
+            associated_tab = associate_tables(ztf_tab, pstar_tab, ztf_nan_mask, wcs)
             associated_tab.write(
                 os.path.join(quadrant_dirpath, f'{band}_associated.ecsv'),
                 format='ascii.ecsv',
@@ -158,11 +177,17 @@ def merge_field(field_name: str, field_quad_dirs: List[str], field_subdir: str =
 def associate_quadrants():
     """Cross match the g, r, i catalogs with the panstarrs catalog for each quadrant."""
     for quad_dir in os.listdir(CATALOG_DIR):
-        cross_match_quadrant(os.path.join(CATALOG_DIR, quad_dir))
+        if re.match(r'[0-9]{6}_[0-9]{2}_[0-9]', quad_dir):
+            cross_match_quadrant(os.path.join(CATALOG_DIR, quad_dir))
 
 
 def merge_fields():
     """Merge all quadrants from a field into one table."""
+    # Make separate directory for field results
+    field_results_dir = os.path.join(CATALOG_DIR, 'field_results')
+    if not os.path.exists(field_results_dir):
+        os.makedirs(field_results_dir)
+
     # Get the directories for each quadrant and the field names
     quad_dirs = os.listdir(CATALOG_DIR)
     field_names = list(set([quad_dir.split('_')[0] for quad_dir in quad_dirs]))

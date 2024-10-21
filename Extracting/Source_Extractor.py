@@ -17,7 +17,10 @@ from matplotlib.patches import Ellipse
 from photutils.psf import IntegratedGaussianPRF, PSFPhotometry, EPSFBuilder, EPSFFitter, extract_stars
 from scipy.interpolate import NearestNDInterpolator
 
-from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag
+try:
+    from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag
+except ModuleNotFoundError:
+    from .utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag
 
 
 class Source_Extractor():
@@ -113,6 +116,10 @@ class Source_Extractor():
 
     def set_sources_for_psf(self, pstarr_table: Table):
         """Set the sources for the PSF photometry. Will do so by making a cut on SNR > 3, psf mag - kron mag < 0.05, and psf mag brighter than 10."""
+        # Mask on detected bands
+        detected_mask = (pstarr_table[f'{self.band}KronMag'] != -999.0) & (pstarr_table[f'{self.band}KronMagErr'] != -999.0) & (pstarr_table[f'{self.band}PSFMag'] != -999.0)
+        pstarr_table = pstarr_table[detected_mask]
+
         # Cut on SNR, psf mag - kron mag, and psf mag upper limit
         snr = get_snr_from_mag(pstarr_table[f'{self.band}KronMag'], pstarr_table[f'{self.band}KronMagErr'], self.zero_pt_mag)
         pstarr_table = pstarr_table[(snr >= 3) & (pstarr_table[f'{self.band}PSFMag'] - pstarr_table[f'{self.band}KronMag'] < 0.05) & (pstarr_table[f'{self.band}PSFMag'] < 17)]

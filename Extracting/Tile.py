@@ -6,8 +6,10 @@ from typing import Iterable, Optional, Tuple, Union
 from astropy.table import Table
 from concurrent.futures import ThreadPoolExecutor
 
-from Catalogs import (PSTARR_Catalog, ZTF_Catalog,
-                                 associate_tables_by_coordinates)
+try:
+    from Catalogs import (PSTARR_Catalog, ZTF_Catalog, associate_tables_by_coordinates)
+except ModuleNotFoundError:
+    from .Catalogs import (PSTARR_Catalog, ZTF_Catalog, associate_tables_by_coordinates)
 
 
 class Tile():

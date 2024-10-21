@@ -4,8 +4,12 @@ import numpy as np
 
 from concurrent.futures import ProcessPoolExecutor
 
-from Tile import Tile
-from utils import get_data_path
+try:
+    from Tile import Tile
+    from utils import get_data_path
+except ModuleNotFoundError:
+    from .Tile import Tile
+    from .utils import get_data_path
 
 
 def process_quadrant(quadrant, field_id, data_path, parallel):

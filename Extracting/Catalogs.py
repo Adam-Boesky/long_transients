@@ -13,8 +13,12 @@ from astropy.table import Table, join, vstack
 from astropy.io import ascii
 from mastcasjobs import MastCasJobs
 
-from Source_Extractor import Source_Extractor
-from utils import get_credentials
+try:
+    from Source_Extractor import Source_Extractor
+    from utils import get_credentials
+except ModuleNotFoundError:
+    from .Source_Extractor import Source_Extractor
+    from .utils import get_credentials
 
 
 class Catalog():
@@ -83,6 +87,7 @@ class PSTARR_Catalog(Catalog):
         except ValueError:
 
             # Execute the query and wait for it to complete
+            # note that this query gives us a 0.003 padding in RA and DEC to ensure we get all sources
             print(f"Querying Pan-STARRS DR2 for the RA and DEC range in the ZTF image.")
             query = f"""
 WITH ranked AS (
@@ -98,8 +103,8 @@ WITH ranked AS (
         ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) as rn into mydb.{table_name}
     FROM ObjectThin o
     INNER JOIN StackObjectThin m ON o.objID = m.objID
-    WHERE o.raMean BETWEEN {self.ra_range[0]} AND {self.ra_range[1]}
-    AND o.decMean BETWEEN {self.dec_range[0]} AND {self.dec_range[1]}
+    WHERE o.raMean BETWEEN {self.ra_range[0] - 0.003} AND {self.ra_range[1] + 0.003}
+    AND o.decMean BETWEEN {self.dec_range[0] - 0.003} AND {self.dec_range[1] + 0.003}
     AND (o.nStackDetections > 0 OR o.nDetections > 1)
 )
 SELECT * FROM ranked
