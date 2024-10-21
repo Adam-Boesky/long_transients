@@ -43,6 +43,8 @@ def extract_sources():
     with ProcessPoolExecutor(max_workers=8) as executor:
             for field_id, field_poly in zip(field_info['fieldid'], field_polygons):
                 executor.submit(process_field, field_id, field_poly, data_path, parallel)
+    # for field_id, field_poly in zip(field_info['fieldid'], field_polygons):
+    #     process_field(field_id, field_poly, data_path, parallel)
 
 
 if __name__=='__main__':

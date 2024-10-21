@@ -5,6 +5,8 @@ from typing import Optional, Tuple, Union
 import matplotlib.pyplot as plt
 import numpy as np
 import sep
+from numpy.lib.recfunctions import rename_fields
+
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.table import Table, unique
@@ -102,13 +104,10 @@ class Source_Extractor():
             mask=self.nan_mask,                     # don't detect sources in NaN regions
         )
 
-        if isinstance(res, tuple):
-            self._sources = Table(res[0])
-        else:
-            self._sources = Table(res)
-
-        # Rename flag column
-        res.rename_column('flag', 'sepExtractionFlag')  # Flags are explained here https://sep.readthedocs.io/en/v1.1.x/api/sep.extract.html?highlight=extract
+        # Rename columns and set _sources
+        tab = res[0] if isinstance(res, tuple) else res
+        tab = rename_fields(tab, {'flag': 'sepExtractionFlag'})
+        self._sources = Table(tab)
 
         return res
 
