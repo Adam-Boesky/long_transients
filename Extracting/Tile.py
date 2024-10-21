@@ -1,4 +1,5 @@
 import os
+import pickle
 import numpy as np
 
 from typing import Iterable, Optional, Tuple, Union
@@ -116,7 +117,10 @@ class Tile():
                 raise FileExistsError(f"Directory {outdir} already exists.")
             else:
                 os.rmdir(outdir)
-        os.makedirs(outdir)
+        else:
+            os.makedirs(outdir)
+            os.makedirs(os.path.join(outdir, 'nan_masks'))
+            os.makedirs(os.path.join(outdir, 'WCSs'))
 
         # Store the PanSTARR catalog
         self.pstar_catalog.data.write(os.path.join(outdir, f'PSTARR.ecsv'))
@@ -127,7 +131,9 @@ class Tile():
 
         # Store the ZTF nan map
         for band in self.bands:
-            np.save(os.path.join(outdir, f'ZTF_{band}_nan_mask.npy'), self.ztf_catalogs[band].sextractors[band].nan_mask)
+            np.save(os.path.join(outdir, 'nan_masks', f'ZTF_{band}_nan_mask.npy'), self.ztf_catalogs[band].sextractors[band].nan_mask)
+            with open(os.path.join(outdir, 'nan_masks', f'ZTF_{band}_wcs.pkl'), 'wb') as f:
+                pickle.dump(self.ztf_catalogs[band].sextractors[band].wcs, f)
 
     def nan_is_nearby(self, ra: Union[np.ndarray, float], dec: Union[np.ndarray, float], band: str, pix_radius: int = 2) -> bool:
         """Check if there are any NaN values in the catalogs within a given pixel radius."""
