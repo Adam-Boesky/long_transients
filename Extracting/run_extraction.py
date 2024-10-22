@@ -1,4 +1,5 @@
 import os
+import pickle
 import ztffields
 import numpy as np
 
@@ -24,7 +25,11 @@ def process_quadrant(quadrant, field_id, data_path, parallel):
         data_dir=os.path.join(data_path, 'ztf_data'),
         parallel=parallel
     )
-    tile.store_catalogs(os.path.join(data_path, 'catalog_results'))
+    tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'))
+
+    # For testing, store the tile objects as well (NOTE: DELTE THIS IN THE FUTURE)
+    with open(os.path.join(tile_output_path, f'tile.pkl'), 'wb') as f:
+        pickle.dump(tile, f)
 
 
 def process_field(field_id, field_poly, data_path, parallel):

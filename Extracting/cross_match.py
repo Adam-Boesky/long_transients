@@ -145,10 +145,8 @@ def cross_match_quadrant(quadrant_dirpath: str):
 
             # Load the ZTF data, nan mask, and WCS
             ztf_tab = ascii.read(full_fpath)
-            # ztf_nan_mask = np.load(os.path.join(quadrant_dirpath, 'nan_masks', f'ZTF_{band}_nan_mask.npy'))
-            # with open(os.path.join(quadrant_dirpath, 'WCSs', f'ZTF_{band}_nan_mask.npy'), 'rb') as f:
-            ztf_nan_mask = np.load(os.path.join(quadrant_dirpath, f'ZTF_{band}_nan_mask.npy'))
-            with open(os.path.join(quadrant_dirpath, 'nan_masks', f'ZTF_{band}_wcs.pkl'), 'rb') as f:
+            ztf_nan_mask = np.load(os.path.join(quadrant_dirpath, 'nan_masks', f'ZTF_{band}_nan_mask.npy'))
+            with open(os.path.join(quadrant_dirpath, 'WCSs', f'ZTF_{band}_wcs.pkl'), 'rb') as f:
                 wcs = pickle.load(f)
 
             # Save the associated table
