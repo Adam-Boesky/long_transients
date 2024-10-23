@@ -227,7 +227,7 @@ class Source_Extractor():
         data_for_fit = NDData(data=self.image_sub, wcs=self.wcs)
         stars = extract_stars(data_for_fit, Table([self._point_source_coords], names=['skycoord']), size=45)
         fitter = EPSFFitter(fit_boxsize=13)
-        epsf_builder = EPSFBuilder(fitter=fitter)
+        epsf_builder = EPSFBuilder(fitter=fitter, maxiters=20)
         self.epsf, _ = epsf_builder(stars)
 
         # Perform the PSF photometry with the fitted model
