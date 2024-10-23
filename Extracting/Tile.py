@@ -117,8 +117,6 @@ class Tile():
         if os.path.exists(outdir):
             if not overwrite:
                 raise FileExistsError(f"Directory {outdir} already exists.")
-            else:
-                os.rmdir(outdir)
         else:
             os.makedirs(outdir)
             os.makedirs(os.path.join(outdir, 'nan_masks'))
