@@ -3,7 +3,7 @@ import pickle
 import ztffields
 import numpy as np
 
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 try:
     from Tile import Tile
@@ -25,10 +25,10 @@ def process_quadrant(quadrant, field_id, data_path, parallel):
         data_dir=os.path.join(data_path, 'ztf_data'),
         parallel=parallel
     )
-    tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'))
+    tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=True)
 
     # For testing, store the tile objects as well (NOTE: DELTE THIS IN THE FUTURE)
-    with open(os.path.join(tile_output_path, f'tile.pkl'), 'wb') as f:
+    with open(os.path.join(tile_output_path, 'tile.pkl'), 'wb') as f:
         pickle.dump(tile, f)
 
 
@@ -50,8 +50,17 @@ def extract_sources():
 
     # Iterate through the field and quadrants, extracting sources
     with ProcessPoolExecutor(max_workers=8) as executor:
-            for field_id, field_poly in zip(field_info['fieldid'], field_polygons):
-                executor.submit(process_field, field_id, field_poly, data_path, parallel)
+        futures = [
+            executor.submit(process_field, field_id, field_poly, data_path, parallel)
+            for field_id, field_poly in zip(field_info['fieldid'], field_polygons)
+        ]
+        for future in as_completed(futures):
+            try:
+                # Call result() to propagate any exceptions that occurred
+                future.result()
+            except Exception as exc:
+                print(f'Field processing generated an exception: {exc}')
+                raise exc
     # for field_id, field_poly in zip(field_info['fieldid'], field_polygons):
     #     process_field(field_id, field_poly, data_path, parallel)
 
