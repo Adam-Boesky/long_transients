@@ -25,7 +25,7 @@ def process_quadrant(quadrant, field_id, data_path, parallel):
         data_dir=os.path.join(data_path, 'ztf_data'),
         parallel=parallel
     )
-    tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=True)
+    tile_output_path = tile.store_catalogs(os.path.join(data_path, 'local_catalog_results'), overwrite=True)
 
     # For testing, store the tile objects as well (NOTE: DELTE THIS IN THE FUTURE)
     with open(os.path.join(tile_output_path, 'tile.pkl'), 'wb') as f:
@@ -45,8 +45,8 @@ def extract_sources():
     data_path = get_data_path()
 
     # Load the field geometries
-    test = ztffields.Fields()  # TODO: Some filter on fields
-    field_info, field_polygons = test.get_field_vertices([1557, 1558], level='quadrant', steps=2)
+    fields = ztffields.Fields()  # TODO: Some filter on fields
+    field_info, field_polygons = fields.get_field_vertices([1557, 1558], level='quadrant', steps=2)
 
     # Iterate through the field and quadrants, extracting sources
     with ProcessPoolExecutor(max_workers=8) as executor:

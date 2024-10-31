@@ -1,4 +1,5 @@
 import os
+import shutil
 import pickle
 import numpy as np
 
@@ -117,10 +118,10 @@ class Tile():
         if os.path.exists(outdir):
             if not overwrite:
                 raise FileExistsError(f"Directory {outdir} already exists.")
-        else:
-            os.makedirs(outdir)
-            os.makedirs(os.path.join(outdir, 'nan_masks'))
-            os.makedirs(os.path.join(outdir, 'WCSs'))
+            shutil.rmtree(outdir)
+        os.makedirs(outdir)
+        os.makedirs(os.path.join(outdir, 'nan_masks'))
+        os.makedirs(os.path.join(outdir, 'WCSs'))
 
         # Store the PanSTARR catalog
         self.pstar_catalog.data.write(os.path.join(outdir, f'PSTARR.ecsv'))

@@ -50,6 +50,10 @@ class Source_Extractor():
         self.thresh = 1.0
         self.band = '' if band is None else band  # the band that the image is in
 
+        # PSF fitting parameters (hand-tuned as function of FWHM)
+        self.psf_cutout_size = np.ceil(self.r_fwhm * 14 // 2 * 2 + 1).astype(int)  # rounding to nearest odd integer
+        self.fit_boxsize = np.ceil(self.r_fwhm * 2 // 2 * 2 + 1).astype(int)
+
         # Properties defined later
         self._sources = None
         self._image_sub = None
@@ -115,23 +119,54 @@ class Source_Extractor():
         return res
 
     def set_sources_for_psf(self, pstarr_table: Table):
-        """Set the sources for the PSF photometry. Will do so by making a cut on SNR > 3, psf mag - kron mag < 0.05, and psf mag brighter than 10."""
-        # Mask on detected bands
-        detected_mask = (pstarr_table[f'{self.band}KronMag'] != -999.0) & (pstarr_table[f'{self.band}KronMagErr'] != -999.0) & (pstarr_table[f'{self.band}PSFMag'] != -999.0)
-        pstarr_table = pstarr_table[detected_mask]
-
-        # Cut on SNR, psf mag - kron mag, and psf mag upper limit
-        snr = get_snr_from_mag(pstarr_table[f'{self.band}KronMag'], pstarr_table[f'{self.band}KronMagErr'], self.zero_pt_mag)
-        pstarr_table = pstarr_table[(snr >= 3) & (pstarr_table[f'{self.band}PSFMag'] - pstarr_table[f'{self.band}KronMag'] < 0.05) & (pstarr_table[f'{self.band}PSFMag'] < 17)]
+        """Set the sources for the PSF photometry. Will do so by making a cut on SNR > 10, psf mag - kron mag < 0.05,
+        and psf mag brighter than 10.
+        """
+        # Distance to other sources mask (> 10 pixels)
+        xs, ys = self.ra_dec_to_pix(pstarr_table['ra'], pstarr_table['dec'])
+        min_dists = []
+        for x, y in zip(xs, ys):
+            dists = np.sqrt((xs - x)*(xs - x) + (ys - y)*(ys - y))
+            min_dists.append(np.min(dists[dists != 0]))
+        min_dists = np.array(min_dists)
+        pstarr_table = pstarr_table[min_dists > 10]
 
         # Make sure sources aren't don't have any nans in the pixels around them
         xs, ys = self.ra_dec_to_pix(pstarr_table['ra'], pstarr_table['dec'])
+        half_cutout_size = int(self.psf_cutout_size / 2)
         not_nan = np.zeros(len(pstarr_table))
         for i, (x, y) in enumerate(zip(xs, ys)):
             x, y = int(x), int(y)
-            if not np.any(self.nan_mask[y-4:y+4, x-4:x+4]):
+            if np.sum(
+                self.nan_mask[
+                    y - half_cutout_size : y + half_cutout_size,
+                    x - half_cutout_size : x + half_cutout_size
+                ]
+            ) / (self.psf_cutout_size * self.psf_cutout_size) < 0.05:  # <5% of the pixels in the cutout are NaN
                 not_nan[i] = 1
-        pstarr_table = pstarr_table[not_nan.astype(bool)]
+        not_nan = not_nan.astype(bool)
+        pstarr_table = pstarr_table[not_nan]
+
+        # Mask on detected bands
+        pstarr_table = pstarr_table.copy()
+        detected_mask = (
+            (pstarr_table[f'{self.band}KronMag'] != -999.0) &
+            (pstarr_table[f'{self.band}KronMagErr'] != -999.0) &
+            (pstarr_table[f'{self.band}PSFMag'] != -999.0)
+        )
+        pstarr_table = pstarr_table[detected_mask]
+
+        # Cut on SNR, psf mag - kron mag, and psf mag upper limit
+        pstarr_snr = get_snr_from_mag(
+            pstarr_table[f'{self.band}KronMag'],
+            pstarr_table[f'{self.band}KronMagErr'],
+            self.zero_pt_mag
+        )
+        pstarr_table = pstarr_table[(
+            (pstarr_snr >= 10) &
+            (pstarr_table[f'{self.band}PSFMag'] - pstarr_table[f'{self.band}KronMag'] < 0.05) &
+            (pstarr_table[f'{self.band}PSFMag'] < 17)
+        )]
 
         # Convert to x and y coords, and store
         self._point_source_coords = SkyCoord(pstarr_table['ra'], pstarr_table['dec'], unit='deg')
@@ -225,10 +260,14 @@ class Source_Extractor():
         # Fit the PSF model on a sample of just stars
         print(f'Fitting PSF model using {len(self._point_source_coords)} stars...')
         data_for_fit = NDData(data=self.image_sub, wcs=self.wcs)
-        stars = extract_stars(data_for_fit, Table([self._point_source_coords], names=['skycoord']), size=45)
-        fitter = EPSFFitter(fit_boxsize=13)
-        epsf_builder = EPSFBuilder(fitter=fitter, maxiters=20)
-        self.epsf, _ = epsf_builder(stars)
+        self.stars = extract_stars(
+            data_for_fit,
+            Table([self._point_source_coords], names=['skycoord']),
+            size=self.psf_cutout_size,
+        )
+        fitter = EPSFFitter(fit_boxsize=self.fit_boxsize)
+        epsf_builder = EPSFBuilder(fitter=fitter)
+        self.epsf, _ = epsf_builder(self.stars)
 
         # Perform the PSF photometry with the fitted model
         self.psfphot = PSFPhotometry(self.epsf, fit_shape=(5, 5))
@@ -244,16 +283,16 @@ class Source_Extractor():
         coords = self.pix_to_ra_dec(self.sources['x'], self.sources['y'])
         return np.vstack(coords).T
 
-    def pix_to_ra_dec(self, x: Union[float, np.ndarray], y: Union[float, np.ndarray]) -> Tuple[float, float]:
+    def pix_to_ra_dec(self, x: Union[float, np.ndarray], y: Union[float, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
         """Convert pixel coordinates to RA and DEC."""
         coords = self.wcs.pixel_to_world(x, y)
-        return coords.ra.deg, coords.dec.deg
+        return np.array(coords.ra.deg), np.array(coords.dec.deg)
 
-    def ra_dec_to_pix(self, ra: Union[float, np.ndarray], dec: Union[float, np.ndarray]) -> Tuple[float, float]:
+    def ra_dec_to_pix(self, ra: Union[float, np.ndarray], dec: Union[float, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
         """Convert RA and DEC to pixel coordinates."""
         coords = SkyCoord(ra=ra, dec=dec, unit='deg')
         coords = self.wcs.world_to_pixel(coords)
-        return coords
+        return tuple(np.array(c) for c in coords)
 
     def store_coords(self, fpath: str, coord_system: str = 'ra_dec', mask: Optional[np.ndarray] = None):
         """Store the coordinates of the detected self.sources in a text file."""
@@ -272,7 +311,13 @@ class Source_Extractor():
             for s in coords[mask]:
                 f.write(f"{s[0]} {s[1]}\n")
 
-    def plot_segmap(self, show_sources: bool = True, show_source_shapes: bool = False, fpath: Optional[str] = None, source_mask: Optional[np.ndarray] = None):
+    def plot_segmap(
+            self,
+            show_sources: bool = True,
+            show_source_shapes: bool = False,
+            fpath: Optional[str] = None,
+            source_mask: Optional[np.ndarray] = None,
+        ):
         """Plot the segmentation map of the image."""
         _, ax = plt.subplots(figsize=(15, 15))
         segmap = self.get_sources(get_segmap=True)[1]
@@ -347,7 +392,11 @@ def make_nan(catalog, replace = np.nan):
     return catalog
 
 
-def query_cone_ps1(ra_deg: Union[float, np.ndarray], dec_deg: Union[float, np.ndarray], search_radius_arcmin: float) -> Table:
+def query_cone_ps1(
+        ra_deg: Union[float, np.ndarray],
+        dec_deg: Union[float, np.ndarray],
+        search_radius_arcmin: float,
+    ) -> Table:
     '''
     Adapted from FLEET.
     '''

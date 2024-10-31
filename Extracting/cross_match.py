@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import re
 import pickle
@@ -14,9 +15,6 @@ try:
     from utils import get_data_path
 except ModuleNotFoundError:
     from .utils import get_data_path
-
-CATALOG_DIR = os.path.join(get_data_path(), 'catalog_results')
-BANDS = ('g', 'r', 'i')
 
 
 def nan_nearby(row: int, column: int, radius: int, nan_mask: np.ndarray) -> bool:
@@ -179,10 +177,10 @@ def associate_quadrants():
             cross_match_quadrant(os.path.join(CATALOG_DIR, quad_dir))
 
 
-def merge_fields():
+def merge_fields(output_directory: str = 'field_results'):
     """Merge all quadrants from a field into one table."""
     # Make separate directory for field results
-    field_results_dir = os.path.join(CATALOG_DIR, 'field_results')
+    field_results_dir = os.path.join(CATALOG_DIR, output_directory)
     if not os.path.exists(field_results_dir):
         os.makedirs(field_results_dir)
 
@@ -215,7 +213,35 @@ def cross_match():
         default=False,
         help='Merge all quadrants from a field into one table.'
     )
+    parser.add_argument(
+        '-outdir',
+        '--output_directory',
+        type=str,
+        default='field_results',
+        help='The output directory for merged field results.'
+    )
+    parser.add_argument(
+        '-catdir',
+        '--catalog_subdirectory',
+        type=str,
+        default='catalog_results',
+        help='The subdirectory for TODO.'
+    )
+    parser.add_argument(
+        '-bs',
+        '--bands',
+        type=str,
+        default='gri',
+        help='The photometric bands to store for.'
+    )
+    
     args = parser.parse_args()
+
+    # Set up
+    global CATALOG_DIR
+    global BANDS
+    CATALOG_DIR = os.path.join(get_data_path(), args.catalog_subdirectory)
+    BANDS = list(args.bands)
 
     # Actions
     if args.associate_quadrants:
@@ -223,7 +249,7 @@ def cross_match():
         associate_quadrants()
     if args.merge_fields:
         print('Merging quadrants from all fields...')
-        merge_fields()
+        merge_fields(args.output_directory)
 
 
 if __name__=='__main__':

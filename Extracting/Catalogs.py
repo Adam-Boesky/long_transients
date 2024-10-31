@@ -99,6 +99,7 @@ WITH ranked AS (
         m.gApMagErr, m.rApMagErr, m.iApMagErr,
         m.gPSFMag, m.rPSFMag, m.iPSFMag,
         m.gPSFMagErr, m.rPSFMagErr, m.iPSFMagErr,
+        m.gpsfLikelihood, m.rpsfLikelihood, m.ipsfLikelihood,
         m.primaryDetection,
         ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) as rn into mydb.{table_name}
     FROM ObjectThin o
