@@ -144,3 +144,4 @@ ztfquery/
 *.fits
 *.txt
 training_logs/
+extraction_logs/

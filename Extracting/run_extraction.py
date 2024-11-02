@@ -25,11 +25,11 @@ def process_quadrant(quadrant, field_id, data_path, parallel):
         data_dir=os.path.join(data_path, 'ztf_data'),
         parallel=parallel
     )
-    tile_output_path = tile.store_catalogs(os.path.join(data_path, 'local_catalog_results'), overwrite=True)
+    tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=True)
 
-    # For testing, store the tile objects as well (NOTE: DELTE THIS IN THE FUTURE)
-    with open(os.path.join(tile_output_path, 'tile.pkl'), 'wb') as f:
-        pickle.dump(tile, f)
+    # # For testing, store the tile objects as well (NOTE: DELTE THIS IN THE FUTURE)
+    # with open(os.path.join(tile_output_path, 'tile.pkl'), 'wb') as f:
+    #     pickle.dump(tile, f)
 
 
 def process_field(field_id, field_poly, data_path, parallel):
