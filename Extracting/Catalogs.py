@@ -165,7 +165,7 @@ class ZTF_Catalog(Catalog):
             if fname is not None:
                 self.sextractors[band] = Source_Extractor(fname, band=band)
         if len(self.sextractors) == 0:
-            raise ValueError("No g, r, or i found for the specified RA and DEC.")
+            raise ValueError(f"No {', '.join(catalog_bands)} found for the specified RA and DEC.")
         self.ra_range, self.dec_range = self.sextractors[self.bands[0]].get_coord_range()
 
     def _cleanup(self):

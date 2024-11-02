@@ -24,13 +24,20 @@ class Tile():
         ):
 
         # Get the ZTF catalog and coordinate range for the tile
-        self.bands = bands
         self.parallel = parallel
         if self.parallel:
             with ThreadPoolExecutor() as executor:
                 self.ztf_catalogs = dict(executor.map(lambda band: (band, ZTF_Catalog(ra, dec, catalog_bands=band, data_dir=data_dir)), bands))
         else:
-            self.ztf_catalogs = {band: ZTF_Catalog(ra, dec, catalog_bands=band, data_dir=data_dir) for band in bands}
+            # self.ztf_catalogs = {band: ZTF_Catalog(ra, dec, catalog_bands=band, data_dir=data_dir) for band in bands}
+            self.ztf_catalogs = {}
+            for band in bands:
+                try:
+                    self.ztf_catalogs[band] = ZTF_Catalog(ra, dec, catalog_bands=band, data_dir=data_dir)
+                except ValueError as e:
+                    bands.remove(band)
+                    print(f"Band {band} not found in the ZTF data directory. Skipping.")
+        self.bands = bands
         self.ra_range, self.dec_range = self.ztf_catalogs[self.bands[0]].get_coordinate_range()
 
         # Get the PanSTARRS catalog for the tile
