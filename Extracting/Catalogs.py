@@ -99,11 +99,12 @@ WITH ranked AS (
         m.gApMagErr, m.rApMagErr, m.iApMagErr,
         m.gPSFMag, m.rPSFMag, m.iPSFMag,
         m.gPSFMagErr, m.rPSFMagErr, m.iPSFMagErr,
-        m.gpsfLikelihood, m.rpsfLikelihood, m.ipsfLikelihood,
+        a.gpsfLikelihood, a.rpsfLikelihood, a.ipsfLikelihood,
         m.primaryDetection,
         ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) as rn into mydb.{table_name}
     FROM ObjectThin o
     INNER JOIN StackObjectThin m ON o.objID = m.objID
+    INNER JOIN StackObjectAttributes a ON o.objID = a.objID
     WHERE o.raMean BETWEEN {self.ra_range[0] - 0.003} AND {self.ra_range[1] + 0.003}
     AND o.decMean BETWEEN {self.dec_range[0] - 0.003} AND {self.dec_range[1] + 0.003}
     AND (o.nStackDetections > 0 OR o.nDetections > 1)
