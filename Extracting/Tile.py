@@ -129,15 +129,21 @@ class Tile():
         os.makedirs(outdir)
         os.makedirs(os.path.join(outdir, 'nan_masks'))
         os.makedirs(os.path.join(outdir, 'WCSs'))
+        os.makedirs(os.path.join(outdir, 'EPSFs'))
 
         # Store the PanSTARR catalog
         self.pstar_catalog.data.write(os.path.join(outdir, f'PSTARR.ecsv'))
 
         # Store the ZTF catalogs, ZTF nan masks, and WCSs
         for band in self.bands:
+            
+            # Save the ztf catalog
             self.ztf_catalogs[band].data.write(os.path.join(outdir, f'ZTF_{band}.ecsv'))
+
+            # Save the ZTF catalog's nan mask, WCS, and EPSF fit
             np.save(os.path.join(outdir, 'nan_masks', f'ZTF_{band}_nan_mask.npy'), self.ztf_catalogs[band].sextractors[band].nan_mask)
             with open(os.path.join(outdir, 'WCSs', f'ZTF_{band}_wcs.pkl'), 'wb') as f:
                 pickle.dump(self.ztf_catalogs[band].sextractors[band].wcs, f)
+            np.save(os.path.join(outdir, 'EPSFs', f'ZTF_{band}_EPSF.npy'), self.ztf_catalogs[band].sextractors[band].epsf.data)
 
         return outdir

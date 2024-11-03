@@ -127,6 +127,12 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     combined_table['Catalog_Flag'][combined_table['Catalog_Flag'] == 'PSTARR'] = 2
     combined_table['Catalog_Flag'] = combined_table['Catalog_Flag'].astype(int)
 
+    # Add x and y to PSTARR sources and make a new column
+    combined_table['x'] = combined_table['ZTF_x']
+    combined_table['y'] = combined_table['ZTF_y']
+    combined_table['x'][in_pstarr_mask] = pstarr_xs
+    combined_table['y'][in_pstarr_mask] = pstarr_ys
+
     return combined_table
 
 

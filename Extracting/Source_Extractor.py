@@ -95,6 +95,8 @@ class Source_Extractor():
         Returns:
             1. An array of detected sources.
             2. If `get_segmap` is True, the segmentation map.
+
+        NOTE: Flag key is here: https://sextractor.readthedocs.io/en/latest/Flagging.html
         """
 
         # Extract self.sources
@@ -238,7 +240,7 @@ class Source_Extractor():
 
         return mag, magerr, use_circle.astype(int)
 
-    def get_psf_mags(self, kron_mags: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def get_psf_mags(self, kron_mags: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Table]:
         """
         Perform PSF photometry on detected self.sources in the image.
 
@@ -246,6 +248,11 @@ class Source_Extractor():
             np.ndarray: PSF Kron magnitudes.
             np.ndarray: PSF Kron magnitude errors.
             np.ndarray: Flags from https://photutils.readthedocs.io/en/stable/api/photutils.psf.PSFPhotometry.html#photutils.psf.PSFPhotometry.__call__
+            astropy.Table: Quality of the fit (qfit and cfit) for each source.
+
+        NOTE:
+            qfit - the absolute value of the sum of the fit residuals divided by the fit flux.
+            cfit - the fit residual in the central pixel divided by the fit flux.
         """
         print('Calculating PSF magnitudes...')
 
@@ -276,7 +283,7 @@ class Source_Extractor():
         # Convert to magnitudes
         mag, magerr = img_flux_to_ab_mag(phot['flux_fit'], self.zero_pt_mag, fluxerr=phot['flux_err'])
 
-        return mag, magerr, phot['flags']
+        return mag, magerr, phot['flags'], phot[['qfit', 'cfit']]
 
     def get_sources_ra_dec(self) -> np.ndarray:
         """Get the RA and DEC of the detected self.sources."""
@@ -368,10 +375,12 @@ class Source_Extractor():
             data_table[f'{self.band}KronMagErr'] = kron_magerrs
             data_table[f'{self.band}KronCircleFlag'] = circle_flag
         if include_psf:
-            psf_mags, psf_magerrs, psf_flags = self.get_psf_mags(kron_mags)
+            psf_mags, psf_magerrs, psf_flags, fit_quality = self.get_psf_mags(kron_mags)
             data_table[f'{self.band}PSFMag'] = psf_mags
             data_table[f'{self.band}PSFMagErr'] = psf_magerrs
             data_table[f'{self.band}PSFFlags'] = psf_flags
+            data_table['qfit'] = fit_quality['qfit']
+            data_table['cfit'] = fit_quality['cfit']
         data_table[f'{self.band}_zero_pt_mag'] = self.zero_pt_mag
         data_table['ra'] = coords[:, 0]
         data_table['dec'] = coords[:, 1]
