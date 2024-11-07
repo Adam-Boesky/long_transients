@@ -18,10 +18,13 @@ class Tile():
             self,
             ra: float,
             dec: float,
-            bands: Iterable[str] = ['g', 'r', 'i'],
+            bands: Union[Iterable[str], str] = ['g', 'r', 'i'],
             data_dir: Optional[str] = None,
             parallel: bool = False,
         ):
+        """A class to represent a tile of the sky. This corresponds to one quadrant of a ZTF field."""
+        if isinstance(bands, str):
+            bands = [bands]
 
         # Get the ZTF catalog and coordinate range for the tile
         self.parallel = parallel

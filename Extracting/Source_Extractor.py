@@ -1,6 +1,6 @@
 import os
 import pathlib
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,15 +12,16 @@ from astropy.io import fits
 from astropy.table import Table, unique
 from astropy.wcs import WCS
 from astropy.nddata import NDData
+from astropy.visualization import simple_norm
 from mastcasjobs import MastCasJobs
 from matplotlib.patches import Ellipse
-from photutils.psf import IntegratedGaussianPRF, PSFPhotometry, EPSFBuilder, EPSFFitter, extract_stars
+from photutils.psf import PSFPhotometry, EPSFBuilder, EPSFFitter, EPSFStars, extract_stars
 from scipy.interpolate import NearestNDInterpolator
 
 try:
-    from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag
+    from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby
 except ModuleNotFoundError:
-    from .utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag
+    from .utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby
 
 
 class Source_Extractor():
@@ -33,9 +34,9 @@ class Source_Extractor():
 
         # Interpolate NaNs
         self.nan_mask = np.isnan(self.image_data)
-        notnan_inds = np.where(~self.nan_mask)
-        interp = NearestNDInterpolator(np.transpose(notnan_inds), self.image_data[notnan_inds])
-        self.image_data = interp(*np.indices(self.image_data.shape))
+        # notnan_inds = np.where(~self.nan_mask)
+        # interp = NearestNDInterpolator(np.transpose(notnan_inds), self.image_data[notnan_inds])
+        # self.image_data = interp(*np.indices(self.image_data.shape))
 
         # Hyperparameters (many of which were hand-tuned)
         self.gain = 5.8 * self.header['NFRAMES']  # gain from ZTF paper https://iopscience.iop.org/article/10.1088/1538-3873/aaecbe/pdf
@@ -59,6 +60,8 @@ class Source_Extractor():
         self._image_sub = None
         self._bkg = None
         self._point_source_coords = None
+        self._segmap = None
+        self._segid = None
 
         # The PSF photometry tool and the PSF model
         self.psfphot = None
@@ -78,6 +81,10 @@ class Source_Extractor():
             self.get_sources()
         return self._sources
 
+    @sources.setter
+    def sources(self, new_sources):
+        self._sources = new_sources
+
     @property
     def image_sub(self) -> np.ndarray:
         """Background-subtracted image data."""
@@ -85,40 +92,42 @@ class Source_Extractor():
             self._image_sub = self.image_data - self.bkg.back()
         return self._image_sub
 
-    def get_sources(self, get_segmap: bool = False) -> Union[Table, Tuple[Table, np.ndarray]]:
+    def _is_truncated(self, flag: Union[Iterable[int], int]) -> Iterable[bool]:
+        """Return if source is truncated based on sep flags."""
+        if isinstance(flag, int):
+            flag = np.array([flag])
+        return np.logical_or((flag & sep.APER_TRUNC) != 0, (flag & sep.OBJ_TRUNC) != 0)
+
+    def get_sources(self) -> Union[Table, Tuple[Table, np.ndarray]]:
         """
         Extract sources from the image using Source Extractor (SEP).
 
-        Parameters:
-            get_segmap (bool, optional): If True, return the segmentation map along with the sources. Default is False.
-
         Returns:
             1. An array of detected sources.
-            2. If `get_segmap` is True, the segmentation map.
 
         NOTE: Flag key is here: https://sextractor.readthedocs.io/en/latest/Flagging.html
         """
 
         # Extract self.sources
         print('Extracting sources...')
-        res = sep.extract(
+        self._sources, self._segmap = sep.extract(
             self.image_sub,
             thresh=self.thresh,
             err=self.bkg.globalrms,
             deblend_cont=self.deblend_cont,
             minarea=self.minarea,
-            segmentation_map=get_segmap,
+            segmentation_map=True,
             gain=self.gain,
             deblend_nthresh=self.deblend_nthresh,
             mask=self.nan_mask,                     # don't detect sources in NaN regions
         )
+        self._segid = np.arange(1, len(self._sources)+1, dtype=np.int32)  # arbitrary unique IDs for each source
 
         # Rename columns and set _sources
-        tab = res[0] if isinstance(res, tuple) else res
-        tab = rename_fields(tab, {'flag': 'sepExtractionFlag'})
-        self._sources = Table(tab)
+        self._sources = rename_fields(self._sources, {'flag': 'sepExtractionFlag'})
+        self._sources = Table(self._sources)
 
-        return res
+        return self._sources, self._segmap
 
     def set_sources_for_psf(self, pstarr_table: Table):
         """Set the sources for the PSF photometry. Will do so by making a cut on SNR > 10, psf mag - kron mag < 0.05,
@@ -190,7 +199,7 @@ class Source_Extractor():
         # Get Kron radius
         self.sources['theta'][self.sources['theta'] > np.pi / 2] -= np.pi
         self.sources['theta'][self.sources['theta'] < -1 * np.pi / 2] += np.pi / 2
-        kronrad, _ = sep.kron_radius(
+        kronrad, kr_flag = sep.kron_radius(
             self.image_sub,
             self.sources['x'],
             self.sources['y'],
@@ -198,12 +207,15 @@ class Source_Extractor():
             self.sources['b'],
             self.sources['theta'],
             6.0,
+            mask=self.nan_mask,
+            seg_id=self._segid,
         )
+        self.sources['KronRad'] = kronrad
 
         # Kron flux for sources with a radius smaller than 1.0 are circular
         r_min = 1.5  # minimum diameter = 1
         use_circle = kronrad * np.sqrt(self.sources['a'] * self.sources['b']) < r_min
-        ncflux, ncfluxerr, _ = sep.sum_ellipse(
+        ncflux, ncfluxerr, ncflag = sep.sum_ellipse(
             self.image_sub,
             self.sources['x'][~use_circle],
             self.sources['y'][~use_circle],
@@ -213,8 +225,11 @@ class Source_Extractor():
             2.5*kronrad[~use_circle],
             err=self.bkg.globalrms,
             gain=self.gain,
+            mask=self.nan_mask,
+            segmap=self._segmap,
+            seg_id=self._segid[~use_circle],
         )
-        cflux, cfluxerr, _ = sep.sum_circle(
+        cflux, cfluxerr, cflag = sep.sum_circle(
             self.image_sub,
             self.sources['x'][use_circle],
             self.sources['y'][use_circle],
@@ -222,15 +237,31 @@ class Source_Extractor():
             subpix=1,
             err=self.bkg.globalrms,
             gain=self.gain,
+            mask=self.nan_mask,
+            segmap=self._segmap,
+            seg_id=self._segid[use_circle],
         )
 
         # Concatenate the fluxes
         flux = np.zeros(len(self.sources)) * np.nan
         fluxerr = np.zeros(len(self.sources)) * np.nan
+        flag = np.zeros(len(self.sources)) * np.nan
         flux[~use_circle] = ncflux
         flux[use_circle] = cflux
         fluxerr[~use_circle] = ncfluxerr
         fluxerr[use_circle] = cfluxerr
+        flag[~use_circle] = ncflag
+        flag[use_circle] = cflag
+        flag = flag.astype(int)
+        flag |= kr_flag.astype(int)
+
+        # # Drop truncated sources
+        # trunc_mask = self._is_truncated(flag)
+        # self.sources = self.sources[~trunc_mask]
+        # flux = flux[~trunc_mask]
+        # fluxerr = fluxerr[~trunc_mask]
+        # use_circle = use_circle[~trunc_mask]
+        # flag = flag[~trunc_mask]
 
         # Add mag and magerrs
         mag, magerr = img_flux_to_ab_mag(flux, self.zero_pt_mag, fluxerr=fluxerr)
@@ -238,9 +269,13 @@ class Source_Extractor():
         # Make all the negative fluxes have mag -999.0
         mag[flux < 0] = -999.0
 
-        return mag, magerr, use_circle.astype(int)
+        return mag, magerr, use_circle.astype(int), flag
 
-    def get_psf_mags(self, kron_mags: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Table]:
+    def get_psf_mags(
+            self,
+            kron_mags: np.ndarray,
+            kron_flag: np.ndarray,
+        ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Perform PSF photometry on detected self.sources in the image.
 
@@ -256,12 +291,26 @@ class Source_Extractor():
         """
         print('Calculating PSF magnitudes...')
 
+        # Can't have NaN init mags
+        psf_fit_width = 5
+        nan_nearby_mask = np.array([
+            true_nearby(
+                y,
+                x,
+                radius=int(psf_fit_width / 2),
+                mask=self.nan_mask,
+            ) for x, y in zip(self.sources['x'], self.sources['y'])
+        ])
+        truncated_mask = self._is_truncated(kron_flag)
+        nan_init_flux_mask = np.isnan(kron_mags)
+        bad_src_mask = np.logical_or(np.logical_or(nan_nearby_mask, truncated_mask), nan_init_flux_mask)
+
         # Convert kron mags to fluxes
-        init_fluxes = img_ab_mag_to_flux(kron_mags, self.zero_pt_mag)
-        init_fluxes[kron_mags == -999.0] = 0.0
+        init_fluxes = img_ab_mag_to_flux(kron_mags[~bad_src_mask], self.zero_pt_mag)
+        init_fluxes[kron_mags[~bad_src_mask] == -999.0] = 0.0
 
         # Get the initial parameters for the PSF model
-        init_params = self.sources[['x', 'y']]
+        init_params = self.sources[~bad_src_mask][['x', 'y']]
         init_params['flux_init'] = init_fluxes
 
         # Fit the PSF model on a sample of just stars
@@ -272,18 +321,34 @@ class Source_Extractor():
             Table([self._point_source_coords], names=['skycoord']),
             size=self.psf_cutout_size,
         )
+        self.stars = EPSFStars([s for s in self.stars if not np.any(np.isnan(s.data))])  # drop cutouts with nans
         fitter = EPSFFitter(fit_boxsize=self.fit_boxsize)
         epsf_builder = EPSFBuilder(fitter=fitter)
-        self.epsf, _ = epsf_builder(self.stars)
+        self.epsf, _ = epsf_builder(self.stars) # self.epsf is an EPSFModel
 
         # Perform the PSF photometry with the fitted model
-        self.psfphot = PSFPhotometry(self.epsf, fit_shape=(5, 5))
-        phot = self.psfphot(self.image_sub, error=self.bkg.rms(), init_params=init_params)
+        self.psfphot = PSFPhotometry(self.epsf, fit_shape=psf_fit_width)
+        phot = self.psfphot(self.image_sub, error=self.bkg.rms(), init_params=init_params, mask=self.nan_mask)
+        phot_flags = phot['flags']
+        phot_cfit = phot['cfit']
+        phot_qfit = phot['qfit']
 
         # Convert to magnitudes
         mag, magerr = img_flux_to_ab_mag(phot['flux_fit'], self.zero_pt_mag, fluxerr=phot['flux_err'])
 
-        return mag, magerr, phot['flags'], phot[['qfit', 'cfit']]
+        # Put nans in for bad sources
+        mag_final = np.zeros(len(bad_src_mask)) * np.nan
+        magerr_final = np.zeros(len(bad_src_mask)) * np.nan
+        phot_flags_final = np.zeros(len(bad_src_mask)) * np.nan
+        phot_cfit_final = np.zeros(len(bad_src_mask)) * np.nan
+        phot_qfit_final = np.zeros(len(bad_src_mask)) * np.nan
+        mag_final[~bad_src_mask] = mag
+        magerr_final[~bad_src_mask] = magerr
+        phot_flags_final[~bad_src_mask] = phot_flags
+        phot_cfit_final[~bad_src_mask] = phot_cfit
+        phot_qfit_final[~bad_src_mask] = phot_qfit
+
+        return mag_final, magerr_final, phot_flags_final, phot_cfit_final, phot_qfit_final
 
     def get_sources_ra_dec(self) -> np.ndarray:
         """Get the RA and DEC of the detected self.sources."""
@@ -322,27 +387,35 @@ class Source_Extractor():
             self,
             show_sources: bool = True,
             show_source_shapes: bool = False,
+            image_is_subtracted: bool = False,
             fpath: Optional[str] = None,
             source_mask: Optional[np.ndarray] = None,
         ):
         """Plot the segmentation map of the image."""
         _, ax = plt.subplots(figsize=(15, 15))
-        segmap = self.get_sources(get_segmap=True)[1]
-        segmap = (segmap != 0).astype(float)
-        ax.imshow(segmap, cmap='gray')
+        if image_is_subtracted:
+            norm = simple_norm(self.image_sub, 'log', percent=99.0)
+            ax.imshow(self.image_sub, norm=norm, origin='lower', cmap='viridis')
+        else:
+            if self._segmap is None:
+                self.get_sources()
+            segmap = (self._segmap != 0).astype(float)
+            ax.imshow(segmap, cmap='gray')
         source_mask = np.ones(len(self.sources), dtype=bool) if source_mask is None else source_mask
-        sources = self.sources[source_mask]
         if show_source_shapes:
+            self.get_kron_mags()  # call so that kron rads are added to the sources
+            sources = self.sources.copy()[source_mask]
             for j in range(len(sources)):
                 e = Ellipse(xy=(sources['x'][j], sources['y'][j]),
-                            width=6*sources['a'][j],
-                            height=6*sources['b'][j],
+                            width=2.5*sources['KronRad'][j]*sources['a'][j],
+                            height=2.5*sources['KronRad'][j]*sources['b'][j],
                             angle=sources['theta'][j] * 180. / np.pi)
                 e.set_facecolor('none')
                 e.set_edgecolor('red')
                 ax.add_artist(e)
         if show_sources:
-            ax.scatter(sources['x'], sources['y'], color='k')
+            sources = self.sources[source_mask]
+            ax.scatter(sources['x'], sources['y'], color='blue')
         if fpath is not None:
             plt.savefig(fpath)
 
@@ -368,22 +441,27 @@ class Source_Extractor():
         coords = self.get_sources_ra_dec()
 
         # Add the magnitudes to the table
-        data_table = Table(self.sources)
-        if include_kron or include_psf:  # note that the kron mags are used when calculating the psf mags
-            kron_mags, kron_magerrs, circle_flag = self.get_kron_mags()
+        if include_kron or include_psf:  # kron mags are used when calculating the psf mags
+            kron_mags, kron_magerrs, circle_flag, kron_flag = self.get_kron_mags()
+            # kron_mags, kron_magerrs, kron_flag = self.get_kron_mags()
+            data_table = Table(self.sources)
             data_table[f'{self.band}KronMag'] = kron_mags
             data_table[f'{self.band}KronMagErr'] = kron_magerrs
             data_table[f'{self.band}KronCircleFlag'] = circle_flag
+            data_table[f'{self.band}KronFlag'] = kron_flag
         if include_psf:
-            psf_mags, psf_magerrs, psf_flags, fit_quality = self.get_psf_mags(kron_mags)
+            psf_mags, psf_magerrs, psf_flags, cfit, qfit = self.get_psf_mags(kron_mags, kron_flag)
             data_table[f'{self.band}PSFMag'] = psf_mags
             data_table[f'{self.band}PSFMagErr'] = psf_magerrs
             data_table[f'{self.band}PSFFlags'] = psf_flags
-            data_table['qfit'] = fit_quality['qfit']
-            data_table['cfit'] = fit_quality['cfit']
-        data_table[f'{self.band}_zero_pt_mag'] = self.zero_pt_mag
+            data_table['qfit'] = qfit
+            data_table['cfit'] = cfit
+
+        # Add some additional info
+        coords = self.get_sources_ra_dec()
         data_table['ra'] = coords[:, 0]
         data_table['dec'] = coords[:, 1]
+        data_table[f'{self.band}_zero_pt_mag'] = self.zero_pt_mag
 
         return data_table
 

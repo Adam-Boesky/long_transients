@@ -52,3 +52,12 @@ def get_data_path() -> str:
     if on_cluster():
         return '/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients'
     return '/Users/adamboesky/Research/long_transients/Data'
+
+def true_nearby(row: int, column: int, radius: int, mask: np.ndarray) -> bool:
+    return np.any(
+        mask[int(row - radius):int(row + radius + 1), int(column - radius):int(column + radius + 1)]
+    )
+
+def nan_nearby(row: int, column: int, radius: int, arr: np.ndarray) -> bool:
+    """Check if there are any NaN values in the nearby pixels."""
+    return true_nearby(row, column, radius, np.isnan(arr))

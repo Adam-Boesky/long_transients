@@ -12,14 +12,9 @@ from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 
 try:
-    from utils import get_data_path
+    from utils import get_data_path, true_nearby
 except ModuleNotFoundError:
-    from .utils import get_data_path
-
-
-def nan_nearby(row: int, column: int, radius: int, nan_mask: np.ndarray) -> bool:
-    """Check if there are any NaN values in the nearby pixels."""
-    return np.any(nan_mask[row - radius:row + radius + 1, column - radius:column + radius + 1])
+    from .utils import get_data_path, true_nearby
 
 
 def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs: WCS, max_sep: float = 1.0) -> Table:
@@ -119,7 +114,14 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     pstarr_xs = pstarr_pix_coords[0].round().astype(int)
     pstarr_ys = pstarr_pix_coords[1].round().astype(int)
     in_wcs = (pstarr_xs < ztf_nan_mask.shape[0]) & (pstarr_ys < ztf_nan_mask.shape[1])
-    is_nan_in_ztf = np.array([nan_nearby(x, y, 2, ztf_nan_mask) if b else True for x, y, b in zip(pstarr_xs, pstarr_ys, in_wcs)])
+    is_nan_in_ztf = np.array([
+        true_nearby(
+            row=y,
+            column=x,
+            radius=5,
+            mask=ztf_nan_mask,
+        ) if b else True for x, y, b in zip(pstarr_xs, pstarr_ys, in_wcs)
+    ])
     combined_table['Catalog_Flag'][in_pstarr_mask][is_nan_in_ztf] = 3
 
     # Map the remaining clean sources
