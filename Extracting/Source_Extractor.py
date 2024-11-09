@@ -25,7 +25,7 @@ except ModuleNotFoundError:
 
 
 class Source_Extractor():
-    def __init__(self, fits_fpath: str, band: Optional[str] = None):
+    def __init__(self, fits_fpath: str, band: Optional[str] = None, maglimit: Optional[float] = None):
         self.fits_fpath = fits_fpath
         hdul = fits.open(self.fits_fpath)
         self.image_data = hdul[0].data.byteswap().newbyteorder()
@@ -45,6 +45,7 @@ class Source_Extractor():
         except KeyError:
             self.r_fwhm = self.header['SEEING']
         self.zero_pt_mag = self.header['MAGZP']
+        self.maglimit = maglimit
         self.deblend_cont = 0.00075
         self.minarea = 5
         self.deblend_nthresh = 32
@@ -182,7 +183,7 @@ class Source_Extractor():
         # Convert to x and y coords, and store
         self._point_source_coords = SkyCoord(pstarr_table['ra'], pstarr_table['dec'], unit='deg')
 
-    def get_kron_mags(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def get_kron_mags(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Perform photometry on detected self.sources in the image.
 
@@ -190,6 +191,7 @@ class Source_Extractor():
             np.ndarray: AB Kron magnitudes.
             np.ndarray: AB Kron magnitude errors.
             np.ndarray: Flag indicating whether the used Kron apeture is circular.
+            np.ndarray: Sep photometry flags.
 
         NOTE: Sometimes the flux is calculated to be negative for sources because background subtraction makes faint
               sources ever so slightly negative. In these cases, we set the magnitude to -999.0.
@@ -255,14 +257,6 @@ class Source_Extractor():
         flag = flag.astype(int)
         flag |= kr_flag.astype(int)
 
-        # # Drop truncated sources
-        # trunc_mask = self._is_truncated(flag)
-        # self.sources = self.sources[~trunc_mask]
-        # flux = flux[~trunc_mask]
-        # fluxerr = fluxerr[~trunc_mask]
-        # use_circle = use_circle[~trunc_mask]
-        # flag = flag[~trunc_mask]
-
         # Add mag and magerrs
         mag, magerr = img_flux_to_ab_mag(flux, self.zero_pt_mag, fluxerr=fluxerr)
 
@@ -304,6 +298,11 @@ class Source_Extractor():
         truncated_mask = self._is_truncated(kron_flag)
         nan_init_flux_mask = np.isnan(kron_mags)
         bad_src_mask = np.logical_or(np.logical_or(nan_nearby_mask, truncated_mask), nan_init_flux_mask)
+        print('Info for EPSF fitting:')
+        print(f'\tNumber of sources: {len(self.sources)}')
+        print(f'\tNumber of sources with NaN nearby: {np.sum(nan_nearby_mask)}')
+        print(f'\tNumber of sources with truncated: {np.sum(truncated_mask)}')
+        print(f'\tNumber of sources with NaN init flux: {np.sum(nan_init_flux_mask)}')
 
         # Convert kron mags to fluxes
         init_fluxes = img_ab_mag_to_flux(kron_mags[~bad_src_mask], self.zero_pt_mag)
@@ -462,6 +461,8 @@ class Source_Extractor():
         data_table['ra'] = coords[:, 0]
         data_table['dec'] = coords[:, 1]
         data_table[f'{self.band}_zero_pt_mag'] = self.zero_pt_mag
+        maglim = self.maglimit if self.maglimit is not None else np.nan
+        data_table[f'{self.band}_mag_limit'] = maglim
 
         return data_table
 

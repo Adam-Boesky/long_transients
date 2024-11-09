@@ -170,7 +170,11 @@ def merge_field(field_name: str, field_quad_dirs: List[str], field_subdir: str =
     for band in BANDS:
         tab = ascii.read(os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv'))
         for fqdir in field_quad_dirs[1:]:
-            tab = vstack((tab, ascii.read(os.path.join(CATALOG_DIR, fqdir, f'{band}_associated.ecsv'))))
+            fqpath = os.path.join(CATALOG_DIR, fqdir, f'{band}_associated.ecsv')
+            if os.path.exists(fqpath):
+                tab = vstack((tab, ascii.read(fqpath)))
+            else:
+                print(f'Warning: {fqpath} does not exist. Skipping...')
         tab.write(
             os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_{band}.ecsv'),
             format='ascii.ecsv',

@@ -36,6 +36,9 @@ class Catalog():
             self.rename_columns()
         return self._data
 
+    def get_data(self) -> Table:
+        raise NotImplementedError('This method must be implemented in subclass.')
+
     def rename_columns(self):
         """Function used to rename the columns of the catalog to some common values."""
         for old_col, new_col in self.column_map.items():
@@ -164,7 +167,11 @@ class ZTF_Catalog(Catalog):
         for band in self.bands:
             fname, self.image_metadata[band] = self.download_image(ra, dec, band=band)
             if fname is not None:
-                self.sextractors[band] = Source_Extractor(fname, band=band)
+                self.sextractors[band] = Source_Extractor(
+                    fname,
+                    band=band,
+                    maglimit=self.image_metadata[band]['limiting_mag'],
+                )
         if len(self.sextractors) == 0:
             raise ValueError(f"No {', '.join(catalog_bands)} found for the specified RA and DEC.")
         self.ra_range, self.dec_range = self.sextractors[self.bands[0]].get_coord_range()
@@ -208,6 +215,9 @@ class ZTF_Catalog(Catalog):
         if len(metadata_table) == 0:
             print(f"No {band} images found for the specified RA and DEC.")
             return None, None
+        
+        # Get the limiting magnitude
+        limiting_mag = metadata_table['maglimit'].iloc[0]
 
         # Download the image
         qid = metadata_table['qid'].iloc[0]
@@ -216,7 +226,13 @@ class ZTF_Catalog(Catalog):
         paddedfield = str(field).zfill(6)
         fieldprefix = paddedfield[:6 - len(str(field))]
         image_url = f'https://irsa.ipac.caltech.edu/ibe/data/ztf/products/deep/{fieldprefix}/field{paddedfield}/{filtercode}/ccd{paddedccdid}/q{qid}/ztf_{paddedfield}_{filtercode}_c{paddedccdid}_q{qid}_refimg.fits'
-        metadata_dict = {'field': paddedfield, 'ccid': paddedccdid, 'qid': qid, 'filtercode': filtercode}
+        metadata_dict = {
+            'field': paddedfield,
+            'ccid': paddedccdid,
+            'qid': qid,
+            'filtercode': filtercode,
+            'limiting_mag': limiting_mag,
+        }
 
         print(f"Downloading image from {image_url}")
 
@@ -225,19 +241,20 @@ class ZTF_Catalog(Catalog):
         if os.path.exists(file_path):
             print(f"Image already downloaded and saved at {file_path}")
             return file_path, metadata_dict
-        response = requests.get(image_url, auth=(username, password), stream=True)
-        if response.status_code == 200:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            with open(file_path, 'wb') as file:
-                for chunk in response.iter_content(chunk_size=1024):
-                    if chunk:
-                        file.write(chunk)
-            print(f"Image downloaded and saved at {file_path}")
-        else:
-            print(f"Failed to download image from {image_url}. Status code: {response.status_code}")
 
-        return file_path, metadata_dict
+        # Try downloading 3 times
+        for _ in range(3):
+            response = requests.get(image_url, auth=(username, password), stream=True)
+            if response.status_code == 200:
+                with open(file_path, 'wb') as file:
+                    for chunk in response.iter_content(chunk_size=1024):
+                        if chunk:
+                            file.write(chunk)
+                print(f"Image downloaded and saved at {file_path}")
+                return file_path, metadata_dict
+
+        print(f"Failed to download image from {image_url}. Status code: {response.status_code}")
+        return None, None
 
 
 def associate_tables_by_coordinates(table1: Table, table2: Table, max_sep: float = 2.0, prefix1: str = '', prefix2: str = '') -> Table:
