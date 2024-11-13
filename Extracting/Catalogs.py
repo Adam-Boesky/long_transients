@@ -1,4 +1,5 @@
 """Objects that get the information from astrophysical catalogs."""
+from PIL import Image
 import atexit
 import os
 import tempfile
@@ -8,9 +9,10 @@ from typing import Dict, Iterable, Optional, Tuple
 import numpy as np
 import pandas as pd
 import requests
+from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from astropy.table import Table, join, vstack
-from astropy.io import ascii
+from astropy.io import ascii, fits
 from mastcasjobs import MastCasJobs
 
 try:
@@ -19,6 +21,8 @@ try:
 except ModuleNotFoundError:
     from .Source_Extractor import Source_Extractor
     from .utils import get_credentials
+
+ZTF_CUTOUT_HALFWIDTH = 0.8888889 / 2
 
 
 class Catalog():
@@ -203,15 +207,16 @@ class ZTF_Catalog(Catalog):
         username, password = get_credentials('irsa_login.txt')
 
         # Get a metadata table for the specified RA and DEC
-        cutout_halfwidth = 0.8888889 / 2  # 1/2 of the quadrant width in fields
         filtercode = f'z{band}'
-        ra_min, ra_max = ra - cutout_halfwidth, ra + cutout_halfwidth
-        dec_min, dec_max = dec - cutout_halfwidth, dec + cutout_halfwidth
-        metadata_url = f"https://irsa.ipac.caltech.edu/ibe/search/ztf/products/deep?WHERE=ra>{ra_min}+AND+ra<{ra_max}+AND+dec>{dec_min}+AND+dec<{dec_max}+AND+filtercode='{filtercode}'"
-        print(f"Querying metadata from {metadata_url}")
-        metadata_response = requests.get(metadata_url, auth=(username, password), params={'ct': 'csv'})
-        metadata_table = pd.read_csv(StringIO(metadata_response.content.decode("utf-8")))
-        metadata_table.sort_values(by=['nframes'], ascending=False, inplace=True)
+        ra_min, ra_max = ra - ZTF_CUTOUT_HALFWIDTH, ra + ZTF_CUTOUT_HALFWIDTH
+        dec_min, dec_max = dec - ZTF_CUTOUT_HALFWIDTH, dec + ZTF_CUTOUT_HALFWIDTH
+        metadata_table = get_ztf_metadata(
+            ra_range=(ra_min, ra_max),
+            dec_range=(dec_min, dec_max),
+            filter=filtercode,
+            username=username,
+            password=password,
+        )
         if len(metadata_table) == 0:
             print(f"No {band} images found for the specified RA and DEC.")
             return None, None
@@ -334,3 +339,132 @@ def associate_tables_by_coordinates(table1: Table, table2: Table, max_sep: float
     combined_table = combined_table[['ra', 'dec'] + cols]
 
     return combined_table
+
+
+def get_ztf_metadata(
+        ra_range: Tuple,
+        dec_range: Tuple,
+        filter: str,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> pd.DataFrame:
+    """Query the ZTF metadata for a specific RA and DEC range."""
+    # Set up the query
+    if username is None or password is None:
+        username, password = get_credentials('irsa_login.txt')
+
+    # Make sure filtercode is setup correctly
+    if filter[0] != 'z' or len(filter) == 1:
+        filter = f'z{filter}'
+
+    metadata_url = f"https://irsa.ipac.caltech.edu/ibe/search/ztf/products/deep?WHERE=ra>{ra_range[0]}+AND+ra<{ra_range[1]}+AND+dec>{dec_range[0]}+AND+dec<{dec_range[1]}+AND+filtercode='{filter}'"
+    print(f"Querying metadata from {metadata_url}")
+
+    # Query
+    metadata_response = requests.get(metadata_url, auth=(username, password), params={'ct': 'csv'})
+    metadata_table = pd.read_csv(StringIO(metadata_response.content.decode("utf-8")))
+    metadata_table.sort_values(by=['nframes'], ascending=False, inplace=True)
+
+    return metadata_table
+
+
+### THE FOLLOWING FUNCTIONS ARE TAKEN FROM https://ps1images.stsci.edu/ps1image.html ###
+def getimages(ra,dec,filters="grizy"):
+    
+    """Query ps1filenames.py service to get a list of images
+    
+    ra, dec = position in degrees
+    size = image size in pixels (0.25 arcsec/pixel)
+    filters = string with filters to include
+    Returns a table with the results
+    """
+    
+    service = "https://ps1images.stsci.edu/cgi-bin/ps1filenames.py"
+    url = f"{service}?ra={ra}&dec={dec}&filters={filters}"
+    table = Table.read(url, format='ascii')
+    return table
+
+
+def geturl(ra, dec, size=240, output_size=None, filters="grizy", format="jpg", color=False):
+    
+    """Get URL for images in the table
+    
+    ra, dec = position in degrees
+    size = extracted image size in pixels (0.25 arcsec/pixel)
+    output_size = output (display) image size in pixels (default = size).
+                  output_size has no effect for fits format images.
+    filters = string with filters to include
+    format = data format (options are "jpg", "png" or "fits")
+    color = if True, creates a color image (only for jpg or png format).
+            Default is return a list of URLs for single-filter grayscale images.
+    Returns a string with the URL
+    """
+    
+    if color and format == "fits":
+        raise ValueError("color images are available only for jpg or png formats")
+    if format not in ("jpg","png","fits"):
+        raise ValueError("format must be one of jpg, png, fits")
+    table = getimages(ra,dec,filters=filters)
+    url = (f"https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?"
+           f"ra={ra}&dec={dec}&size={size}&format={format}&type=stack")
+    if output_size:
+        url = url + "&output_size={}".format(output_size)
+    # sort filters from red to blue
+    flist = ["yzirg".find(x) for x in table['filter']]
+    table = table[np.argsort(flist)]
+    if color:
+        if len(table) > 3:
+            # pick 3 filters
+            table = table[[0,len(table)//2,len(table)-1]]
+        for i, param in enumerate(["red","green","blue"]):
+            url = url + "&{}={}".format(param,table['filename'][i])
+    else:
+        urlbase = url + "&red="
+        url = []
+        for filename in table['filename']:
+            url.append(urlbase+filename)
+    return url
+
+
+def get_pstarr_cutout(ra, dec, size=240, output_size=None, filter="g", format="fits"):
+    """Get grayscale image at a sky position
+
+    ra, dec = position in degrees
+    size = extracted image size in pixels (0.25 arcsec/pixel)
+    output_size = output (display) image size in pixels (default = size).
+                  output_size has no effect for fits format images.
+    filter = string with filter to extract (one of grizy)
+    format = data format
+    Returns the image
+    """
+    if filter not in list("grizy"):
+        raise ValueError("filter must be one of grizy")
+    size = int(size)
+    url = geturl(ra,dec,size=size,filters=filter,output_size=output_size,format=format)[0]
+    print(f'Downloading image from {url}')
+    flux = None
+    for _ in range(3):
+        try:
+            # Get the data
+            fh = fits.open(url)
+            flux = fh[0].data
+
+            # Scale back to flux
+            # source = https://outerspace.stsci.edu/display/PANSTARRS/PS1+Image+Cutout+Service#PS1ImageCutoutService-ImportantFITSimageformat,WCS,andflux-scalingnotes
+            if 'BSOFTEN' in fh[0].header and 'BOFFSET' in fh[0].header:
+                bzero   =   fh[0].header['BZERO'] # Scaling: TRUE = BZERO + BSCALE * DISK
+                bscale  =   fh[0].header['BSCALE'] # Scaling: TRUE = BZERO + BSCALE * DISK
+                bsoften =   fh[0].header['BSOFTEN'] # Scaling: LINEAR = 2 * BSOFTEN * sinh(TRUE/a)
+                boffset =   fh[0].header['BOFFSET'] # Scaling: UNCOMP = BOFFSET + LINEAR
+                v = bzero + bscale * flux
+                a = 2.5/np.log(10)
+                x = v/a
+                flux = boffset + bsoften * (np.exp(x) - np.exp(-x))
+            
+            # Load the WCS
+            wcs = WCS(fh[0].header)
+
+        except Exception as e:
+            print(f'Pan-STARRS fits url query failed! Exception: {e}')
+
+    return flux, wcs

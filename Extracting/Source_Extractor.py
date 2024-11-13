@@ -389,6 +389,7 @@ class Source_Extractor():
             image_is_subtracted: bool = False,
             fpath: Optional[str] = None,
             source_mask: Optional[np.ndarray] = None,
+            color='red',
         ):
         """Plot the segmentation map of the image."""
         _, ax = plt.subplots(figsize=(15, 15))
@@ -410,11 +411,11 @@ class Source_Extractor():
                             height=2.5*sources['KronRad'][j]*sources['b'][j],
                             angle=sources['theta'][j] * 180. / np.pi)
                 e.set_facecolor('none')
-                e.set_edgecolor('red')
+                e.set_edgecolor(color)
                 ax.add_artist(e)
         if show_sources:
             sources = self.sources[source_mask]
-            ax.scatter(sources['x'], sources['y'], color='blue')
+            ax.scatter(sources['x'], sources['y'], color=color)
         if fpath is not None:
             plt.savefig(fpath)
 

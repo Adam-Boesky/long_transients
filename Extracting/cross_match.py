@@ -77,8 +77,8 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     for col in table1.colnames:
         unmatched_table2[col] = float('nan')
     associated_table['Catalog'] = 'Both'
-    unmatched_table1['Catalog'] = prefix1 if prefix1 != '' else 'table1'
-    unmatched_table2['Catalog'] = prefix2 if prefix2 != '' else 'table2'
+    unmatched_table1['Catalog'] = prefix1
+    unmatched_table2['Catalog'] = prefix2
     combined_table = vstack([associated_table, unmatched_table1, unmatched_table2])
 
     # Identify rows where 'association_separation_arcsec' should be NaN
@@ -134,6 +134,12 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     combined_table['y'] = combined_table['ZTF_y']
     combined_table['x'][in_pstarr_mask] = pstarr_xs
     combined_table['y'][in_pstarr_mask] = pstarr_ys
+
+    # Make sure that the entire maglimit column is not NaN
+    for band in ('g', 'r', 'i'):
+        k = f'ZTF_{band}_mag_limit'
+        if k in combined_table.colnames:
+            combined_table[k] = combined_table[k][~np.isnan(combined_table[k])][0]
 
     return combined_table
 
