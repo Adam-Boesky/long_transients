@@ -44,7 +44,7 @@ class Tile():
         self.ra_range, self.dec_range = self.ztf_catalogs[self.bands[0]].get_coordinate_range()
 
         # Get the PanSTARRS catalog for the tile
-        self.pstar_catalog = PSTARR_Catalog(self.ra_range, self.dec_range, prefetch=parallel)
+        self.pstar_catalog = PSTARR_Catalog(self.ra_range, self.dec_range, prefetch=parallel, catalog_bands=self.bands)
 
         # The crux of this class will be this massive Astropy table
         self._data_dicts = None

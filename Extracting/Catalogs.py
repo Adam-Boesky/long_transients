@@ -57,12 +57,19 @@ class Catalog():
 
 
 class PSTARR_Catalog(Catalog):
-    def __init__(self, ra_range: Tuple[float], dec_range: Tuple[float], prefetch: bool = False):
+    def __init__(
+            self,
+            ra_range: Tuple[float],
+            dec_range: Tuple[float],
+            prefetch: bool = False,
+            catalog_bands: Iterable[str] = ('g', 'r', 'i'),
+        ):
         super().__init__()
         self.catalog_name = 'PanSTARR'
         self.ra_range = ra_range    # (ra_min, ra_max) [deg]
         self.dec_range = dec_range  # (dec_min, dec_max) [deg]
         self.column_map = {'objID': 'PanSTARR_ID', 'raMean': 'ra', 'decMean': 'dec'}
+        self.bands = catalog_bands
 
         assert (self.ra_range[1] > self.ra_range[0]) and (self.dec_range[1] > self.dec_range[0]), "The ranges must be \
             of the form (min, max) but are (max, min)."
@@ -93,6 +100,16 @@ class PSTARR_Catalog(Catalog):
             final_table = jobs.get_table(table_name, format='csv')
         except ValueError:
 
+            # Get the keys for the bands we want
+            band_mags_str = ''
+            for band in self.bands:
+                band_mags_str += (
+                    f'\t\tm.{band}KronMag, m.{band}KronMagErr,\n'
+                    f'\t\tm.{band}ApMag, m.{band}ApMagErr,\n'
+                    f'\t\tm.{band}PSFMag, m.{band}PSFMagErr,\n'
+                    f'\t\ta.{band}psfLikelihood, m.{band}infoFlag2,\n'
+                )
+
             # Execute the query and wait for it to complete
             # note that this query gives us a 0.003 padding in RA and DEC to ensure we get all sources
             print(f"Querying Pan-STARRS DR2 for the RA and DEC range in the ZTF image.")
@@ -100,14 +117,7 @@ class PSTARR_Catalog(Catalog):
 WITH ranked AS (
     SELECT
         o.objID, o.raMean, o.decMean,
-        m.gKronMag, m.rKronMag, m.iKronMag,
-        m.gKronMagErr, m.rKronMagErr, m.iKronMagErr,
-        m.gApMag, m.rApMag, m.iApMag,
-        m.gApMagErr, m.rApMagErr, m.iApMagErr,
-        m.gPSFMag, m.rPSFMag, m.iPSFMag,
-        m.gPSFMagErr, m.rPSFMagErr, m.iPSFMagErr,
-        a.gpsfLikelihood, a.rpsfLikelihood, a.ipsfLikelihood,
-        m.primaryDetection,
+{band_mags_str}\t\tm.primaryDetection,
         ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) as rn into mydb.{table_name}
     FROM ObjectThin o
     INNER JOIN StackObjectThin m ON o.objID = m.objID
@@ -128,6 +138,15 @@ WHERE rn = 1
         # Drop residual row number column
         if 'rn' in final_table.columns: final_table.remove_column('rn')
 
+        # Drop rows that are made using forced photometry
+        not_forced_mask = np.ones(len(final_table), dtype=bool)
+        for band in self.bands:
+            not_forced_mask = np.logical_and(not_forced_mask, (final_table[f'{band}infoFlag2'] & 4) == 0)
+        final_table = final_table[not_forced_mask]
+
+        # Get the number of duplicate 'objID' values in final_table
+        duplicate_objid_count = len(final_table) - len(np.unique(final_table['objID']))
+        print(f"Number of duplicate 'objID' values: {duplicate_objid_count}")
 
         # # # Take the primary detections for each object, and if there are none, take the first detection
         # # final_table = None
@@ -152,7 +171,13 @@ WHERE rn = 1
 
 
 class ZTF_Catalog(Catalog):
-    def __init__(self, ra: float, dec: float, data_dir: Optional[str] = None, catalog_bands: Optional[Iterable[str]] = None):
+    def __init__(
+            self,
+            ra: float,
+            dec: float,
+            data_dir: Optional[str] = None,
+            catalog_bands: Iterable[str] = ('g', 'r', 'i'),
+        ):
         super().__init__()
         self.catalog_name = 'ZTF'
         self.column_map = {'objID': 'PanSTARR_ID', 'raMean': 'ra', 'decMean': 'dec'}
@@ -167,7 +192,7 @@ class ZTF_Catalog(Catalog):
             if not os.path.exists(data_dir):
                 raise ValueError(f"Data directory {data_dir} does not exist.")
             self.data_dirpath = data_dir
-        self.bands = catalog_bands if catalog_bands is not None else ('g', 'r', 'i')
+        self.bands = catalog_bands
         for band in self.bands:
             fname, self.image_metadata[band] = self.download_image(ra, dec, band=band)
             if fname is not None:
@@ -230,7 +255,9 @@ class ZTF_Catalog(Catalog):
         paddedccdid = str(metadata_table['ccdid'].iloc[0]).zfill(2)
         paddedfield = str(field).zfill(6)
         fieldprefix = paddedfield[:6 - len(str(field))]
-        image_url = f'https://irsa.ipac.caltech.edu/ibe/data/ztf/products/deep/{fieldprefix}/field{paddedfield}/{filtercode}/ccd{paddedccdid}/q{qid}/ztf_{paddedfield}_{filtercode}_c{paddedccdid}_q{qid}_refimg.fits'
+        image_url = (f'https://irsa.ipac.caltech.edu/ibe/data/ztf/products/deep/{fieldprefix}/field{paddedfield}/'
+                     '{filtercode}/ccd{paddedccdid}/q{qid}/ztf_{paddedfield}_{filtercode}_c{paddedccdid}'
+                     '_q{qid}_refimg.fits')
         metadata_dict = {
             'field': paddedfield,
             'ccid': paddedccdid,
@@ -262,7 +289,13 @@ class ZTF_Catalog(Catalog):
         return None, None
 
 
-def associate_tables_by_coordinates(table1: Table, table2: Table, max_sep: float = 2.0, prefix1: str = '', prefix2: str = '') -> Table:
+def associate_tables_by_coordinates(
+        table1: Table,
+        table2: Table,
+        max_sep: float = 2.0,
+        prefix1: str = '',
+        prefix2: str = '',
+    ) -> Table:
     """
     Associate rows of two Astropy tables by ensuring that the objects are within a specified separation (in arcseconds).
 

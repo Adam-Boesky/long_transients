@@ -259,7 +259,7 @@ class Source():
         # Properties
         self._field_catalogs = None
         self._data = None
-        self._images = None
+        self._postage_stamps = None
 
     @property
     def field_catalogs(self) -> dict[str, Table]:
@@ -284,6 +284,7 @@ class Source():
     def data(self) -> Table:
         if self._data is None:
 
+            # TODO: URGENT SOMEHOW THIS IS BROKEN **** DOESN'T GET THE RIGHT MAGS
             # Set up an empty table to fill in
             unique_colnames = []
             for tab in self.field_catalogs.values():
@@ -321,6 +322,11 @@ class Source():
         return self._data
 
     @property
-    def images(self) -> Table:
-        # Make a ZTF catalog for the object. This will be used largely for the image access
-        ztf_catalogs = ZTF_Catalog(self.ra, self.dec, catalog_bands=bands)
+    def postage_stamps(self) -> Dict[str, Postage_Stamp]:
+        if self._postage_stamps is None:
+            self._postage_stamps = {
+                'ZTF': ZTF_Postage_Stamp(self.ra, self.dec, bands=self.bands),
+                'PSTARR': PSTARR_Postage_Stamp(self.ra, self.dec, bands=self.bands),
+            }
+
+        return self._postage_stamps

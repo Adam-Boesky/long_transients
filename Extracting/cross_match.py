@@ -86,8 +86,8 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     combined_table['association_separation_arcsec'][nan_mask] = float('nan')
 
     # Reorder combined_table so that 'ra' and 'dec' are the first two columns
-    combined_table['ra'] = (combined_table['ZTF_ra'] + combined_table['PSTARR_ra']) / 2
-    combined_table['dec'] = (combined_table['ZTF_dec'] + combined_table['PSTARR_dec']) / 2
+    combined_table['ra'] = np.nanmean((combined_table['ZTF_ra'], combined_table['PSTARR_ra']))
+    combined_table['dec'] = np.nanmean((combined_table['ZTF_dec'], combined_table['PSTARR_dec']))
     cols = combined_table.colnames
     cols.remove('ra')
     cols.remove('dec')
