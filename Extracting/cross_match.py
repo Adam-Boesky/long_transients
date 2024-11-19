@@ -107,7 +107,11 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     pstarr_coords = SkyCoord(ra=combined_table[in_pstarr_mask]['PSTARR_ra'], dec=combined_table[in_pstarr_mask]['PSTARR_dec'], unit='deg')
     ztf_coords = SkyCoord(ra=combined_table[in_ztf_mask]['ZTF_dec'], dec=combined_table[in_ztf_mask]['ZTF_dec'], unit='deg')
     _, sep_to_other_sources, _ = match_coordinates_sky(ztf_coords, pstarr_coords)
-    combined_table['Catalog_Flag'][in_ztf_mask][sep_to_other_sources.arcminute > 1.0] = 3
+    indices_in_ztf = np.where(in_ztf_mask)[0]
+    sep_condition = sep_to_other_sources.arcminute > 1.0  # Boolean array of length M
+    indices_sep_condition = np.where(sep_condition)[0]
+    original_indices = indices_in_ztf[indices_sep_condition]
+    combined_table['Catalog_Flag'][original_indices] = 3
 
     # Check if nan in ZTF
     pstarr_pix_coords = wcs.world_to_pixel(pstarr_coords)
@@ -122,7 +126,10 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
             mask=ztf_nan_mask,
         ) if b else True for x, y, b in zip(pstarr_xs, pstarr_ys, in_wcs)
     ])
-    combined_table['Catalog_Flag'][in_pstarr_mask][is_nan_in_ztf] = 3
+    indices_in_pstarr = np.where(in_pstarr_mask)[0]
+    indices_is_nan_in_ztf = np.where(is_nan_in_ztf)[0]
+    original_indices = indices_in_pstarr[indices_is_nan_in_ztf]
+    combined_table['Catalog_Flag'][original_indices] = 3
 
     # Map the remaining clean sources
     combined_table['Catalog_Flag'][combined_table['Catalog_Flag'] == 'ZTF'] = 1
@@ -134,7 +141,6 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     combined_table['y'] = combined_table['ZTF_y']
     combined_table['x'][in_pstarr_mask] = pstarr_xs
     combined_table['y'][in_pstarr_mask] = pstarr_ys
-
     # Make sure that the entire maglimit column is not NaN
     for band in ('g', 'r', 'i'):
         k = f'ZTF_{band}_mag_limit'
@@ -252,7 +258,7 @@ def cross_match():
         default='gri',
         help='The photometric bands to store for.'
     )
-    
+
     args = parser.parse_args()
 
     # Set up

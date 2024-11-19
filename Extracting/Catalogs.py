@@ -98,74 +98,90 @@ class PSTARR_Catalog(Catalog):
         # If the table is there, grab it. Else, submit the query and then grab it
         try:
             final_table = jobs.get_table(table_name, format='csv')
+            print('Retrieved existing PanSTARRS from MyDB!')
         except ValueError:
-
-            # Get the keys for the bands we want
-            band_mags_str = ''
+            # Build the SELECT clause for the main query
+            query = 'WITH'
             for band in self.bands:
-                band_mags_str += (
-                    f'\t\tm.{band}KronMag, m.{band}KronMagErr,\n'
-                    f'\t\tm.{band}ApMag, m.{band}ApMagErr,\n'
-                    f'\t\tm.{band}PSFMag, m.{band}PSFMagErr,\n'
-                    f'\t\ta.{band}psfLikelihood, m.{band}infoFlag2,\n'
-                )
-
-            # Execute the query and wait for it to complete
-            # note that this query gives us a 0.003 padding in RA and DEC to ensure we get all sources
-            print(f"Querying Pan-STARRS DR2 for the RA and DEC range in the ZTF image.")
-            query = f"""
-WITH ranked AS (
+                query += f"""
+    {band}_band AS (
+        SELECT
+            o.objID,
+            o.raMean,
+            o.decMean,
+            m.{band}KronMag,
+            m.{band}KronMagErr,
+            m.{band}PSFMag,
+            m.{band}PSFMagErr,
+            a.{band}psfLikelihood,
+            m.{band}infoFlag2,
+            m.primaryDetection,
+            ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) AS rn
+        FROM ObjectThin o
+        INNER JOIN StackObjectThin m ON o.objID = m.objID
+        INNER JOIN StackObjectAttributes a ON o.objID = a.objID
+        WHERE (m.{band}infoFlag2 & 4) = 0
+        AND o.raMean BETWEEN {self.ra_range[0] - 0.003} AND {self.ra_range[1] + 0.003}
+            AND o.decMean BETWEEN {self.dec_range[0] - 0.003} AND {self.dec_range[1] + 0.003}
+        AND (o.nStackDetections > 0 OR o.nDetections > 1)
+    ),"""
+            query += '\n\n'
+            for band in self.bands:
+                query += f"""{band}_table AS (
+        SELECT * FROM {band}_band WHERE rn = 1
+    ),
+    """
+            query = query[:-1]
+            query += '\n\n\t\tobj_list AS ('
+            for band in self.bands:
+                query += f"""
+    SELECT objID FROM {band}_table
+        """
+                if band != self.bands[-1]:
+                    query += 'UNION'
+            query += ')'
+            columns = [f"{band}_table.raMean" for band in self.bands]
+            if len(columns) == 0:
+                ra_coalesce_string = columns[0]
+            else:
+                ra_coalesce_string = f"COALESCE({', '.join(columns)}) AS raMean"
+            columns = [f"{band}_table.decMean" for band in self.bands]
+            if len(columns) == 0:
+                dec_coalesce_string = columns[0]
+            else:
+                dec_coalesce_string = f"COALESCE({', '.join(columns)}) AS decMean"
+            query += f"""\n
     SELECT
-        o.objID, o.raMean, o.decMean,
-{band_mags_str}\t\tm.primaryDetection,
-        ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) as rn into mydb.{table_name}
-    FROM ObjectThin o
-    INNER JOIN StackObjectThin m ON o.objID = m.objID
-    INNER JOIN StackObjectAttributes a ON o.objID = a.objID
-    WHERE o.raMean BETWEEN {self.ra_range[0] - 0.003} AND {self.ra_range[1] + 0.003}
-    AND o.decMean BETWEEN {self.dec_range[0] - 0.003} AND {self.dec_range[1] + 0.003}
-    AND (o.nStackDetections > 0 OR o.nDetections > 1)
-)
-SELECT * FROM ranked
-WHERE rn = 1
+        obj_list.objID,
+        {ra_coalesce_string},
+        {dec_coalesce_string},"""
+            for band in self.bands:
+                query += f"""
+        {band}_table.{band}KronMag,
+        {band}_table.{band}KronMagErr,
+        {band}_table.{band}PSFMag,
+        {band}_table.{band}PSFMagErr,
+        {band}_table.{band}psfLikelihood,
+        {band}_table.{band}infoFlag2,"""
+            query = query[:-1]
+            join_strings = [f"LEFT JOIN {band}_table ON obj_list.objID = {band}_table.objID" for band in self.bands]
+            query += f"""
+        INTO mydb.{table_name}
+        FROM obj_list
+        {'\n'.join(join_strings)};
             """
-            jobid = jobs.submit(query, task_name=f"PanSTARRS_DR2_RA_DEC_Query")
+            # Print the generated query for debugging
+            print(query)
+
+            # Submit the query and monitor it
+            jobid = jobs.submit(query, task_name="PanSTARRS_DR2_TILE_QUERY")
             jobs.monitor(jobid)
 
-            # Get the results of the query
+            # Retrieve the results
             final_table = jobs.get_table(table_name, format='csv')
 
         # Drop residual row number column
         if 'rn' in final_table.columns: final_table.remove_column('rn')
-
-        # Drop rows that are made using forced photometry
-        not_forced_mask = np.ones(len(final_table), dtype=bool)
-        for band in self.bands:
-            not_forced_mask = np.logical_and(not_forced_mask, (final_table[f'{band}infoFlag2'] & 4) == 0)
-        final_table = final_table[not_forced_mask]
-
-        # Get the number of duplicate 'objID' values in final_table
-        duplicate_objid_count = len(final_table) - len(np.unique(final_table['objID']))
-        print(f"Number of duplicate 'objID' values: {duplicate_objid_count}")
-
-        # # # Take the primary detections for each object, and if there are none, take the first detection
-        # # final_table = None
-        # # for id in np.unique(results['objID']):
-        # #     objs = results[results['objID'] == id]
-
-        # #     # If there's a primary detection for the object ID, take it
-        # #     if np.any(objs['primaryDetection'] == 1):
-        # #         objs = objs[objs['primaryDetection'] == 1]
-        # #     else:
-        # #         objs = objs[[0]]
-        # #     final_table = objs if final_table == None else vstack((final_table, objs))
-
-        # results_list.append(results)
-
-        # # Combine the results into one table by matching objID
-        # combined_results: Table = results_list[0]
-        # for result in results_list[1:]:
-        #     combined_results = join(combined_results, result, keys='objID', join_type='inner', metadata_conflicts='silent')
 
         return final_table
 
@@ -256,8 +272,8 @@ class ZTF_Catalog(Catalog):
         paddedfield = str(field).zfill(6)
         fieldprefix = paddedfield[:6 - len(str(field))]
         image_url = (f'https://irsa.ipac.caltech.edu/ibe/data/ztf/products/deep/{fieldprefix}/field{paddedfield}/'
-                     '{filtercode}/ccd{paddedccdid}/q{qid}/ztf_{paddedfield}_{filtercode}_c{paddedccdid}'
-                     '_q{qid}_refimg.fits')
+                     f'{filtercode}/ccd{paddedccdid}/q{qid}/ztf_{paddedfield}_{filtercode}_c{paddedccdid}'
+                     f'_q{qid}_refimg.fits')
         metadata_dict = {
             'field': paddedfield,
             'ccid': paddedccdid,
