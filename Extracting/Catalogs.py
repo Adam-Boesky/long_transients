@@ -88,7 +88,7 @@ class PSTARR_Catalog(Catalog):
         wsid, password = get_credentials('mast_login.txt')
 
         # Set up casjobs object
-        jobs = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password)
+        jobs = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password, request_type='POST')
 
         # Make the table name
         ra_range_strs = [str(ra).replace('.', 'p').replace('-', 'n')[:6] for ra in self.ra_range]      # formatting coords
@@ -98,63 +98,57 @@ class PSTARR_Catalog(Catalog):
         # If the table is there, grab it. Else, submit the query and then grab it
         try:
             final_table = jobs.get_table(table_name, format='csv')
-            print('Retrieved existing PanSTARRS from MyDB!')
+            print(f'Retrieved existing {table_name} from MyDB!')
         except ValueError:
-            # Build the SELECT clause for the main query
-            query = 'WITH'
+            # Build query
+            query = f"""
+WITH
+    base AS (
+        SELECT DISTINCT o.objID, o.raMean, o.decMean
+        FROM ObjectThin o
+        WHERE o.raMean BETWEEN {self.ra_range[0] - 0.003} AND {self.ra_range[1] + 0.003}
+            AND o.decMean BETWEEN {self.dec_range[0] - 0.003} AND {self.ra_range[1] + 0.003}
+            AND (o.nStackDetections > 0 OR o.nDetections > 1)
+    ),"""
+
             for band in self.bands:
                 query += f"""
     {band}_band AS (
         SELECT
             o.objID,
-            o.raMean,
-            o.decMean,
             m.{band}KronMag,
             m.{band}KronMagErr,
             m.{band}PSFMag,
             m.{band}PSFMagErr,
             a.{band}psfLikelihood,
             m.{band}infoFlag2,
-            m.primaryDetection,
-            ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) AS rn
-        FROM ObjectThin o
+            ROW_NUMBER() OVER (
+                PARTITION BY o.objID 
+                ORDER BY 
+                    CASE WHEN m.{band}infoFlag2 = 0 THEN 0 ELSE 1 END,
+                    m.primaryDetection DESC
+            ) AS rn
+        FROM base o
         INNER JOIN StackObjectThin m ON o.objID = m.objID
         INNER JOIN StackObjectAttributes a ON o.objID = a.objID
         WHERE (m.{band}infoFlag2 & 4) = 0
-        AND o.raMean BETWEEN {self.ra_range[0] - 0.003} AND {self.ra_range[1] + 0.003}
-            AND o.decMean BETWEEN {self.dec_range[0] - 0.003} AND {self.dec_range[1] + 0.003}
-        AND (o.nStackDetections > 0 OR o.nDetections > 1)
     ),"""
-            query += '\n\n'
-            for band in self.bands:
-                query += f"""{band}_table AS (
-        SELECT * FROM {band}_band WHERE rn = 1
-    ),
-    """
-            query = query[:-1]
-            query += '\n\n\t\tobj_list AS ('
+
             for band in self.bands:
                 query += f"""
-    SELECT objID FROM {band}_table
-        """
-                if band != self.bands[-1]:
-                    query += 'UNION'
-            query += ')'
-            columns = [f"{band}_table.raMean" for band in self.bands]
-            if len(columns) == 0:
-                ra_coalesce_string = columns[0]
-            else:
-                ra_coalesce_string = f"COALESCE({', '.join(columns)}) AS raMean"
-            columns = [f"{band}_table.decMean" for band in self.bands]
-            if len(columns) == 0:
-                dec_coalesce_string = columns[0]
-            else:
-                dec_coalesce_string = f"COALESCE({', '.join(columns)}) AS decMean"
-            query += f"""\n
+    {band}_table AS (
+        SELECT * FROM {band}_band WHERE rn = 1
+    ),"""
+
+            # Remove the trailing comma after the last CTE
+            query = query.rstrip(',') + "\n"
+            query += """
+
     SELECT
-        obj_list.objID,
-        {ra_coalesce_string},
-        {dec_coalesce_string},"""
+        base.objID,
+        base.raMean,
+        base.decMean,"""
+
             for band in self.bands:
                 query += f"""
         {band}_table.{band}KronMag,
@@ -163,15 +157,21 @@ class PSTARR_Catalog(Catalog):
         {band}_table.{band}PSFMagErr,
         {band}_table.{band}psfLikelihood,
         {band}_table.{band}infoFlag2,"""
-            query = query[:-1]
-            join_strings = [f"LEFT JOIN {band}_table ON obj_list.objID = {band}_table.objID" for band in self.bands]
+
+            # Remove the trailing comma from the last column
+            query = query.rstrip(',')
+
             query += f"""
-        INTO mydb.{table_name}
-        FROM obj_list
-        {'\n'.join(join_strings)};
-            """
-            # Print the generated query for debugging
-            print(query)
+
+            INTO mydb.{table_name}
+
+            FROM base"""
+
+            for band in self.bands:
+                query += f"""
+            LEFT JOIN {band}_table ON base.objID = {band}_table.objID"""
+
+            query += ";"
 
             # Submit the query and monitor it
             jobid = jobs.submit(query, task_name="PanSTARRS_DR2_TILE_QUERY")

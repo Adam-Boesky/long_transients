@@ -2,7 +2,7 @@ import unittest
 import numpy as np
 from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord
-from Source_Analysis.Source import Postage_Stamp, ZTF_Postage_Stamp
+from Source_Analysis.Sources import Postage_Stamp, ZTF_Postage_Stamp
 
 class TestPostageStamp(unittest.TestCase):
 
