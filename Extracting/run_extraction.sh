@@ -17,7 +17,7 @@
 
 # Load modules
 #################################
-module load python/3.10.12-fasrc01
+module load python/3.12.5-fasrc01
 source activate long_transients
 
 python3 /n/home04/aboesky/berger/long_transients/Extracting/run_extraction.py

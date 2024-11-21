@@ -42,7 +42,7 @@ def extract_sources():
 
     # Load the field geometries
     fields = ztffields.Fields()  # TODO: Some filter on fields
-    field_info, field_polygons = fields.get_field_vertices([1557, 1558], level='quadrant', steps=2)
+    field_info, field_polygons = fields.get_field_vertices([806, 499, 1557, 1558], level='quadrant', steps=2)
 
     # Iterate through the field and quadrants, extracting sources
     with ProcessPoolExecutor(max_workers=8) as executor:
