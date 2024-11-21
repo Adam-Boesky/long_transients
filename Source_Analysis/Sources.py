@@ -5,7 +5,7 @@ import astropy.units as u
 import matplotlib.pyplot as plt
 
 from concurrent import futures
-from typing import Tuple, Union, Optional, Iterable, Dict
+from typing import List, Tuple, Union, Optional, Iterable, Dict
 from matplotlib.axes._axes import Axes
 
 from astropy.wcs import WCS
@@ -245,6 +245,7 @@ class Source():
             ra: float,
             dec: float,
             bands: list = ['g', 'r', 'i'],
+            cutout_bands: Optional[List[str]] = None,
             merged_field_basedir: str = '/Users/adamboesky/Research/long_transients/Data/catalog_results/field_results',
         ):
         self.ra = ra
@@ -253,6 +254,7 @@ class Source():
 
         # Get the field for the given RA and DEC
         self.bands = bands
+        self.cutout_bands = bands if cutout_bands is None else cutout_bands
         self.merged_field_basedir = merged_field_basedir
 
         # Properties
@@ -270,7 +272,7 @@ class Source():
                 dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH, self.dec + ZTF_CUTOUT_HALFWIDTH),
                 filter='g',
             )
-            self.paddedfield = str(metadata_table['field'].iloc[0]).zfill(6)
+            self._paddedfield = str(metadata_table['field'].iloc[0]).zfill(6)
         return self._paddedfield
 
     @property
@@ -337,8 +339,8 @@ class Source():
     def postage_stamps(self) -> Dict[str, Postage_Stamp]:
         if self._postage_stamps is None:
             self._postage_stamps = {
-                'ZTF': ZTF_Postage_Stamp(self.ra, self.dec, bands=self.bands),
-                'PSTARR': PSTARR_Postage_Stamp(self.ra, self.dec, bands=self.bands),
+                'ZTF': ZTF_Postage_Stamp(self.ra, self.dec, bands=self.cutout_bands),
+                'PSTARR': PSTARR_Postage_Stamp(self.ra, self.dec, bands=self.cutout_bands),
             }
 
         return self._postage_stamps
@@ -411,7 +413,7 @@ class Source():
         axes[0].text(
             0.01,
             0.99,
-            rf'{band} mag = {self.data[f"PSTARR_{band}PSFMag"]:.2f}',
+            rf'{band} mag = {self.data[f"PSTARR_{band}PSFMag"][0]:.2f}',
             transform=axes[0].transAxes,
             ha='left',
             va='top',
@@ -421,7 +423,7 @@ class Source():
         axes[1].text(
             0.01,
             0.99,
-            rf'{band} mag = {self.data[f"ZTF_{band}PSFMag"]:.2f}',
+            rf'{band} mag = {self.data[f"ZTF_{band}PSFMag"][0]:.2f}',
             transform=axes[1].transAxes,
             ha='left',
             va='top',
@@ -432,14 +434,20 @@ class Source():
         # Formatting
         axes[0].set_title('Pan-STARRS', fontsize=15)
         axes[1].set_title('ZTF', fontsize=15)
+        for ax in axes:
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
         plt.tight_layout()
 
         return axes
 
     def plot_ztf_lightcurve(
             self,
-            band: str,
+            bands: Optional[str] = None,
             ax: Optional[Axes] = None,
+            colors: Dict[str, str] = {'g': 'forestgreen', 'r': 'lightcoral', 'i': 'darkorchid'},
             include_upper_lim: bool = True,
             time_offset: Union[str, float] = 'first',
             **kwargs,
@@ -447,54 +455,96 @@ class Source():
         """Plot the lightcurve."""
         # Make an axis if not given
         if ax is None:
-            _, ax = plt.subplots()
+            _, ax = plt.subplots(figsize=(12, 5))
 
         # Default parameters
         default_params = {
-            'color': 'k',
             'markersize': 5,
             'capsize': 2,
             'fmt': 'o'
         }
-
-        # Get the right band
-        lc = self.ztf_lightcurve[self.ztf_lightcurve['filter'] == f'ZTF_{band}']
 
         # Handle the time offset
         if time_offset == 'first':
             # NOTE: This is not band specific so that we can plot source bands on same axis
             time_offset = np.nanmin(self.ztf_lightcurve['jd'])
 
-        # Update kwargs with default parameters if not already provided
-        for key, value in default_params.items():
-            kwargs.setdefault(key, value)
+        # Adapt the kwargs for scatters
+        scatter_kwargs = kwargs.copy()
+        scatter_kwargs['markershape'] = '^'
+        if scatter_kwargs.get('markersize'):
+            scatter_kwargs['s'] = scatter_kwargs.get('markersize') * 4
+        else:
+            scatter_kwargs['s'] = None
+        scatter_kwargs['marker'] = kwargs.get('markershape')
+        for bad_kwarg in ['markersize', 'capsize', 'fmt', 'markershape']:
+            scatter_kwargs.pop(bad_kwarg, None)
 
-        # Plot
-        not_upper_lim_mask = np.logical_not(lc['upperlim'])
-        ax.errorbar(
-            x=lc['jd'][not_upper_lim_mask] - time_offset,
-            y=lc['mag'][not_upper_lim_mask],
-            yerr=lc['magerr'][not_upper_lim_mask],
-            **kwargs,
-        )
-        if include_upper_lim:
+        if bands is None:
+            bands = self.bands
+        for band in self.bands:
+            # Get the right band
+            lc = self.ztf_lightcurve[self.ztf_lightcurve['filter'] == f'ZTF_{band}']
 
-            # Rename kwargs and plot
-            kwargs['markershape'] = '^'
-            kwargs['s'] = kwargs['markersize'] * 4
-            kwargs['marker'] = kwargs['markershape']
-            for bad_kwarg in ['markersize', 'capsize', 'fmt', 'markershape']:
-                kwargs.pop(bad_kwarg, None)
-            ax.scatter(
-                x=lc['jd'][~not_upper_lim_mask] - time_offset,
-                y=lc['mag'][~not_upper_lim_mask],
+            # Update kwargs with default parameters if not already provided
+            for key, value in default_params.items():
+                kwargs.setdefault(key, value)
+
+            # Plot
+            not_upper_lim_mask = np.logical_not(lc['upperlim'])
+            ax.errorbar(
+                x=lc['jd'][not_upper_lim_mask] - time_offset,
+                y=lc['mag'][not_upper_lim_mask],
+                yerr=lc['magerr'][not_upper_lim_mask],
+                color=colors[band],
                 **kwargs,
             )
+            if include_upper_lim:
 
-        # Formatting
+                # Plot upper limits
+                ax.scatter(
+                    x=lc['jd'][~not_upper_lim_mask] - time_offset,
+                    y=lc['mag'][~not_upper_lim_mask],
+                    color=colors[band],
+                    **scatter_kwargs,
+                )
+
+        # Formatting)
         ax.invert_yaxis()
 
         return ax
+
+    def plot_cutouts_and_light_curves(
+            self,
+            ax_pstarr_cutout: Optional[Axes] = None,
+            ax_ztf_cutout: Optional[Axes] = None,
+            ax_light_curves: Optional[Axes] = None
+        ) -> Tuple[Axes, Axes, Axes]:
+        # If any of the axes are not given, make new axes
+        if None in [ax_pstarr_cutout, ax_ztf_cutout, ax_light_curves]:
+            
+            # Make plot grid
+            fig = plt.figure(figsize=(12, 10), layout="constrained")
+            spec = fig.add_gridspec(2, 2)
+
+            # Pick axes
+            ax_pstarr_cutout = fig.add_subplot(spec[0, 0])
+            ax_ztf_cutout = fig.add_subplot(spec[0, 1])
+            ax_light_curves = fig.add_subplot(spec[1, :])
+
+        # Plot
+        self.plot_postage_stamps(band=self.bands[0], axes=[ax_pstarr_cutout, ax_ztf_cutout])
+        self.plot_ztf_lightcurve(bands=self.bands, ax=ax_light_curves)
+
+        # Formatting
+        ax_pstarr_cutout.set_title('Pan-STARRS', fontsize=15)
+        ax_ztf_cutout.set_title('ZTF', fontsize=15)
+        ax_light_curves.grid(ls=':', lw=0.5)
+        ax_light_curves.set_xlabel('Time [day]')
+        ax_light_curves.set_ylabel('Mag')
+        plt.tight_layout()
+
+        return ax_pstarr_cutout, ax_ztf_cutout, ax_light_curves
 
     def get_TNS_info(self, tns_df: Optional[pd.DataFrame] = None, tns_coords: Optional[SkyCoord] = None) -> bool:
         # Load TNS if it is not given
@@ -516,11 +566,10 @@ class Sources:
             self,
             ras: Iterable[float],
             decs: Iterable[float],
-            bands: list = ['g', 'r', 'i'],
-            merged_field_basedir: str = '/Users/adamboesky/Research/long_transients/Data/catalog_results/field_results',
+            **kwargs,
         ):
         self.sources = [
-            Source(ra, dec, bands=bands, merged_field_basedir=merged_field_basedir) for ra, dec in zip(ras, decs)
+            Source(ra, dec, **kwargs) for ra, dec in zip(ras, decs)
         ]
 
     def __iter__(self):

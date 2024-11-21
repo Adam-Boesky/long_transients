@@ -27,19 +27,26 @@ class Tile():
             bands = [bands]
 
         # Get the ZTF catalog and coordinate range for the tile
+        def _create_ztf_catalog(band):
+            """Function to help create catalogs."""
+            try:
+                return ZTF_Catalog(ra, dec, catalog_bands=band, data_dir=data_dir)
+            except ValueError as e:
+                print(f"Band {band} not found in the ZTF data directory. Skipping.")
+                return None
         self.parallel = parallel
         if self.parallel:
             with ThreadPoolExecutor() as executor:
-                self.ztf_catalogs = dict(executor.map(lambda band: (band, ZTF_Catalog(ra, dec, catalog_bands=band, data_dir=data_dir)), bands))
+                results = executor.map(_create_ztf_catalog, bands)
+                self.ztf_catalogs = {band: catalog for band, catalog in results if catalog is not None}
         else:
-            # self.ztf_catalogs = {band: ZTF_Catalog(ra, dec, catalog_bands=band, data_dir=data_dir) for band in bands}
-            self.ztf_catalogs = {}
-            for band in bands:
-                try:
-                    self.ztf_catalogs[band] = ZTF_Catalog(ra, dec, catalog_bands=band, data_dir=data_dir)
-                except ValueError as e:
-                    bands.remove(band)
-                    print(f"Band {band} not found in the ZTF data directory. Skipping.")
+            self.ztf_catalogs = {band: _create_ztf_catalog(band) for band in bands}
+
+        # Drop the bands that aren't available
+        for b, c in self.ztf_catalogs.items():
+            if c is None:
+                bands.remove(b)
+                self.ztf_catalogs.pop(b)
         self.bands = bands
         self.ra_range, self.dec_range = self.ztf_catalogs[self.bands[0]].get_coordinate_range()
 
