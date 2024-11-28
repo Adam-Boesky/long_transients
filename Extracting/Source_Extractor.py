@@ -315,6 +315,8 @@ class Source_Extractor():
         # Fit the PSF model on a sample of just stars
         print(f'Fitting PSF model using {len(self._point_source_coords)} stars...')
         data_for_fit = NDData(data=self.image_sub, wcs=self.wcs)
+        print(data_for_fit)
+        print(Table([self._point_source_coords], names=['skycoord']))
         self.stars = extract_stars(
             data_for_fit,
             Table([self._point_source_coords], names=['skycoord']),

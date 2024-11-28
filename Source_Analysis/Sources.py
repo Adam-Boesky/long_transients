@@ -18,6 +18,8 @@ from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metad
 from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
 
+ACCEPTABLE_PROC_STATUS = [0]
+
 
 def closest_within_radius(coord: SkyCoord, coords: SkyCoord, max_arcsec: float = 1.0) -> Tuple[int, SkyCoord]:
     """Finds the closest coordinate in 'coords' to 'coord' that is less than a given distance away."""
@@ -282,7 +284,7 @@ class Source():
             self._field_catalogs = {}
 
             def load_catalog(band):
-                print(f'Loading {band}...')
+                print(f'Loading {band} catalog from locally stored catalogs...')
                 return band, Table.read(
                     os.path.join(self.merged_field_basedir, f'{self.paddedfield}_{band}.ecsv')
                 )
@@ -406,8 +408,8 @@ class Source():
             _, axes = plt.subplots(1, 2, figsize=(15, 7.5))
 
         # Plot
-        self.postage_stamps['ZTF'].plot_cutout(band=band, ax=axes[0], **kwargs)
-        self.postage_stamps['PSTARR'].plot_cutout(band='g', ax=axes[1], **kwargs)
+        self.postage_stamps['PSTARR'].plot_cutout(band='g', ax=axes[0], **kwargs)
+        self.postage_stamps['ZTF'].plot_cutout(band=band, ax=axes[1], **kwargs)
 
         # Annotate with the mags
         axes[0].text(
@@ -443,6 +445,18 @@ class Source():
 
         return axes
 
+    def _filter_lc_proc_status(
+            self,
+            lc: pd.DataFrame,
+            acceptable_proc_status: List[int] = ACCEPTABLE_PROC_STATUS
+        ) -> np.ndarray:
+        # Make mask for acceptable processing statuses
+        proc_statuses = lc['procstatus'].to_numpy()
+        proc_statuses = [np.array(p.split(',')).astype(int) for p in proc_statuses]
+        mask = np.array([np.all(np.isin(proc_status, acceptable_proc_status)) for proc_status in proc_statuses])
+
+        return lc[mask]
+
     def plot_ztf_lightcurve(
             self,
             bands: Optional[str] = None,
@@ -450,6 +464,7 @@ class Source():
             colors: Dict[str, str] = {'g': 'forestgreen', 'r': 'lightcoral', 'i': 'darkorchid'},
             include_upper_lim: bool = True,
             time_offset: Union[str, float] = 'first',
+            acceptable_proc_status: List[int] = ACCEPTABLE_PROC_STATUS,
             **kwargs,
         ) -> Axes:
         """Plot the lightcurve."""
@@ -457,12 +472,14 @@ class Source():
         if ax is None:
             _, ax = plt.subplots(figsize=(12, 5))
 
-        # Default parameters
+        # Update kwargs with default parameters if not already provided
         default_params = {
             'markersize': 5,
             'capsize': 2,
             'fmt': 'o'
         }
+        for key, value in default_params.items():
+            kwargs.setdefault(key, value)
 
         # Handle the time offset
         if time_offset == 'first':
@@ -471,27 +488,26 @@ class Source():
 
         # Adapt the kwargs for scatters
         scatter_kwargs = kwargs.copy()
-        scatter_kwargs['markershape'] = '^'
+        scatter_kwargs['marker'] = '^'
         if scatter_kwargs.get('markersize'):
             scatter_kwargs['s'] = scatter_kwargs.get('markersize') * 4
         else:
             scatter_kwargs['s'] = None
-        scatter_kwargs['marker'] = kwargs.get('markershape')
         for bad_kwarg in ['markersize', 'capsize', 'fmt', 'markershape']:
             scatter_kwargs.pop(bad_kwarg, None)
 
         if bands is None:
             bands = self.bands
         for band in self.bands:
+
             # Get the right band
             lc = self.ztf_lightcurve[self.ztf_lightcurve['filter'] == f'ZTF_{band}']
 
-            # Update kwargs with default parameters if not already provided
-            for key, value in default_params.items():
-                kwargs.setdefault(key, value)
+            # Only get the acceptable processing status
+            lc = self._filter_lc_proc_status(lc, acceptable_proc_status=acceptable_proc_status)
 
             # Plot
-            not_upper_lim_mask = np.logical_not(lc['upperlim'])
+            not_upper_lim_mask = np.logical_not(lc['upperlim']).to_numpy()
             ax.errorbar(
                 x=lc['jd'][not_upper_lim_mask] - time_offset,
                 y=lc['mag'][not_upper_lim_mask],
@@ -518,11 +534,12 @@ class Source():
             self,
             ax_pstarr_cutout: Optional[Axes] = None,
             ax_ztf_cutout: Optional[Axes] = None,
-            ax_light_curves: Optional[Axes] = None
+            ax_light_curves: Optional[Axes] = None,
+            acceptable_proc_status: List[int] = ACCEPTABLE_PROC_STATUS,
         ) -> Tuple[Axes, Axes, Axes]:
         # If any of the axes are not given, make new axes
         if None in [ax_pstarr_cutout, ax_ztf_cutout, ax_light_curves]:
-            
+
             # Make plot grid
             fig = plt.figure(figsize=(12, 10), layout="constrained")
             spec = fig.add_gridspec(2, 2)
@@ -534,7 +551,7 @@ class Source():
 
         # Plot
         self.plot_postage_stamps(band=self.bands[0], axes=[ax_pstarr_cutout, ax_ztf_cutout])
-        self.plot_ztf_lightcurve(bands=self.bands, ax=ax_light_curves)
+        self.plot_ztf_lightcurve(bands=self.bands, ax=ax_light_curves, acceptable_proc_status=acceptable_proc_status)
 
         # Formatting
         ax_pstarr_cutout.set_title('Pan-STARRS', fontsize=15)

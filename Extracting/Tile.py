@@ -43,10 +43,12 @@ class Tile():
             self.ztf_catalogs = {band: _create_ztf_catalog(band) for band in bands}
 
         # Drop the bands that aren't available
+        new_cats = self.ztf_catalogs.copy()
         for b, c in self.ztf_catalogs.items():
             if c is None:
                 bands.remove(b)
-                self.ztf_catalogs.pop(b)
+                new_cats.pop(b)
+        self.ztf_catalogs = new_cats
         self.bands = bands
         self.ra_range, self.dec_range = self.ztf_catalogs[self.bands[0]].get_coordinate_range()
 
