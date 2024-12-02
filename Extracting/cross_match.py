@@ -71,7 +71,7 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     unmatched_table1 = table1[unmatched_idx1]
     unmatched_table2 = table2[unmatched_idx2]
 
-    # Add columns from table2 to unmatched_table1 with NaN values and stack the tables
+    # Add columns from table2 to unmatched_table1 with NaN values, cast cols to correct types, and stack the tables
     for col in table2.colnames:
         unmatched_table1[col] = float('nan')
     for col in table1.colnames:
@@ -79,6 +79,11 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     associated_table['Catalog'] = 'Both'
     unmatched_table1['Catalog'] = prefix1
     unmatched_table2['Catalog'] = prefix2
+
+    # Cast PSTARR_primaryDetection to float64 in associated_table, unmatched_table1, unmatched_table2
+    for table in [associated_table, unmatched_table1, unmatched_table2]:
+        if 'PSTARR_primaryDetection' in table.colnames:
+            table['PSTARR_primaryDetection'] = table['PSTARR_primaryDetection'].astype(np.float64)
     combined_table = vstack([associated_table, unmatched_table1, unmatched_table2])
 
     # Identify rows where 'association_separation_arcsec' should be NaN

@@ -40,6 +40,11 @@ class Catalog():
             self.rename_columns()
         return self._data
 
+    @data.setter
+    def data(self, table: Table):
+        self._data = table
+        self.rename_columns()
+
     def get_data(self) -> Table:
         raise NotImplementedError('This method must be implemented in subclass.')
 
@@ -224,7 +229,15 @@ WHERE rn = 1
         for tab in tabs:
             if final_table is None:
                 final_table = tab
-            final_table = join(final_table, tab, join_type='outer')
+
+            if len(final_table) == 0:
+                final_table = tab
+            elif len(tab) != 0:
+                final_table = join(final_table, tab, join_type='outer')
+            elif len(tab) == 0:
+                for col in tab.colnames:
+                    if col not in final_table.colnames:
+                        final_table[col] = np.zeros(len(final_table)) * np.nan
 
         return final_table
 
@@ -280,6 +293,22 @@ WHERE rn = 1
 
         # Drop residual row number column
         if 'rn' in final_table.columns: final_table.remove_column('rn')
+
+        # Fill in mask with nans
+        final_table = Table(final_table, masked=True)
+        for col in final_table.colnames:
+            column = final_table[col]
+            if np.issubdtype(column.dtype, np.number):
+                # Convert column to float if numeric to allow np.nan
+                final_table[col] = column.astype(float)
+                final_table[col][column.mask] = np.nan
+            else:
+                # Convert to object dtype for non-numeric columns
+                final_table[col] = column.astype(object)
+                final_table[col][column.mask] = np.nan
+
+        # Unmask the table (removes the mask attribute entirely)
+        final_table = Table(final_table, masked=False)
 
         return final_table
 
