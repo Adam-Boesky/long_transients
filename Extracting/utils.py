@@ -1,5 +1,9 @@
 import os
 import pathlib
+
+from astropy.io import ascii
+from astropy.table import Table
+from functools import lru_cache
 from typing import Optional, Tuple, Union
 
 import numpy as np
@@ -61,3 +65,8 @@ def true_nearby(row: int, column: int, radius: int, mask: np.ndarray) -> bool:
 def nan_nearby(row: int, column: int, radius: int, arr: np.ndarray) -> bool:
     """Check if there are any NaN values in the nearby pixels."""
     return true_nearby(row, column, radius, np.isnan(arr))
+
+@lru_cache(maxsize=None)
+def load_cached_table(table_path: str, format: str = 'ecsv') -> Table:
+    """Load a table from disk and cache it in memory."""
+    return ascii.read(table_path, format=format)

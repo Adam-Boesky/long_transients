@@ -9,11 +9,12 @@ from typing import List, Tuple, Union, Optional, Iterable, Dict
 from matplotlib.axes._axes import Axes
 
 from astropy.wcs import WCS
-from astropy.table import Table
+from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from astropy.visualization import simple_norm
+from astroquery.gaia import Gaia
 
-from Extracting.utils import get_data_path
+from Extracting.utils import get_data_path, load_cached_table
 from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata, get_pstarr_cutout
 from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
@@ -249,6 +250,7 @@ class Source():
             bands: list = ['g', 'r', 'i'],
             cutout_bands: Optional[List[str]] = None,
             merged_field_basedir: str = '/Users/adamboesky/Research/long_transients/Data/catalog_results/field_results',
+            field_catalogs: Optional[dict[str, Table]] = None,
         ):
         self.ra = ra
         self.dec = dec
@@ -260,11 +262,13 @@ class Source():
         self.merged_field_basedir = merged_field_basedir
 
         # Properties
-        self._field_catalogs = None
+        self._field_catalogs = field_catalogs
         self._data = None
         self._postage_stamps = None
         self._ztf_lightcurve = None
         self._paddedfield = None
+        self._GAIA_info = None
+        self.filter_info = {}
 
     @property
     def paddedfield(self) -> str:
@@ -272,39 +276,61 @@ class Source():
             metadata_table = get_ztf_metadata(
                 ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH, self.ra + ZTF_CUTOUT_HALFWIDTH),
                 dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH, self.dec + ZTF_CUTOUT_HALFWIDTH),
-                filter='g',
+                filter=self.bands[0],  # doesn't need to be right band to get the coordinates
             )
-            self._paddedfield = str(metadata_table['field'].iloc[0]).zfill(6)
+
+            # Get the field id that's in the stored field results
+            paddedfield = None
+            for field in metadata_table['field']:
+                paddedfield = str(field).zfill(6)
+                if os.path.exists(os.path.join(self.merged_field_basedir, f'{paddedfield}_g.ecsv')):
+                    break
+            if paddedfield is None:
+                raise ValueError(f'No field stored field result found for the given RA and DEC ({self.ra}, {self.dec}).')
+            self._paddedfield = paddedfield
+
         return self._paddedfield
 
     @property
     def field_catalogs(self) -> dict[str, Table]:
-        print('Loading catalogs!')
         if self._field_catalogs is None:
+            print('Loading catalogs!')
             self._field_catalogs = {}
 
             def load_catalog(band):
-                print(f'Loading {band} catalog from locally stored catalogs...')
-                return band, Table.read(
-                    os.path.join(self.merged_field_basedir, f'{self.paddedfield}_{band}.ecsv')
-                )
+                print(f'Loading {band} catalog from locally stored catalog {self.paddedfield}_{band}...')
+                return band, load_cached_table(os.path.join(self.merged_field_basedir, f'{self.paddedfield}_{band}.ecsv')).copy()
 
             with futures.ThreadPoolExecutor() as executor:
                 future_to_band = {executor.submit(load_catalog, band): band for band in self.bands}
                 for future in futures.as_completed(future_to_band):
                     band, catalog = future.result()
                     self._field_catalogs[band] = catalog
+
         return self._field_catalogs
 
     @property
     def data(self) -> Table:
         if self._data is None:
 
-            # TODO: URGENT SOMEHOW THIS IS BROKEN **** DOESN'T GET THE RIGHT MAGS
+            # TODO: URGENT SOMEHOW THIS IS BROKEN ****
             # Set up an empty table to fill in
             unique_colnames = []
-            for tab in self.field_catalogs.values():
-                unique_colnames.extend([cname for cname in tab.colnames])
+            for band, tab in self.field_catalogs.items():
+                for cname in tab.colnames:
+
+                    # The ZTF magnitude columns already have band names in them, the others don't
+                    if 'ZTF' in cname and (
+                        'Kron' not in cname and
+                        'PSF' not in cname and
+                        'mag_limit' not in cname and
+                        'zero_pt_mag' not in cname
+                    ) and cname[:6] != f'ZTF_{band}_':  # also making sure that column isn't already modified
+                        new_cname = f'ZTF_{band}_{cname[4:]}'
+                        self.field_catalogs[band].rename_column(cname, new_cname)
+                        unique_colnames.append(new_cname)
+                    else:
+                        unique_colnames.append(cname)
             unique_colnames = set(unique_colnames)
             data_dict = {k: [np.nan] for k in unique_colnames}
             str_cols = ['Catalog']  # need to have types align
@@ -334,6 +360,13 @@ class Source():
                                 self._data[cname][0] = float(cat[cname][ind_closest])
                             else:
                                 self._data[cname][0] = cat[cname][ind_closest]
+
+        # Reorder columns
+        pstarr_cols = [col for col in self._data.colnames if col.startswith('PSTARR')]
+        ztf_cols = [col for col in self._data.colnames if col.startswith('ZTF')]
+        other_cols = [col for col in self._data.colnames if not (col.startswith('PSTARR') or col.startswith('ZTF'))]
+        ordered_cols = ['ra', 'dec'] + pstarr_cols + ztf_cols + [col for col in other_cols if col not in ['ra', 'dec']]
+        self._data = self._data[ordered_cols]
 
         return self._data
 
@@ -402,7 +435,7 @@ class Source():
 
         return self._ztf_lightcurve
 
-    def plot_postage_stamps(self, band: str, axes: Optional[Axes] = None, **kwargs) -> Axes:
+    def plot_postage_stamps(self, band: str, axes: Optional[Axes] = None, add_labels: bool = True, **kwargs) -> Axes:
         # Make axes if not given
         if axes is None:
             _, axes = plt.subplots(1, 2, figsize=(15, 7.5))
@@ -420,7 +453,7 @@ class Source():
             ha='left',
             va='top',
             fontsize=15,
-            color='white'
+            color='red'
         )
         axes[1].text(
             0.01,
@@ -430,18 +463,18 @@ class Source():
             ha='left',
             va='top',
             fontsize=15,
-            color='white'
+            color='red'
         )
 
         # Formatting
-        axes[0].set_title('Pan-STARRS', fontsize=15)
-        axes[1].set_title('ZTF', fontsize=15)
+        if add_labels:
+            axes[0].set_title('Pan-STARRS', fontsize=15)
+            axes[1].set_title('ZTF', fontsize=15)
         for ax in axes:
             ax.set_xticks([])
             ax.set_yticks([])
             ax.set_xticklabels([])
             ax.set_yticklabels([])
-        plt.tight_layout()
 
         return axes
 
@@ -530,6 +563,26 @@ class Source():
 
         return ax
 
+    def plot_all_cutouts(self, axes: Optional[Iterable[Axes]] = None, **kwargs) -> np.ndarray[Axes]:
+        n_bands = len(self.bands)
+
+        # Make axes if not given
+        if axes is None:
+            _, axes = plt.subplots(2, n_bands, figsize=(15, 5 * n_bands))
+        if not isinstance(axes, np.ndarray):
+            axes = np.array(axes)
+
+        # Plot
+        for band, ax_col in zip(self.bands, axes.T):
+            self.plot_postage_stamps(band=band, axes=ax_col, add_labels=False, **kwargs)
+            ax_col[1].set_xlabel(band, fontsize=15)
+
+        # Formatting
+        axes[0, 0].set_ylabel('Pan-STARRS', fontsize=15)
+        axes[1, 0].set_ylabel('ZTF', fontsize=15)
+
+        return axes
+
     def plot_cutouts_and_light_curves(
             self,
             ax_pstarr_cutout: Optional[Axes] = None,
@@ -559,7 +612,6 @@ class Source():
         ax_light_curves.grid(ls=':', lw=0.5)
         ax_light_curves.set_xlabel('Time [day]')
         ax_light_curves.set_ylabel('Mag')
-        plt.tight_layout()
 
         return ax_pstarr_cutout, ax_ztf_cutout, ax_light_curves
 
@@ -576,18 +628,42 @@ class Source():
             return None
         return tns_df.iloc[[idx]]
 
+    @property
+    def GAIA_info(self) -> Table:
+        rad_arcsec: float = 1.0
+        if self._GAIA_info is None:
+            self._GAIA_info = Gaia.query_object_async(
+                coordinate=self.coord,
+                width=rad_arcsec * u.arcsec,
+                height=rad_arcsec * u.arcsec,
+            )
+
+        return self._GAIA_info
+
 
 class Sources:
     """Collection of the Source class."""
     def __init__(
             self,
-            ras: Iterable[float],
-            decs: Iterable[float],
+            ras: Optional[Iterable[float]] = None,
+            decs: Optional[Iterable[float]] = None,
+            sources: Optional[List[Source]] = None,
             **kwargs,
         ):
-        self.sources = [
-            Source(ra, dec, **kwargs) for ra, dec in zip(ras, decs)
-        ]
+        if sources is not None:
+            # Initialize from an existing list of Source objects
+            self.sources = sources
+            self.ras = np.array([src.ra for src in self.sources], dtype=float)
+            self.decs = np.array([src.dec for src in self.sources], dtype=float)
+        else:
+            # Initialize from ras and decs
+            self.ras = np.array(ras, dtype=float)
+            self.decs = np.array(decs, dtype=float)
+            self.sources = [
+                Source(ra, dec, **kwargs) for ra, dec in zip(self.ras, self.decs)
+            ]
+
+        self._data = None
 
     def __iter__(self):
         return iter(self.sources)
@@ -595,24 +671,58 @@ class Sources:
     def __len__(self):
         return len(self.sources)
 
+    def __str__(self):
+        return str(self.data)
+
     def __getitem__(self, index):
-        return self.sources[index]
+        if isinstance(index, int):
+            return self.sources[index]
+
+        if isinstance(index, slice):
+            # Return a new Sources object containing a slice of the existing sources
+            return Sources(sources=self.sources[index])
+
+        if isinstance(index, (list, np.ndarray)):
+            index = np.asarray(index)
+            if index.dtype == bool or np.issubdtype(index.dtype, np.integer):
+                # Return a new Sources object containing a subset of the existing sources
+                return Sources(sources=np.array(self.sources)[index].tolist())
+
+            raise TypeError("Array-based indexing must be boolean or integer indices.")
+
+        raise TypeError("Invalid index type. Must be int, slice, or boolean/integer array.")
+
+    @property
+    def data(self) -> Table:
+        if self._data is None:
+            if len(self.sources) == 0:
+                return Table()
+            self._data = vstack([src.data for src in self.sources])
+            self._data = Table(self._data, masked=False)
+
+        return self._data
+
+    def save(self, fname: str, overwrite: bool = True):
+        to_save = self.data.copy()
+        to_save['filter_info'] = [str(src.filter_info) for src in self.sources]
+        to_save.write(fname, format='ascii.ecsv', overwrite=overwrite)
 
     def submit_forced_photometry_batch(self):
         # Load important objects
         ztf_fp_service = ZTFFP_Service()
         ztf_fp_map = Forced_Photo_Map()
 
-        # Make sure that the ras and decs aren't already downloaded, pending, or have been recently queried
+        # Boolean masks for filtering
         already_downloaded = ztf_fp_map.contains(self.ras, self.decs)
         recently_queried = ztf_fp_service.recently_queried(self.ras, self.decs)
         currently_pending = ztf_fp_service.currently_pending(self.ras, self.decs)
+
         to_submit_mask = (not already_downloaded) & (not recently_queried) & (not currently_pending)
         ras_to_submit, decs_to_submit = self.ras[to_submit_mask], self.decs[to_submit_mask]
 
-        # Submit forced photometry job
-        print(f'Submitting forced photometry request on {len(ras_to_submit)} source. \n{np.sum(not to_submit_mask)} of'
-              'the given coordinates were already downloaded or requested.')
+        print(f'Submitting forced photometry request on {len(ras_to_submit)} source(s). '
+              f'{np.sum(~to_submit_mask)} of the given coordinates were already downloaded or requested.')
+
         ztf_fp_service.submit(ras_to_submit, decs_to_submit)
 
     def inTNS(self):

@@ -5,6 +5,7 @@ import os
 import tempfile
 from io import StringIO, BytesIO
 from typing import Dict, Iterable, Optional, Tuple, List
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -517,6 +518,7 @@ def associate_tables_by_coordinates(
     return combined_table
 
 
+@lru_cache(maxsize=None)
 def get_ztf_metadata(
         ra_range: Tuple,
         dec_range: Tuple,
