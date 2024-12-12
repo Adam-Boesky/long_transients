@@ -498,6 +498,7 @@ class Source():
             include_upper_lim: bool = True,
             time_offset: Union[str, float] = 'first',
             acceptable_proc_status: List[int] = ACCEPTABLE_PROC_STATUS,
+            y_units: str = 'mag',
             **kwargs,
         ) -> Axes:
         """Plot the lightcurve."""
@@ -521,7 +522,7 @@ class Source():
 
         # Adapt the kwargs for scatters
         scatter_kwargs = kwargs.copy()
-        scatter_kwargs['marker'] = '^'
+        scatter_kwargs['marker'] = 'v'
         if scatter_kwargs.get('markersize'):
             scatter_kwargs['s'] = scatter_kwargs.get('markersize') * 4
         else:
@@ -539,12 +540,22 @@ class Source():
             # Only get the acceptable processing status
             lc = self._filter_lc_proc_status(lc, acceptable_proc_status=acceptable_proc_status)
 
+            # Get the key based on what the y units are
+            if y_units == 'mag':
+                y_key = 'mag'
+                yerr_key = 'magerr'
+            elif y_units == 'flux':
+                y_key = 'forcediffimflux'
+                yerr_key = 'forcediffimfluxunc'
+            else:
+                raise ValueError(f'Invalid y_units: {y_units}')
+
             # Plot
             not_upper_lim_mask = np.logical_not(lc['upperlim']).to_numpy()
             ax.errorbar(
                 x=lc['jd'][not_upper_lim_mask] - time_offset,
-                y=lc['mag'][not_upper_lim_mask],
-                yerr=lc['magerr'][not_upper_lim_mask],
+                y=lc[y_key][not_upper_lim_mask],
+                yerr=lc[yerr_key][not_upper_lim_mask],
                 color=colors[band],
                 **kwargs,
             )
@@ -553,13 +564,14 @@ class Source():
                 # Plot upper limits
                 ax.scatter(
                     x=lc['jd'][~not_upper_lim_mask] - time_offset,
-                    y=lc['mag'][~not_upper_lim_mask],
+                    y=lc[y_key][~not_upper_lim_mask],
                     color=colors[band],
                     **scatter_kwargs,
                 )
 
-        # Formatting)
-        ax.invert_yaxis()
+        # Formatting
+        if y_units == 'mag':
+            ax.invert_yaxis()
 
         return ax
 
@@ -589,6 +601,7 @@ class Source():
             ax_ztf_cutout: Optional[Axes] = None,
             ax_light_curves: Optional[Axes] = None,
             acceptable_proc_status: List[int] = ACCEPTABLE_PROC_STATUS,
+            y_units: str = 'mag',
         ) -> Tuple[Axes, Axes, Axes]:
         # If any of the axes are not given, make new axes
         if None in [ax_pstarr_cutout, ax_ztf_cutout, ax_light_curves]:
@@ -604,14 +617,19 @@ class Source():
 
         # Plot
         self.plot_postage_stamps(band=self.bands[0], axes=[ax_pstarr_cutout, ax_ztf_cutout])
-        self.plot_ztf_lightcurve(bands=self.bands, ax=ax_light_curves, acceptable_proc_status=acceptable_proc_status)
+        self.plot_ztf_lightcurve(
+            bands=self.bands,
+            ax=ax_light_curves,
+            acceptable_proc_status=acceptable_proc_status,
+            y_units=y_units,
+        )
 
         # Formatting
         ax_pstarr_cutout.set_title('Pan-STARRS', fontsize=15)
         ax_ztf_cutout.set_title('ZTF', fontsize=15)
         ax_light_curves.grid(ls=':', lw=0.5)
         ax_light_curves.set_xlabel('Time [day]')
-        ax_light_curves.set_ylabel('Mag')
+        ax_light_curves.set_ylabel('Mag' if y_units == 'mag' else 'Fluxdiff')
 
         return ax_pstarr_cutout, ax_ztf_cutout, ax_light_curves
 
@@ -705,9 +723,12 @@ class Sources:
     def save(self, fname: str, overwrite: bool = True):
         to_save = self.data.copy()
         to_save['filter_info'] = [str(src.filter_info) for src in self.sources]
+        if len(to_save) == 0:
+            to_save['ra'] = []
+            to_save['dec'] = []
         to_save.write(fname, format='ascii.ecsv', overwrite=overwrite)
 
-    def submit_forced_photometry_batch(self):
+    def submit_forced_photometry_batch(self) -> int:
         # Load important objects
         ztf_fp_service = ZTFFP_Service()
         ztf_fp_map = Forced_Photo_Map()
@@ -721,9 +742,9 @@ class Sources:
         ras_to_submit, decs_to_submit = self.ras[to_submit_mask], self.decs[to_submit_mask]
 
         print(f'Submitting forced photometry request on {len(ras_to_submit)} source(s). '
-              f'{np.sum(~to_submit_mask)} of the given coordinates were already downloaded or requested.')
+              f'{np.sum(not to_submit_mask)} of the given coordinates were already downloaded or requested.')
 
-        ztf_fp_service.submit(ras_to_submit, decs_to_submit)
+        return ztf_fp_service.submit(ras_to_submit, decs_to_submit)
 
     def inTNS(self):
         # Load TNS if it is not given

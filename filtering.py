@@ -102,10 +102,11 @@ def snr_filter(tabs: Table, snr_min: float = 5, copy: bool = True) -> Table:
 def shape_filter(tabs: Table, copy: bool = True, **kwargs) -> Table:
     for band in tabs.keys():
         tab = tabs[band]
-        good_shape_mask = (tab['ZTF_a'] / tab['ZTF_b']) < 2                                                 # a/b < 1.75
-        good_shape_mask &= np.logical_or((tab['ZTF_a'] / tab['ZTF_b']) < 1.35, tab['ZTF_tnpix'] < 200)      # a/b < 1.5 for big sources
+        good_shape_mask = (tab['ZTF_a'] / tab['ZTF_b']) < 2                                                 # a/b < 2.0
+        good_shape_mask &= np.logical_or((tab['ZTF_a'] / tab['ZTF_b']) < 1.35, tab['ZTF_tnpix'] < 200)      # a/b < 1.35 for big sources
         good_shape_mask |= np.isnan(tab['ZTF_a'])
         tabs[band] = tab[good_shape_mask]
+        print('ADAM!', tab[~good_shape_mask & (tab['PSTARR_gPSFMag'] < 19) & (tab['PSTARR_gPSFMag'] > 0)]['ra', 'dec'])
 
     return tabs
 
@@ -325,7 +326,7 @@ def filter_tables():
         # Save the image
         d.save(f'Figures/0_filtering_flowchart.pdf')
         for band, srcs in sources.items():
-            srcs.save(f'/Users/adamboesky/Research/long_transients/Data/filter_testing/0_{band}.ecsv')
+            srcs.save(f'/Users/adamboesky/Research/long_transients/Data/filter_testing/0_{band}_2.ecsv')
 
 
     ########## Filtering for sources in both! ##########

@@ -11,6 +11,11 @@ from bs4 import BeautifulSoup
 
 from typing import Iterable, Optional, Tuple, List
 
+try:
+    from Forced_Photo_Map import Forced_Photo_Map
+except:
+    from .Forced_Photo_Map import Forced_Photo_Map
+
 
 class ZTFFP_Service():
     def __init__(self, email: Optional[str] = None, pword: Optional[str] = None):
@@ -19,6 +24,7 @@ class ZTFFP_Service():
         if pword is None: pword = os.getenv("ztf_user_password", None)
         self._ztffp_email_address = email
         self._ztffp_user_password = pword
+        self.fp_map = Forced_Photo_Map()
 
         # Make sure credentials exist
         if None in [self._ztffp_email_address, self._ztffp_user_password]:
@@ -45,7 +51,9 @@ class ZTFFP_Service():
         if r.status_code != 200:
             raise ValueError(f'Submission failed with status code {r.status_code}. Message:\n{r.content}.')
 
-    def submit(self, ras: Iterable[float], decs: Iterable[float]):
+        return r.status_code
+
+    def submit(self, ras: Iterable[float], decs: Iterable[float]) -> int:
 
         # Cast to lists if not already
         if isinstance(ras, float):
@@ -100,6 +108,9 @@ class ZTFFP_Service():
                 print(f"Downloaded: {filepath}")
             else:
                 print(f"Failed to download {url}. Status code: {response.status_code}, Reason: {response.reason}")
+
+        # Update the map based on the new downloads
+        self.fp_map.add_all_new_light_curves()
 
         return fpaths
 
@@ -169,7 +180,6 @@ class ZTFFP_Service():
                 print("Script executed normally and queried the ZTF Batch Forced Photometry database.")
 
                 # Load the recent job table
-                recent_df = self.convert_recent_jobs_to_df(r.text)
                 lightcurves = recent_df['lightcurve'].to_numpy()
 
                 # Make the wget strings
@@ -197,9 +207,9 @@ class ZTFFP_Service():
         isin = []
         for ra, dec in zip(ras, decs):
 
-            # Check if ra and dec are within tolerance
-            ra_close = np.isclose(ra, recent_df['ra'], atol=tol_deg)
-            dec_close = np.isclose(dec, recent_df['dec'], atol=tol_deg)
+            # Check if ra and dec are within tolerance)
+            ra_close = np.isclose(ra, recent_df['ra'].to_numpy(dtype=float), atol=tol_deg)
+            dec_close = np.isclose(dec, recent_df['dec'].to_numpy(dtype=float), atol=tol_deg)
             isin.append(np.any(ra_close & dec_close))
 
         return np.array(isin)
