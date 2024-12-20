@@ -235,8 +235,15 @@ WHERE rn = 1
                 final_table = tab
             elif len(tab) != 0:
 
-                print(final_table['join_key'].dtype)  # Replace 'join_key' with your actual key column name
-                print(tab['join_key'].dtype)
+                print('!!!JOINING!!!')
+                for k, v in final_table.items():
+                    if k in tab.columns:
+                        print(k, v.dtype)
+                        print(k, tab[k].dtype)
+                for k, v in tab.items():
+                    if k in final_table.columns:
+                        print(k, v.dtype)
+                        print(k, final_table[k].dtype)
 
                 final_table = join(final_table, tab, join_type='outer')
             elif len(tab) == 0:
