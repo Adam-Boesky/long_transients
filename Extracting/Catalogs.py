@@ -234,6 +234,10 @@ WHERE rn = 1
             if len(final_table) == 0:
                 final_table = tab
             elif len(tab) != 0:
+
+                print(final_table['join_key'].dtype)  # Replace 'join_key' with your actual key column name
+                print(tab['join_key'].dtype)
+
                 final_table = join(final_table, tab, join_type='outer')
             elif len(tab) == 0:
                 for col in tab.colnames:
