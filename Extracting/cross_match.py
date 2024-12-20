@@ -110,7 +110,7 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
 
     # Check if panstarrs is nan -- we will approximate this by checking if there are any sources within an arcminute
     pstarr_coords = SkyCoord(ra=combined_table[in_pstarr_mask]['PSTARR_ra'], dec=combined_table[in_pstarr_mask]['PSTARR_dec'], unit='deg')
-    ztf_coords = SkyCoord(ra=combined_table[in_ztf_mask]['ZTF_dec'], dec=combined_table[in_ztf_mask]['ZTF_dec'], unit='deg')
+    ztf_coords = SkyCoord(ra=combined_table[in_ztf_mask]['ZTF_ra'], dec=combined_table[in_ztf_mask]['ZTF_dec'], unit='deg')
     _, sep_to_other_sources, _ = match_coordinates_sky(ztf_coords, pstarr_coords)
     indices_in_ztf = np.where(in_ztf_mask)[0]
     sep_condition = sep_to_other_sources.arcminute > 1.0  # Boolean array of length M
@@ -118,7 +118,7 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     original_indices = indices_in_ztf[indices_sep_condition]
     combined_table['Catalog_Flag'][original_indices] = 3
 
-    # Check if nan in ZTF
+    # Check if PSTARR coords are nan in ZTF
     pstarr_pix_coords = wcs.world_to_pixel(pstarr_coords)
     pstarr_xs = pstarr_pix_coords[0].round().astype(int)
     pstarr_ys = pstarr_pix_coords[1].round().astype(int)
@@ -134,6 +134,23 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     indices_in_pstarr = np.where(in_pstarr_mask)[0]
     indices_is_nan_in_ztf = np.where(is_nan_in_ztf)[0]
     original_indices = indices_in_pstarr[indices_is_nan_in_ztf]
+    combined_table['Catalog_Flag'][original_indices] = 3
+
+    # Check if ZTF coords are nan in ZTF
+    ztf_pix_coords = wcs.world_to_pixel(ztf_coords)
+    ztf_xs = ztf_pix_coords[0].round().astype(int)
+    ztf_ys = ztf_pix_coords[1].round().astype(int)
+    is_nan_in_ztf = np.array([
+        true_nearby(
+            row=y,
+            column=x,
+            radius=5,
+            mask=ztf_nan_mask,
+        ) for x, y in zip(ztf_xs, ztf_ys)
+    ])
+    indices_in_ztf = np.where(in_ztf_mask)[0]
+    indices_is_nan_in_ztf = np.where(is_nan_in_ztf)[0]
+    original_indices = indices_in_ztf[indices_is_nan_in_ztf]
     combined_table['Catalog_Flag'][original_indices] = 3
 
     # Map the remaining clean sources

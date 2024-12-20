@@ -20,6 +20,34 @@ from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
 
 ACCEPTABLE_PROC_STATUS = [0]
+MANDATORY_SOURCE_COLUMNS = [
+    'ra', 'dec', 'PSTARR_rPSFMag', 'PSTARR_iKronMagErr', 'PSTARR_rApMagErr', 'PSTARR_iApMag', 'PSTARR_primaryDetection',
+    'PSTARR_gApMag', 'PSTARR_rinfoFlag2', 'PSTARR_rpsfLikelihood', 'PSTARR_gApMagErr', 'PSTARR_gPSFMagErr',
+    'PSTARR_gKronMag', 'PSTARR_gKronMagErr', 'PSTARR_iinfoFlag2', 'PSTARR_dec', 'PSTARR_rKronMagErr', 'PSTARR_rApMag',
+    'PSTARR_iApMagErr', 'PSTARR_ginfoFlag2', 'PSTARR_ipsfLikelihood', 'PSTARR_rKronMag', 'PSTARR_iPSFMagErr',
+    'PSTARR_ra', 'PSTARR_gpsfLikelihood', 'PSTARR_iPSFMag', 'PSTARR_PanSTARR_ID', 'PSTARR_gPSFMag', 'PSTARR_rPSFMagErr',
+    'PSTARR_iKronMag', 'ZTF_g_b', 'ZTF_r_cpeak', 'ZTF_r_errx2', 'ZTF_i_xmin', 'ZTF_i_xmax', 'ZTF_rKronCircleFlag',
+    'ZTF_r_a', 'ZTF_i_xpeak', 'ZTF_i_theta', 'ZTF_i_cxy', 'ZTF_g_thresh', 'ZTF_iPSFMag', 'ZTF_i_mag_limit',
+    'ZTF_g_npix', 'ZTF_iKronCircleFlag', 'ZTF_g_ra', 'ZTF_r_npix', 'ZTF_g_cxy', 'ZTF_r_sepExtractionFlag',
+    'ZTF_i_errxy', 'ZTF_g_flux', 'ZTF_i_a', 'ZTF_iKronFlag', 'ZTF_r_mag_limit', 'ZTF_g_cpeak', 'ZTF_gPSFMag',
+    'ZTF_iPSFFlags', 'ZTF_gKronCircleFlag', 'ZTF_i_y', 'ZTF_r_thresh', 'ZTF_i_thresh', 'ZTF_i_x', 'ZTF_g_ymin',
+    'ZTF_i_upper_lim_flag', 'ZTF_r_tnpix', 'ZTF_r_xcpeak', 'ZTF_i_xcpeak', 'ZTF_r_ycpeak', 'ZTF_i_erry2', 'ZTF_g_peak',
+    'ZTF_r_dec', 'ZTF_r_xpeak', 'ZTF_i_xy', 'ZTF_i_ymax', 'ZTF_r_qfit', 'ZTF_g_tnpix', 'ZTF_g_errx2', 'ZTF_r_cyy',
+    'ZTF_iPSFMagErr', 'ZTF_g_xy', 'ZTF_i_zero_pt_mag', 'ZTF_i_cpeak', 'ZTF_gKronMag', 'ZTF_i_y2', 'ZTF_g_a', 'ZTF_i_ra',
+    'ZTF_r_cxx', 'ZTF_r_flux', 'ZTF_r_peak', 'ZTF_r_xy', 'ZTF_g_ycpeak', 'ZTF_r_ymin', 'ZTF_r_x2', 'ZTF_i_cyy',
+    'ZTF_KronRad', 'ZTF_rPSFMag', 'ZTF_g_erry2', 'ZTF_rKronMagErr', 'ZTF_g_dec', 'ZTF_g_qfit', 'ZTF_i_qfit',
+    'ZTF_i_sepExtractionFlag', 'ZTF_r_cfit', 'ZTF_i_cfit', 'ZTF_i_x2', 'ZTF_i_cflux', 'ZTF_r_errxy', 'ZTF_g_errxy',
+    'ZTF_g_xmax', 'ZTF_r_cxy', 'ZTF_i_peak', 'ZTF_r_ypeak', 'ZTF_g_mag_limit', 'ZTF_i_b', 'ZTF_i_ypeak', 'ZTF_g_xpeak',
+    'ZTF_rKronFlag', 'ZTF_g_cyy', 'ZTF_g_sepExtractionFlag', 'ZTF_r_b', 'ZTF_r_upper_lim_flag', 'ZTF_i_ymin',
+    'ZTF_r_ra', 'ZTF_r_xmin', 'ZTF_r_y2', 'ZTF_r_cflux', 'ZTF_gPSFMagErr', 'ZTF_gPSFFlags', 'ZTF_i_ycpeak', 'ZTF_g_x',
+    'ZTF_g_y2', 'ZTF_g_zero_pt_mag', 'ZTF_rKronMag', 'ZTF_g_y', 'ZTF_g_upper_lim_flag', 'ZTF_iKronMag', 'ZTF_g_xmin',
+    'ZTF_r_theta', 'ZTF_g_x2', 'ZTF_i_errx2', 'ZTF_i_dec', 'ZTF_gKronMagErr', 'ZTF_r_erry2', 'ZTF_i_cxx',
+    'ZTF_rPSFFlags', 'ZTF_iKronMagErr', 'ZTF_g_cflux', 'ZTF_r_y', 'ZTF_r_zero_pt_mag', 'ZTF_i_flux', 'ZTF_r_x',
+    'ZTF_r_ymax', 'ZTF_g_cxx', 'ZTF_i_npix', 'ZTF_r_xmax', 'ZTF_g_cfit', 'ZTF_g_theta', 'ZTF_rPSFMagErr', 'ZTF_g_ypeak',
+    'ZTF_g_xcpeak', 'ZTF_g_ymax', 'ZTF_i_tnpix', 'ZTF_gKronFlag', 'x', 'y', 'association_separation_arcsec',
+    'Catalog_Flag', 'Catalog', 'filter_info'
+]
+Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
 
 
 def closest_within_radius(coord: SkyCoord, coords: SkyCoord, max_arcsec: float = 1.0) -> Tuple[int, SkyCoord]:
@@ -27,8 +55,6 @@ def closest_within_radius(coord: SkyCoord, coords: SkyCoord, max_arcsec: float =
     # Calculate separations between coord and each coordinate in coords
     seps = coord.separation(coords)
     within_one_arcsecond = seps < max_arcsec * u.arcsec
-
-    print(f'min sep = {np.nanmin(seps)}')
 
     # If there are no coordinates within one arcsecond, return None
     if not any(within_one_arcsecond):
@@ -251,15 +277,21 @@ class Source():
             cutout_bands: Optional[List[str]] = None,
             merged_field_basedir: str = '/Users/adamboesky/Research/long_transients/Data/catalog_results/field_results',
             field_catalogs: Optional[dict[str, Table]] = None,
+            max_arcsec: float = 1.0,
+            verbose: int = 1,
         ):
         self.ra = ra
         self.dec = dec
         self.coord = SkyCoord(ra=ra, dec=dec, unit='deg')
+        self.verbose = verbose
 
         # Get the field for the given RA and DEC
         self.bands = bands
         self.cutout_bands = bands if cutout_bands is None else cutout_bands
         self.merged_field_basedir = merged_field_basedir
+
+        # The maximum distance for an object to be considered a match
+        self.max_arcsec = max_arcsec
 
         # Properties
         self._field_catalogs = field_catalogs
@@ -293,6 +325,7 @@ class Source():
 
     @property
     def field_catalogs(self) -> dict[str, Table]:
+        """Dictionary containing the catalogs for each band in the ZTF field that contains the current source."""
         if self._field_catalogs is None:
             print('Loading catalogs!')
             self._field_catalogs = {}
@@ -313,8 +346,7 @@ class Source():
     def data(self) -> Table:
         if self._data is None:
 
-            # TODO: URGENT SOMEHOW THIS IS BROKEN ****
-            # Set up an empty table to fill in
+            # Get the unique columns
             unique_colnames = []
             for band, tab in self.field_catalogs.items():
                 for cname in tab.colnames:
@@ -331,20 +363,25 @@ class Source():
                         unique_colnames.append(new_cname)
                     else:
                         unique_colnames.append(cname)
+
+            # Add the mandatory columns and make sure they're unique
+            unique_colnames += MANDATORY_SOURCE_COLUMNS
             unique_colnames = set(unique_colnames)
+
+            # Make the empty table to fill in
             data_dict = {k: [np.nan] for k in unique_colnames}
             str_cols = ['Catalog']  # need to have types align
             for col in str_cols:
                 data_dict[col] = [str(data_dict[col][0])]
             self._data = Table(data_dict)
 
-            print('Searching for source in the catalogs!')
+            if self.verbose > 0: print('Searching for source in the catalogs!')
             for band, cat in self.field_catalogs.items():
-                print(f'Searching {band}...')
+                if self.verbose > 0: print(f'Searching {band}...')
 
                 # Get the source from each catalog
                 coords = SkyCoord(ra=cat['ra'], dec=cat['dec'], unit='deg')
-                ind_closest, _ = closest_within_radius(self.coord, coords, max_arcsec=1.0)
+                ind_closest, _ = closest_within_radius(self.coord, coords, max_arcsec=self.max_arcsec)
 
                 # If a coord was found, join the tables
                 if ind_closest is not None:
