@@ -129,12 +129,18 @@ class Tile():
 
     def store_catalogs(self, out_parent_dir: str, overwrite: bool = False) -> str:
         """Store the ZTF and PanSTARRS catalogs."""
+        # Get the output directory
+        out_subdir = f"{self.ztf_catalogs[self.bands[0]].image_metadata[self.bands[0]]['field']}_{self.ztf_catalogs[self.bands[0]].image_metadata[self.bands[0]]['ccid']}_{self.ztf_catalogs[self.bands[0]].image_metadata[self.bands[0]]['qid']}"
+        outdir = os.path.join(out_parent_dir, out_subdir)
+
+        if not overwrite and os.path.exists(outdir):
+            print(f"Directory {outdir} already exists. Skipping.")
+            return outdir
+
         # Prefetch catalogs
         self.prefecth_catalogs()
 
         # Make a subdir... overwrite if told
-        out_subdir = f"{self.ztf_catalogs[self.bands[0]].image_metadata[self.bands[0]]['field']}_{self.ztf_catalogs[self.bands[0]].image_metadata[self.bands[0]]['ccid']}_{self.ztf_catalogs[self.bands[0]].image_metadata[self.bands[0]]['qid']}"
-        outdir = os.path.join(out_parent_dir, out_subdir)
         if os.path.exists(outdir):
             if not overwrite:
                 raise FileExistsError(f"Directory {outdir} already exists.")

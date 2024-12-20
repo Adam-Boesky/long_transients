@@ -26,7 +26,7 @@ def process_quadrant(quadrant, field_id, data_path, parallel):
         parallel=parallel
     )
     if tile.n_bands > 0:
-        tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=True)
+        tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=False)
         print(f'Extracted sources from quadrant {field_id} at ({ra_center:.3f}, {dec_center:.3f}). Stored at: {tile_output_path}')
     else:
         print(f'Skipping quadrant extraction {field_id} at ({ra_center:.3f}, {dec_center:.3f}) due to missing bands.')
