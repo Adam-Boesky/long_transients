@@ -50,20 +50,21 @@ class Tile():
                 new_cats.pop(b)
         self.ztf_catalogs = new_cats
         self.bands = bands
-        self.ra_range, self.dec_range = self.ztf_catalogs[self.bands[0]].get_coordinate_range()
 
-        # Get the PanSTARRS catalog for the tile
-        self.pstar_catalog = PSTARR_Catalog(self.ra_range, self.dec_range, prefetch=parallel, catalog_bands=self.bands)
+        # Load PSTARR catalog
+        if self.n_bands > 0:
+            self.ra_range, self.dec_range = self.ztf_catalogs[self.bands[0]].get_coordinate_range()
 
-        # The crux of this class will be this massive Astropy table
-        self._data_dicts = None
+            # Get the PanSTARRS catalog for the tile
+            self.pstar_catalog = PSTARR_Catalog(self.ra_range, self.dec_range, prefetch=parallel, catalog_bands=self.bands)
 
-    # @property
-    # def data(self) -> dict:
-    #     if self._data is None:
-    #         self._data = associate_tables_by_coordinates(self.ztf_catalog.data, self.pstar_catalog.data, prefix1='ZTF', prefix2='PSTARR')
+            # The crux of this class will be this massive Astropy table
+            self._data_dicts = None
 
-    #     return self._data
+    @property
+    def n_bands(self) -> int:
+        return len(self.bands)
+
     @property
     def data_dicts(self) -> dict[str, Table]:
         if self._data_dicts is None:
