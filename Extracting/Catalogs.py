@@ -294,6 +294,7 @@ WHERE rn = 1
                     try:
                         print(f'Retrieving {table_name} from MyDB!')
                         band_tables.append(jobs.get_table(table_name))
+                        break
                     except ValueError:
                         print(f'{table_name} not in MyDB, submitting request to make it!')
                         self._submit_table_query(jobs, band)
