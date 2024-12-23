@@ -289,14 +289,18 @@ WHERE rn = 1
             table_name = f'{band}_pstarr_sources_ra{ra_range_strs[0]}_{ra_range_strs[1]}_dec{dec_range_strs[0]}_{dec_range_strs[1]}'
 
             # If the table is there, grab it. Else, submit the query and then grab it
-            try:
-                print(f'Retrieving {table_name} from MyDB!')
-                band_tables.append(jobs.get_table(table_name))
-            except ValueError:
-                print(f'{table_name} not in MyDB, submitting request to make it!')
-                self._submit_table_query(jobs, band)
-                band_tables.append(jobs.get_table(table_name))
-        
+            for _ in range(3):
+                try:
+                    try:
+                        print(f'Retrieving {table_name} from MyDB!')
+                        band_tables.append(jobs.get_table(table_name))
+                    except ValueError:
+                        print(f'{table_name} not in MyDB, submitting request to make it!')
+                        self._submit_table_query(jobs, band)
+                        band_tables.append(jobs.get_table(table_name))
+                except Exception:
+                    print(f'Exception retrieving {table_name} from MyDB. Trying again.')
+
         # Join the band tables
         final_table = self._join_tables(band_tables)
 

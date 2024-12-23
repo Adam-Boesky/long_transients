@@ -45,7 +45,10 @@ class Source_Extractor():
         except KeyError:
             self.r_fwhm = self.header['SEEING']
         self.zero_pt_mag = self.header['MAGZP']
-        self.maglimit = maglimit
+        if maglimit is None:
+            self.maglimit = dict(self.header).get('MAGLIM')
+        else:
+            self.maglimit = maglimit
         self.deblend_cont = 0.00075
         self.minarea = 5
         self.deblend_nthresh = 32
