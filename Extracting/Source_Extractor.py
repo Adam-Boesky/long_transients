@@ -152,12 +152,15 @@ class Source_Extractor():
         not_nan = np.zeros(len(pstarr_table))
         for i, (x, y) in enumerate(zip(xs, ys)):
             x, y = int(x), int(y)
-            if np.sum(
-                self.nan_mask[
-                    y - half_cutout_size : y + half_cutout_size,
-                    x - half_cutout_size : x + half_cutout_size
-                ]
-            ) / (self.psf_cutout_size * self.psf_cutout_size) < 0.05:  # <5% of the pixels in the cutout are NaN
+            cutout = self.nan_mask[
+                y - half_cutout_size : y + half_cutout_size,
+                x - half_cutout_size : x + half_cutout_size
+            ]
+            if np.sum(cutout) / (self.psf_cutout_size * self.psf_cutout_size) < 0.05 and \
+                len(cutout) != 0:  
+                # <5% of the pixels in the cutout are NaN, and the cutout isn't empty, which would happen for sources
+                # that are not in the field (which is allowed because the panstarrs query has some padding around the
+                # ZTF cutouts).
                 not_nan[i] = 1
         not_nan = not_nan.astype(bool)
         pstarr_table = pstarr_table[not_nan]
@@ -301,7 +304,7 @@ class Source_Extractor():
         truncated_mask = self._is_truncated(kron_flag)
         nan_init_flux_mask = np.isnan(kron_mags)
         bad_src_mask = np.logical_or(np.logical_or(nan_nearby_mask, truncated_mask), nan_init_flux_mask)
-        print(f'Info for {self.band} EPSF fitting:')
+        print(f'Info for {self.band} EPSF fitting in coordinate range {self.get_coord_range()}:')
         print(f'\tNumber of sources: {len(self.sources)}')
         print(f'\tNumber of sources with NaN nearby: {np.sum(nan_nearby_mask)}')
         print(f'\tNumber of sources with truncated: {np.sum(truncated_mask)}')
