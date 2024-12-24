@@ -301,7 +301,7 @@ class Source_Extractor():
         truncated_mask = self._is_truncated(kron_flag)
         nan_init_flux_mask = np.isnan(kron_mags)
         bad_src_mask = np.logical_or(np.logical_or(nan_nearby_mask, truncated_mask), nan_init_flux_mask)
-        print('Info for EPSF fitting:')
+        print(f'Info for {self.band} EPSF fitting:')
         print(f'\tNumber of sources: {len(self.sources)}')
         print(f'\tNumber of sources with NaN nearby: {np.sum(nan_nearby_mask)}')
         print(f'\tNumber of sources with truncated: {np.sum(truncated_mask)}')
@@ -318,11 +318,18 @@ class Source_Extractor():
         # Fit the PSF model on a sample of just stars
         print(f'Fitting PSF model using {len(self._point_source_coords)} stars...')
         data_for_fit = NDData(data=self.image_sub, wcs=self.wcs)
-        self.stars = extract_stars(
-            data_for_fit,
-            Table([self._point_source_coords], names=['skycoord']),
-            size=self.psf_cutout_size,
-        )
+        try:
+            self.stars = extract_stars(
+                data_for_fit,
+                Table([self._point_source_coords], names=['skycoord']),
+                size=self.psf_cutout_size,
+            )
+        except ValueError as e:
+            if str(e) == 'No points given':
+                raise ValueError(f'No point given in the {self.band} catalog with the coordinate range {self.get_coord_range()}!')
+            else:
+                raise e
+
         self.stars = EPSFStars([s for s in self.stars if not np.any(np.isnan(s.data))])  # drop cutouts with nans
         fitter = EPSFFitter(fit_boxsize=self.fit_boxsize)
         epsf_builder = EPSFBuilder(fitter=fitter)
