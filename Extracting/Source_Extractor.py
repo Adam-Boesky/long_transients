@@ -327,16 +327,12 @@ class Source_Extractor():
                 Table([self._point_source_coords], names=['skycoord']),
                 size=self.psf_cutout_size,
             )
-        except ValueError as e:
-            if str(e) == 'No points given':
-                raise ValueError(f'No point given in the {self.band} catalog with the coordinate range {self.get_coord_range()}!')
-            else:
-                raise e
-
-        self.stars = EPSFStars([s for s in self.stars if not np.any(np.isnan(s.data))])  # drop cutouts with nans
-        fitter = EPSFFitter(fit_boxsize=self.fit_boxsize)
-        epsf_builder = EPSFBuilder(fitter=fitter)
-        self.epsf, _ = epsf_builder(self.stars) # self.epsf is an EPSFModel
+            self.stars = EPSFStars([s for s in self.stars if not np.any(np.isnan(s.data))])  # drop cutouts with nans
+            fitter = EPSFFitter(fit_boxsize=self.fit_boxsize)
+            epsf_builder = EPSFBuilder(fitter=fitter)
+            self.epsf, _ = epsf_builder(self.stars) # self.epsf is an EPSFModel
+        except Exception as e:
+            raise ValueError(f'Error: {e}\nBand: {self.band}\nCoordinate Range: {self.get_coord_range()}!')
 
         # Perform the PSF photometry with the fitted model
         self.psfphot = PSFPhotometry(self.epsf, fit_shape=psf_fit_width)
