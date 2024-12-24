@@ -332,7 +332,8 @@ class Source_Extractor():
             epsf_builder = EPSFBuilder(fitter=fitter)
             self.epsf, _ = epsf_builder(self.stars) # self.epsf is an EPSFModel
         except Exception as e:
-            raise ValueError(f'Error: {e}\nBand: {self.band}\nCoordinate Range: {self.get_coord_range()}!')
+            e.add_note(f'Band: {self.band}\nCoordinate Range: {self.get_coord_range()}')
+            raise e
 
         # Perform the PSF photometry with the fitted model
         self.psfphot = PSFPhotometry(self.epsf, fit_shape=psf_fit_width)
