@@ -225,8 +225,6 @@ class Filters():
         for band in sources.keys():
 
             # Masks for whether source is in a band
-            if 'ZTF_g_ra' not in sources[band].data.colnames:
-                breakpoint()
             in_g = ~np.isnan(sources[band].data[f'ZTF_g_ra'])
             in_r = ~np.isnan(sources[band].data[f'ZTF_r_ra'])
             in_i = ~np.isnan(sources[band].data[f'ZTF_i_ra'])

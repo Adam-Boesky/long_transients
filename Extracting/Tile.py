@@ -72,7 +72,9 @@ class Tile():
             # Function to process each band
             def process_band(band: str) -> Tuple[str, Table]:
                 self.ztf_catalogs[band].sextractors[band].set_sources_for_psf(
-                    self.pstar_catalog.data[['ra', 'dec', f'{band}KronMag', f'{band}KronMagErr', f'{band}PSFMag']]
+                    self.pstar_catalog.data[
+                        ['ra', 'dec', f'{band}KronMag', f'{band}KronMagErr', f'{band}PSFMag', f'{band}PSFMagErr']
+                    ]
                 )
                 return band, associate_tables_by_coordinates(
                     self.ztf_catalogs[band].data,
@@ -112,7 +114,9 @@ class Tile():
         # Set the PSF sources
         def _set_sources_for_psf(band: str):
             self.ztf_catalogs[band].sextractors[band].set_sources_for_psf(
-                self.pstar_catalog.data[['ra', 'dec', f'{band}KronMag', f'{band}KronMagErr', f'{band}PSFMag']]
+                self.pstar_catalog.data[
+                    ['ra', 'dec', f'{band}KronMag', f'{band}KronMagErr', f'{band}PSFMag', f'{band}PSFMagErr']
+                ]
             )
 
         def _prefetch_ztf(band: str):

@@ -166,7 +166,7 @@ class Source_Extractor():
         pstarr_table = pstarr_table[not_nan]
 
         # Mask on detected bands
-        pstarr_table = pstarr_table.copy()
+        pstarr_table = Table(pstarr_table.copy(), masked=False)
         detected_mask = (
             (pstarr_table[f'{self.band}KronMag'] != -999.0) &
             (pstarr_table[f'{self.band}KronMagErr'] != -999.0) &
@@ -176,8 +176,8 @@ class Source_Extractor():
 
         # Cut on SNR, psf mag - kron mag, and psf mag upper limit
         pstarr_snr = get_snr_from_mag(
-            pstarr_table[f'{self.band}KronMag'],
-            pstarr_table[f'{self.band}KronMagErr'],
+            np.array(pstarr_table[f'{self.band}KronMag']),
+            np.array(pstarr_table[f'{self.band}KronMagErr']),
             self.zero_pt_mag
         )
         pstarr_table = pstarr_table[(
