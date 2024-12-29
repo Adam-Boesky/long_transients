@@ -1,4 +1,5 @@
 import os
+import sys
 import ztffields
 import numpy as np
 
@@ -34,19 +35,28 @@ def process_quadrant(quadrant, field_id, data_path, parallel):
 def process_field(field_id, field_poly, data_path, parallel):
     print(f'Extracting sources from field ID {field_id}...')
     for quadrant in field_poly:
-        process_quadrant(quadrant, field_id, data_path, parallel)
+        try:
+            process_quadrant(quadrant, field_id, data_path, parallel)
+        except Exception as e:
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+            exception_info = f'{e}\n{exc_type}\n{fname}\n{exc_tb.tb_lineno}'
+            print(f'EXCEPTION INFO FOR FIELD {field_id} AT ({np.mean(quadrant[:, 0]):.3f}, {np.mean(quadrant[:, 1]):.3f}):\n{exception_info}')
+            if raise_exceptions:
+                raise e
 
 
 def extract_sources():
 
     # Config
+    global raise_exceptions
     raise_exceptions = False
     parallel = False
     data_path = get_data_path()
 
     # Load the field geometries
     fields = ztffields.Fields()  # TODO: Some filter on fields
-    field_info, field_polygons = fields.get_field_vertices([200, 201], level='quadrant', steps=2)
+    field_info, field_polygons = fields.get_field_vertices([500, 501, 502], level='quadrant', steps=2)
 
     # Iterate through the field and quadrants, extracting sources
     with ProcessPoolExecutor(max_workers=8) as executor:
@@ -60,8 +70,7 @@ def extract_sources():
                 future.result()
             except Exception as exc:
                 print(f'WARNING: Field processing generated an exception: {exc}')
-                if raise_exceptions:
-                    raise exc
+                raise exc
     # for field_id, field_poly in zip(field_info['fieldid'], field_polygons):
     #     process_field(field_id, field_poly, data_path, parallel)
 
