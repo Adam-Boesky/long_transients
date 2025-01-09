@@ -39,8 +39,12 @@ def process_field(field_id, field_poly, data_path, parallel):
             process_quadrant(quadrant, field_id, data_path, parallel)
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
-            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-            exception_info = f'{e}\n{exc_type}\n{fname}\n{exc_tb.tb_lineno}'
+
+            # Navigate to the innermost traceback
+            while exc_tb.tb_next:
+                exc_tb = exc_tb.tb_next
+            fname = exc_tb.tb_frame.f_code.co_filename
+            exception_info = f'{fname}:{exc_tb.tb_lineno}\n{exc_type}: {e}'
             print(f'EXCEPTION INFO FOR FIELD {field_id} AT ({np.mean(quadrant[:, 0]):.3f}, {np.mean(quadrant[:, 1]):.3f}):\n{exception_info}')
             if raise_exceptions:
                 raise e
