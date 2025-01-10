@@ -42,7 +42,13 @@ def process_field(field_id, field_poly, data_path, parallel):
 
             # Navigate to the innermost traceback
             while exc_tb.tb_next:
-                exc_tb = exc_tb.tb_next
+                next_tb = exc_tb.tb_next
+                filename = next_tb.tb_frame.f_code.co_filename
+                # Skip if the file is not part of your project (e.g., from site-packages)
+                if "site-packages" not in filename and "dist-packages" not in filename:
+                    exc_tb = next_tb
+                else:
+                    break
             fname = exc_tb.tb_frame.f_code.co_filename
             exception_info = f'{fname}:{exc_tb.tb_lineno}\n{exc_type}: {e}'
             print(f'EXCEPTION INFO FOR FIELD {field_id} AT ({np.mean(quadrant[:, 0]):.3f}, {np.mean(quadrant[:, 1]):.3f}):\n{exception_info}')
