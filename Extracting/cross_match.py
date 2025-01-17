@@ -202,13 +202,29 @@ def merge_field(field_name: str, field_quad_dirs: List[str], field_subdir: str =
     """Merge all quadrants from a field into one table."""
     print(f'Merging quadrant results for field {field_name}')
     for band in BANDS:
-        tab = ascii.read(os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv'))
+
+        # Start with first available quadrant
+        getting_first_tab = True
+        while getting_first_tab and len(field_quad_dirs) > 0:
+            first_tab_path = os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv')
+            if os.path.exists(first_tab_path):
+                tab = ascii.read(os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv'))
+                getting_first_tab = False
+            else:
+                print(f'WARNING: {first_tab_path} does not exist. Skipping...')
+                field_quad_dirs.remove(field_quad_dirs[0])
+
+        if len(field_quad_dirs) == 0:
+            print(f'WARNING: No valid quadrants found for field {field_name} in the {band} band. Skipping...')
+            continue
+
+        # Merge the rest of them
         for fqdir in field_quad_dirs[1:]:
             fqpath = os.path.join(CATALOG_DIR, fqdir, f'{band}_associated.ecsv')
             if os.path.exists(fqpath):
                 tab = vstack((tab, ascii.read(fqpath)))
             else:
-                print(f'Warning: {fqpath} does not exist. Skipping...')
+                print(f'WARNING: {fqpath} does not exist. Skipping...')
         tab.write(
             os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_{band}.ecsv'),
             format='ascii.ecsv',
