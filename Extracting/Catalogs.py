@@ -294,6 +294,7 @@ WHERE rn = 1 into mydb.{tab_name}
 
             # If overwriting myDB, drop the table
             if self.overwrite_mydb:
+                print(f'Overwriting mydb.{table_name}')
                 jobs.drop_table_if_exists(table_name)
 
             # If the table is there, grab it. Else, submit the query and then grab it
