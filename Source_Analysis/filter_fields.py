@@ -280,10 +280,9 @@ class Filters():
 
             # Annotate the filter info
             band_mask = np.hstack((in_g.reshape(-1,1), in_r.reshape(-1, 1), in_i.reshape(-1, 1)))
-            in_bands = [['g', 'r', 'i'][m] for m in band_mask]
+            in_bands = [np.array(['g', 'r', 'i'])[m] for m in band_mask]
             for i, src_in_bands in enumerate(in_bands):
                 sources[band][i].filter_info['in_bands'] = list(src_in_bands)
-            breakpoint()
 
             # Mask for sources with n bands >= n
             enough_bands_mask = np.sum(band_mask, axis=1) >= n
@@ -607,6 +606,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         ######################################################################
         ##### DEAL WITH THE SOURCES THAT ARE NOT IN BOTH CATALOGS#####
         # Delta mag > n sigma
+        # breakpoint()
         in_ztf_tabs, _, _ = filters.filter(in_ztf_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, upper_lim='PSTARR', bin_means=bin_means, bin_stds=bin_stds)
         add_filt(f'Delta Mag > {dmag_sigma} sigma', in_ztf_tabs, d, init_counts=init_counts, previous_element=just_ztf_element)
 
@@ -614,12 +614,14 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         sources_in_ztf: Dict[str, Sources] = {
             band: Sources(ras=tab['ra'], decs=tab['dec'], field_catalogs=in_ztf_tabs, verbose=0) for band, tab in in_ztf_tabs.items()
         }
-        breakpoint()
+
+        #### TESTING ####
+        for band, srcs in sources_in_ztf.items():
+            srcs.save(os.path.join('/Users/adamboesky/Research/long_transients/Data/filter_testing', f'weird_mags{band}.ecsv'))
 
         # Check for big dmag in >1 bands
         sources_in_ztf = filters.filter(sources_in_ztf, 'at_least_n_bands', n=2)
         add_filt(f'Big dmag in\n>=2 bands', sources_in_ztf, d, init_counts=init_counts)
-        breakpoint()
 
         # Store pre-gaia filteration if requested
         if store_pre_gaia:

@@ -431,8 +431,17 @@ class Source_Extractor():
 
     def get_coord_range(self) -> Tuple[Tuple[float, float], Tuple[float, float]]:
         """Get the RA and DEC range of the image."""
-        ra_range = (self.wcs.pixel_to_world(0, 0).ra.deg, self.wcs.pixel_to_world(self.image_data.shape[1], 0).ra.deg)
-        dec_range = (self.wcs.pixel_to_world(0, self.image_data.shape[0]).dec.deg, self.wcs.pixel_to_world(0, 0).dec.deg)
+        corners = [
+            self.wcs.pixel_to_world(0, 0),
+            self.wcs.pixel_to_world(self.image_data.shape[1], 0),
+            self.wcs.pixel_to_world(self.image_data.shape[1], self.image_data.shape[0]),
+            self.wcs.pixel_to_world(0, self.image_data.shape[0]),
+        ]
+        corner_ras = np.array([c.ra.deg for c in corners])
+        corner_decs = np.array([c.dec.deg for c in corners])
+        ra_range = (np.min(corner_ras), np.max(corner_ras))
+        dec_range = (np.min(corner_decs), np.max(corner_decs))
+
         return ra_range, dec_range
 
     def get_data_table(self, include_kron: bool = True, include_psf: bool = True) -> Table:

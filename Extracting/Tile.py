@@ -21,6 +21,7 @@ class Tile():
             bands: Union[Iterable[str], str] = ['g', 'r', 'i'],
             data_dir: Optional[str] = None,
             parallel: bool = False,
+            overwrite_mydb: bool = False,
         ):
         """A class to represent a tile of the sky. This corresponds to one quadrant of a ZTF field."""
         if isinstance(bands, str):
@@ -56,7 +57,7 @@ class Tile():
             self.ra_range, self.dec_range = self.ztf_catalogs[self.bands[0]].get_coordinate_range()
 
             # Get the PanSTARRS catalog for the tile
-            self.pstar_catalog = PSTARR_Catalog(self.ra_range, self.dec_range, prefetch=parallel, catalog_bands=self.bands)
+            self.pstar_catalog = PSTARR_Catalog(self.ra_range, self.dec_range, prefetch=parallel, catalog_bands=self.bands, overwrite_mydb=overwrite_mydb)
 
             # The crux of this class will be this massive Astropy table
             self._data_dicts = None

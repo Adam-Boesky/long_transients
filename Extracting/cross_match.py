@@ -113,7 +113,7 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     ztf_coords = SkyCoord(ra=combined_table[in_ztf_mask]['ZTF_ra'], dec=combined_table[in_ztf_mask]['ZTF_dec'], unit='deg')
     _, sep_to_other_sources, _ = match_coordinates_sky(ztf_coords, pstarr_coords)
     indices_in_ztf = np.where(in_ztf_mask)[0]
-    sep_condition = sep_to_other_sources.arcminute > 1.0  # Boolean array of length M
+    sep_condition = sep_to_other_sources.arcminute > 1.0
     indices_sep_condition = np.where(sep_condition)[0]
     original_indices = indices_in_ztf[indices_sep_condition]
     combined_table['Catalog_Flag'][original_indices] = 3
@@ -122,7 +122,7 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     pstarr_pix_coords = wcs.world_to_pixel(pstarr_coords)
     pstarr_xs = pstarr_pix_coords[0].round().astype(int)
     pstarr_ys = pstarr_pix_coords[1].round().astype(int)
-    in_wcs = (pstarr_xs < ztf_nan_mask.shape[0]) & (pstarr_ys < ztf_nan_mask.shape[1])
+    in_wcs = (pstarr_xs < ztf_nan_mask.shape[0]) & (pstarr_ys < ztf_nan_mask.shape[1]) & (pstarr_xs > 0) & (pstarr_ys > 0)
     is_nan_in_ztf = np.array([
         true_nearby(
             row=y,

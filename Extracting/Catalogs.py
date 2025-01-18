@@ -69,6 +69,8 @@ class PSTARR_Catalog(Catalog):
             dec_range: Tuple[float],
             prefetch: bool = False,
             catalog_bands: Iterable[str] = ('g', 'r', 'i'),
+            query_buffer: float = 0.003,
+            overwrite_mydb: bool = False,
         ):
         super().__init__()
         self.catalog_name = 'PanSTARR'
@@ -76,8 +78,10 @@ class PSTARR_Catalog(Catalog):
         self.dec_range = dec_range  # (dec_min, dec_max) [deg]
         self.column_map = {'objID': 'PanSTARR_ID', 'raMean': 'ra', 'decMean': 'dec'}
         self.bands = catalog_bands
+        self.query_buffer = query_buffer
+        self.overwrite_mydb = overwrite_mydb
 
-        assert (self.ra_range[1] > self.ra_range[0]) and (self.dec_range[1] > self.dec_range[0]), "The ranges must be \
+        assert (self.ra_range[1] >= self.ra_range[0]) and (self.dec_range[1] >= self.dec_range[0]), "The ranges must be \
             of the form (min, max) but are (max, min)."
 
         if prefetch:
@@ -209,17 +213,17 @@ WITH ranked AS (
     SELECT
     o.objID, o.raMean, o.decMean,
     {band_mags_str}\tm.primaryDetection,
-    ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) as rn into mydb.{tab_name}
+    ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) as rn
     FROM ObjectThin o
     INNER JOIN StackObjectThin m ON o.objID = m.objID
     INNER JOIN StackObjectAttributes a ON o.objID = a.objID
-    WHERE o.raMean BETWEEN {self.ra_range[0] - 0.003} AND {self.ra_range[1] + 0.003}
-    AND o.decMean BETWEEN {self.dec_range[0] - 0.003} AND {self.dec_range[1] + 0.003}
+    WHERE o.raMean BETWEEN {self.ra_range[0] - self.query_buffer} AND {self.ra_range[1] + self.query_buffer}
+    AND o.decMean BETWEEN {self.dec_range[0] - self.query_buffer} AND {self.dec_range[1] + self.query_buffer}
     AND (o.nStackDetections > 0 OR o.nDetections > 1)
     AND (m.{band}infoFlag2 & 4) = 0
 )
 SELECT * FROM ranked
-WHERE rn = 1
+WHERE rn = 1 into mydb.{tab_name}
     """
 
         return query
@@ -287,6 +291,10 @@ WHERE rn = 1
 
             # Construct the table name
             table_name = f'{band}_pstarr_sources_ra{ra_range_strs[0]}_{ra_range_strs[1]}_dec{dec_range_strs[0]}_{dec_range_strs[1]}'
+
+            # If overwriting myDB, drop the table
+            if self.overwrite_mydb:
+                jobs.drop_table_if_exists(table_name)
 
             # If the table is there, grab it. Else, submit the query and then grab it
             for _ in range(3):

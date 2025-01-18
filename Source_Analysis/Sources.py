@@ -617,7 +617,7 @@ class Source():
 
         # Make axes if not given
         if axes is None:
-            _, axes = plt.subplots(2, n_bands, figsize=(15, 5 * n_bands))
+            _, axes = plt.subplots(2, n_bands, figsize=(15, 7 * n_bands))
         if not isinstance(axes, np.ndarray):
             axes = np.array(axes)
 
