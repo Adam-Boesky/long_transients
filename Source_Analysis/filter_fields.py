@@ -749,7 +749,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 
 def filter_fields():
     """Filter fields!"""
-    for field in ['000501']:  #['000806']:
+    for field in ['000806']:
         print(f'Filtering field {field}...')
         filter_field(
             field,

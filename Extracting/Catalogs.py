@@ -1,6 +1,7 @@
 """Objects that get the information from astrophysical catalogs."""
 from PIL import Image
 import atexit
+import random
 import os
 import tempfile
 from io import StringIO, BytesIO
@@ -14,14 +15,13 @@ from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from astropy.table import Table, join, vstack
 from astropy.io import ascii, fits
-from mastcasjobs import MastCasJobs
 
 try:
     from Source_Extractor import Source_Extractor
-    from utils import get_credentials
+    from utils import get_credentials, MASTCASJOBS
 except ModuleNotFoundError:
     from .Source_Extractor import Source_Extractor
-    from .utils import get_credentials
+    from .utils import get_credentials, MASTCASJOBS
 
 ZTF_CUTOUT_HALFWIDTH = 0.8888889 / 2
 
@@ -254,7 +254,7 @@ WHERE rn = 1 into mydb.{tab_name}
 
         return final_table
 
-    def _submit_table_query(self, jobs: MastCasJobs, band: str) -> str:
+    def _submit_table_query(self, band: str) -> str:
         # Make the table name
         ra_range_strs = [str(ra).replace('.', 'p').replace('-', 'n')[:6] for ra in self.ra_range]      # formatting coords
         dec_range_strs = [str(dec).replace('.', 'p').replace('-', 'n')[:6] for dec in self.dec_range]  # formatting coords
@@ -265,8 +265,8 @@ WHERE rn = 1 into mydb.{tab_name}
 
         # Submit the query and monitor it
         band_query = self._get_band_query(band, tab_name=table_name)
-        jobid = jobs.submit(band_query, task_name=f"{band}_PanSTARRS_DR2_TILE_QUERY")
-        jobs.monitor(jobid)
+        jobid = MASTCASJOBS.submit(band_query, task_name=f"{band}_PanSTARRS_DR2_TILE_QUERY")
+        MASTCASJOBS.monitor(jobid)
 
         return table_name
 
@@ -277,9 +277,6 @@ WHERE rn = 1 into mydb.{tab_name}
         # return Catalogs.query_criteria(catalog='PanSTARRS', criteria=f'RA > {ra_range[0]} and RA < {ra_range[1]} and '
         #                                 f'DEC > {dec_range[0]} and DEC < {dec_range[1]}', limit=100)
         # SQL query to get sources within the RA and DEC range
-        # Get the PS1 MAST username and password
-        wsid, password = get_credentials('mast_login.txt')
-        jobs = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password, request_type='POST')
 
         # Make the table name
         ra_range_strs = [str(ra).replace('.', 'p').replace('-', 'n')[:6] for ra in self.ra_range]      # formatting coords
@@ -295,21 +292,30 @@ WHERE rn = 1 into mydb.{tab_name}
             # If overwriting myDB, drop the table
             if self.overwrite_mydb:
                 print(f'Overwriting mydb.{table_name}')
-                jobs.drop_table_if_exists(table_name)
+                MASTCASJOBS.drop_table_if_exists(table_name)
 
             # If the table is there, grab it. Else, submit the query and then grab it
             for _ in range(3):
                 try:
-                    try:
-                        print(f'Retrieving {table_name} from MyDB!')
-                        band_tables.append(jobs.get_table(table_name))
-                        break
-                    except ValueError:
+
+                    # If the table is not in mydb, submit a request to make it
+                    mydb_table_list = MASTCASJOBS.list_tables()
+                    if table_name not in mydb_table_list:
                         print(f'{table_name} not in MyDB, submitting request to make it!')
-                        self._submit_table_query(jobs, band)
-                        band_tables.append(jobs.get_table(table_name))
+                        self._submit_table_query(band)
+
+                    # Retrieve the table
+                    print(f'Retrieving {table_name} from MyDB!')
+                    band_tables.append(MASTCASJOBS.get_table(table_name))
+
                 except Exception:
                     print(f'Exception retrieving {table_name} from MyDB. Trying again.')
+
+                    if len(mydb_table_list) > 700:
+                        print('WARNING: mydb appears to be pretty cluttered. Deleting some first...')
+                        tabs_to_delete = random.sample(mydb_table_list, k=len(mydb_table_list) - 500)
+                        for t in tabs_to_delete:
+                            MASTCASJOBS.drop_table_if_exists(t)
 
         # Join the band tables
         final_table = self._join_tables(band_tables)

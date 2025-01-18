@@ -13,15 +13,14 @@ from astropy.table import Table, unique
 from astropy.wcs import WCS
 from astropy.nddata import NDData
 from astropy.visualization import simple_norm
-from mastcasjobs import MastCasJobs
 from matplotlib.patches import Ellipse
 from photutils.psf import PSFPhotometry, EPSFBuilder, EPSFFitter, EPSFStars, extract_stars
 from scipy.interpolate import NearestNDInterpolator
 
 try:
-    from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby
+    from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS
 except ModuleNotFoundError:
-    from .utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby
+    from .utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS
 
 
 class Source_Extractor():
@@ -511,7 +510,6 @@ def query_cone_ps1(
 
     # Get the PS1 MAST username and password from /Users/username/3PI_key.txt
     key_location = os.path.join(pathlib.Path.home(), 'vault/mast_login.txt')
-    wsid, password = np.genfromtxt(key_location, dtype = 'str')
 
     # 3PI query
     # Kron Magnitude, ps_score (we define galaxies as ps_score < 0.9)
@@ -527,8 +525,7 @@ def query_cone_ps1(
     la_query = the_query%(ra_deg, dec_deg, search_radius_arcmin)
 
     # Format Query
-    jobs    = MastCasJobs(userid=wsid, password=password, context="PanSTARRS_DR2")
-    results = jobs.quick(la_query, task_name="python cone search")
+    results = MASTCASJOBS.quick(la_query, task_name="python cone search")
 
     # For New format
     if type(results) != str:

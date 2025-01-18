@@ -5,7 +5,7 @@ import pickle
 import argparse
 import numpy as np
 
-from typing import List
+from typing import List, Callable
 from astropy.wcs import WCS
 from astropy.io import ascii
 from astropy.table import Table, vstack
@@ -15,6 +15,7 @@ try:
     from utils import get_data_path, true_nearby
 except ModuleNotFoundError:
     from .utils import get_data_path, true_nearby
+import multiprocessing
 
 
 def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs: WCS, max_sep: float = 1.0) -> Table:
@@ -174,6 +175,13 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
 
 def cross_match_quadrant(quadrant_dirpath: str):
     """Cross match the g, r, i catalogs with the panstarrs catalog for a single quadrant."""
+    if OVERWRITE is False:
+        if os.path.exists(os.path.join(quadrant_dirpath, 'g_associated.ecsv')) or \
+           os.path.exists(os.path.join(quadrant_dirpath, 'r_associated.ecsv')) or \
+           os.path.exists(os.path.join(quadrant_dirpath, 'i_associated.ecsv')):
+            print(f'Skipping {quadrant_dirpath} because it is already associated and overwrite is set to False.')
+            return
+
     print(f'Cross matching quadrant {quadrant_dirpath.split("/")[-1]}')
     pstar_tab = ascii.read(os.path.join(quadrant_dirpath, 'PSTARR.ecsv'))
 
@@ -198,8 +206,22 @@ def cross_match_quadrant(quadrant_dirpath: str):
             )
 
 
-def merge_field(field_name: str, field_quad_dirs: List[str], field_subdir: str = 'field_results'):
+def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'field_results'):
     """Merge all quadrants from a field into one table."""
+
+    # Get the quadrant directories
+    field_quad_dirs = [quad_dir for quad_dir in quad_dirs if quad_dir.startswith(field_name) and (re.match(r'[0-9]{6}_[0-9]{2}_[0-9]', quad_dir) is not None)]
+    if len(field_quad_dirs) == 0:
+        return
+
+    # Check if the merged file already exists
+    if OVERWRITE is False:
+        if os.path.exists(os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_g.ecsv')) or \
+            os.path.exists(os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_r.ecsv')) or \
+            os.path.exists(os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_i.ecsv')):
+            print(f'Skipping {field_name} because it already exists and overwrite is set to False.')
+            return
+
     print(f'Merging quadrant results for field {field_name}')
     for band in BANDS:
 
@@ -232,14 +254,16 @@ def merge_field(field_name: str, field_quad_dirs: List[str], field_subdir: str =
         )
 
 
-def associate_quadrants():
+def associate_quadrants(initializer: Callable):
     """Cross match the g, r, i catalogs with the panstarrs catalog for each quadrant."""
-    for quad_dir in os.listdir(CATALOG_DIR):
-        if re.match(r'[0-9]{6}_[0-9]{2}_[0-9]', quad_dir):
-            cross_match_quadrant(os.path.join(CATALOG_DIR, quad_dir))
+    quad_dirpaths = [os.path.join(CATALOG_DIR, quad_dir) for quad_dir in os.listdir(CATALOG_DIR) \
+                     if re.match(r'[0-9]{6}_[0-9]{2}_[0-9]', quad_dir)]
+
+    with multiprocessing.Pool(processes=N_THREADS, initializer=initializer, initargs=(CATALOG_DIR, BANDS, OVERWRITE, N_THREADS)) as pool:
+        pool.map(cross_match_quadrant, quad_dirpaths)
 
 
-def merge_fields(output_directory: str = 'field_results'):
+def merge_fields(initializer: Callable, output_directory: str = 'field_results'):
     """Merge all quadrants from a field into one table."""
     # Make separate directory for field results
     field_results_dir = os.path.join(CATALOG_DIR, output_directory)
@@ -250,11 +274,24 @@ def merge_fields(output_directory: str = 'field_results'):
     quad_dirs = os.listdir(CATALOG_DIR)
     field_names = list(set([quad_dir.split('_')[0] for quad_dir in quad_dirs]))
 
-    # Associate and store each field
-    for field_name in field_names:
-        field_quad_dirs = [quad_dir for quad_dir in quad_dirs if quad_dir.startswith(field_name) and (re.match(r'[0-9]{6}_[0-9]{2}_[0-9]', quad_dir) is not None)]
-        if len(field_quad_dirs) > 0:
-            merge_field(field_name, field_quad_dirs)
+    # Merge fields in parallel
+    with multiprocessing.Pool(processes=N_THREADS, initializer=initializer, initargs=(CATALOG_DIR, BANDS, OVERWRITE, N_THREADS)) as pool:
+        pool.starmap(
+            merge_field,
+            [(field_name, quad_dirs, output_directory) for field_name in field_names]
+        )
+
+
+def initializer(catalog_dir, bands, overwrite, n_threads):
+    """Initializer function for setting globals in the multiprocessing pool."""
+    global CATALOG_DIR
+    global BANDS
+    global OVERWRITE
+    global N_THREADS
+    CATALOG_DIR = catalog_dir
+    BANDS = bands
+    OVERWRITE = overwrite
+    N_THREADS = n_threads
 
 
 def cross_match():
@@ -274,6 +311,20 @@ def cross_match():
         action='store_true',
         default=False,
         help='Merge all quadrants from a field into one table.'
+    )
+    parser.add_argument(
+        '-ow',
+        '--overwrite',
+        action='store_true',
+        default=False,
+        help='Overwrite the existing outputs.'
+    )
+    parser.add_argument(
+        '-nt',
+        '--n_threads',
+        type=int,
+        default=8,
+        help='The number of threads to use.'
     )
     parser.add_argument(
         '-outdir',
@@ -299,19 +350,23 @@ def cross_match():
 
     args = parser.parse_args()
 
-    # Set up
+    # Set up initializer and call
     global CATALOG_DIR
     global BANDS
+    global OVERWRITE
+    global N_THREADS
     CATALOG_DIR = os.path.join(get_data_path(), args.catalog_subdirectory)
     BANDS = list(args.bands)
+    OVERWRITE = args.overwrite
+    N_THREADS = args.n_threads
 
     # Actions
     if args.associate_quadrants:
         print('Associating sources in quadrants...')
-        associate_quadrants()
+        associate_quadrants(initializer)
     if args.merge_fields:
         print('Merging quadrants from all fields...')
-        merge_fields(args.output_directory)
+        merge_fields(initializer, output_directory=args.output_directory)
 
 
 if __name__=='__main__':

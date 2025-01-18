@@ -4,6 +4,7 @@ import pathlib
 from astropy.io import ascii
 from astropy.table import Table
 from functools import lru_cache
+from mastcasjobs import MastCasJobs
 from typing import Optional, Tuple, Union, Dict
 
 import numpy as np
@@ -109,3 +110,8 @@ def get_n_quadrants_merged_all_fields() -> Dict[str, Dict[str, int]]:
         quad_counts_per_band_all_fields[field_name] = get_n_quadrants_merged(field_name)
 
     return quad_counts_per_band_all_fields
+
+
+# Set up casjobs object
+wsid, password = get_credentials('mast_login.txt')
+MASTCASJOBS = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password, request_type='POST')
