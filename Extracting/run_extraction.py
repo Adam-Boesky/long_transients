@@ -26,6 +26,7 @@ def process_quadrant(quadrant, field_id, data_path, parallel):
         parallel=parallel
     )
     if tile.n_bands > 0:
+        print(f'Extracting sources from quadrant {field_id} at ({ra_center:.3f}, {dec_center:.3f})...')
         tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=False)
         print(f'Extracted sources from quadrant {field_id} at ({ra_center:.3f}, {dec_center:.3f}). Stored at: {tile_output_path}')
     else:

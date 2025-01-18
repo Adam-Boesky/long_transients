@@ -710,6 +710,9 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         sources_in_both = filters.filter(sources_in_both, 'parallax_filter')
         add_filt(f'Parallax', sources_in_both, d, init_counts=init_counts)
 
+        for band, srcs in sources_in_both.items():
+            srcs.save(os.path.join(filter_result_dirpath, f'2_wide_association_{band}.ecsv'))
+
         ######################################################################
         ##### DEAL WITH THE SOURCES THAT ARE NOT IN BOTH CATALOGS#####
         # Delta mag > n sigma
@@ -746,7 +749,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 
 def filter_fields():
     """Filter fields!"""
-    for field in ['000806']:
+    for field in ['000501']:  #['000806']:
         print(f'Filtering field {field}...')
         filter_field(
             field,

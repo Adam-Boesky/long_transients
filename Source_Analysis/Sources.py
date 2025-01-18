@@ -375,6 +375,10 @@ class Source():
                 data_dict[col] = [str(data_dict[col][0])]
             self._data = Table(data_dict)
 
+            # Make sure the catalog column is a long enough string
+            if 'Catalog' in self._data.colnames:
+                self._data['Catalog'] = self._data['Catalog'].astype('S10')
+
             if self.verbose > 0: print('Searching for source in the catalogs!')
             for band, cat in self.field_catalogs.items():
                 if self.verbose > 0: print(f'Searching {band}...')
