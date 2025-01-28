@@ -66,8 +66,13 @@ def extract_sources():
     data_path = get_data_path()
 
     # Load the field geometries
-    fields = ztffields.Fields()  # TODO: Some filter on fields
-    field_info, field_polygons = fields.get_field_vertices([500, 501, 502], level='quadrant', steps=2)
+    FIELDS = ztffields.Fields()
+    fields = ztffields.get_fieldid(galb_range=[[-90,-15], [15,90]], grid="main")  # all fields 15deg from the galactic plane
+    field_info, field_polygons = FIELDS.get_field_vertices(
+        fields[:10],
+        level='quadrant',
+        steps=2,
+    )
 
     # Iterate through the field and quadrants, extracting sources
     with ProcessPoolExecutor(max_workers=8) as executor:
@@ -82,8 +87,6 @@ def extract_sources():
             except Exception as exc:
                 print(f'WARNING: Field processing generated an exception: {exc}')
                 raise exc
-    # for field_id, field_poly in zip(field_info['fieldid'], field_polygons):
-    #     process_field(field_id, field_poly, data_path, parallel)
 
 
 if __name__=='__main__':
