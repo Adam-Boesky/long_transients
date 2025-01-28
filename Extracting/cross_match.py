@@ -12,9 +12,9 @@ from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 
 try:
-    from utils import get_data_path, true_nearby
+    from utils import get_data_path, true_nearby, metadata_from_field_dirname
 except ModuleNotFoundError:
-    from .utils import get_data_path, true_nearby
+    from .utils import get_data_path, true_nearby, metadata_from_field_dirname
 import multiprocessing
 
 
@@ -232,6 +232,11 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
             if os.path.exists(first_tab_path):
                 tab = ascii.read(os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv'))
                 getting_first_tab = False
+
+                # Add on the field info for each source
+                field_quadrant_metadata = metadata_from_field_dirname(field_quad_dirs[0])
+                for k, v in field_quadrant_metadata.items():
+                    tab[f'ZTF_{k}'] = v
             else:
                 print(f'WARNING: {first_tab_path} does not exist. Skipping...')
                 field_quad_dirs.remove(field_quad_dirs[0])
@@ -244,7 +249,15 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
         for fqdir in field_quad_dirs[1:]:
             fqpath = os.path.join(CATALOG_DIR, fqdir, f'{band}_associated.ecsv')
             if os.path.exists(fqpath):
-                tab = vstack((tab, ascii.read(fqpath)))
+                tab_to_stack = ascii.read(fqpath)
+
+                # Add on the field info for each source
+                field_quadrant_metadata = metadata_from_field_dirname(fqdir)
+                for k, v in field_quadrant_metadata.items():
+                    tab_to_stack[f'ZTF_{k}'] = v
+
+                # Stack
+                tab = vstack((tab, tab_to_stack))
             else:
                 print(f'WARNING: {fqpath} does not exist. Skipping...')
         tab.write(

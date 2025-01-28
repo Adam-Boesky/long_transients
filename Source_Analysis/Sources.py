@@ -1,4 +1,5 @@
 import os
+import ast
 import numpy as np
 import pandas as pd
 import astropy.units as u
@@ -18,6 +19,7 @@ from Extracting.utils import get_data_path, load_cached_table
 from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata, get_pstarr_cutout
 from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
+import traceback
 
 ACCEPTABLE_PROC_STATUS = [0]
 MANDATORY_SOURCE_COLUMNS = [
@@ -45,7 +47,8 @@ MANDATORY_SOURCE_COLUMNS = [
     'ZTF_rPSFFlags', 'ZTF_iKronMagErr', 'ZTF_g_cflux', 'ZTF_r_y', 'ZTF_r_zero_pt_mag', 'ZTF_i_flux', 'ZTF_r_x',
     'ZTF_r_ymax', 'ZTF_g_cxx', 'ZTF_i_npix', 'ZTF_r_xmax', 'ZTF_g_cfit', 'ZTF_g_theta', 'ZTF_rPSFMagErr', 'ZTF_g_ypeak',
     'ZTF_g_xcpeak', 'ZTF_g_ymax', 'ZTF_i_tnpix', 'ZTF_gKronFlag', 'x', 'y', 'association_separation_arcsec',
-    'Catalog_Flag', 'Catalog', 'filter_info'
+    'Catalog_Flag', 'Catalog', 'filter_info', 'ZTF_g_field', 'ZTF_g_ccdid', 'ZTF_g_qid', 'ZTF_r_field', 'ZTF_r_ccdid',
+    'ZTF_r_qid', 'ZTF_i_field', 'ZTF_i_ccdid', 'ZTF_i_qid',
 ]
 Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
 
@@ -207,9 +210,10 @@ class Postage_Stamp():
 
 
 class ZTF_Postage_Stamp(Postage_Stamp):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, image_metadata: Dict[str, Dict] = {}, **kwargs):
         super().__init__(*args, **kwargs)
         self.arcsec_per_pixel = 1.01
+        self.image_metadata = image_metadata
 
     def transform_pix_coords(
             self,
@@ -223,7 +227,7 @@ class ZTF_Postage_Stamp(Postage_Stamp):
     def get_images(self) -> Tuple[Dict[str, np.ndarray], Dict[str, WCS]]:
 
         # Get the images from the ZTF cutouts
-        ztf_catalog = ZTF_Catalog(self.ra, self.dec, catalog_bands=self.bands)
+        ztf_catalog = ZTF_Catalog(self.ra, self.dec, catalog_bands=self.bands, image_metadata=self.image_metadata)
         self._images, self._WCSs = {}, {}
         for band in self.bands:
             im = ztf_catalog.sextractors[band].image_sub
@@ -301,27 +305,54 @@ class Source():
         self._paddedfield = None
         self._GAIA_info = None
         self.filter_info = {}
+        self._image_metadata = None
 
     @property
-    def paddedfield(self) -> str:
-        if self._paddedfield is None:
-            metadata_table = get_ztf_metadata(
-                ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH, self.ra + ZTF_CUTOUT_HALFWIDTH),
-                dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH, self.dec + ZTF_CUTOUT_HALFWIDTH),
-                filter=self.bands[0],  # doesn't need to be right band to get the coordinates
-            )
+    def image_metadata(self) -> Dict[str, Dict]:
+        if self._image_metadata is None:
+            self._image_metadata = {}
+            for band in self.bands:
+                band_metadata = get_ztf_metadata(
+                    ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH * 1, self.ra + ZTF_CUTOUT_HALFWIDTH * 1),
+                    dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH * 1, self.dec + ZTF_CUTOUT_HALFWIDTH * 1),
+                    filter=band,
+                )
 
-            # Get the field id that's in the stored field results
-            paddedfield = None
-            for field in metadata_table['field']:
-                paddedfield = str(field).zfill(6)
-                if os.path.exists(os.path.join(self.merged_field_basedir, f'{paddedfield}_g.ecsv')):
-                    break
-            if paddedfield is None:
-                raise ValueError(f'No field stored field result found for the given RA and DEC ({self.ra}, {self.dec}).')
-            self._paddedfield = paddedfield
+                # Filter for fields that we have actually extracted and stored
+                inds_extracted = []
+                test_paths = []
+                for ind, field in band_metadata['field'].items():
+                    field_id = str(field).zfill(6)
+                    if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv')):
+                        inds_extracted.append(ind)
+                        test_paths.append(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv'))
+                self._image_metadata[band] = band_metadata.iloc[inds_extracted].copy().reset_index()
+                self._image_metadata[band].sort_values(by=['nframes'], ascending=False, inplace=True)
 
-        return self._paddedfield
+        return self._image_metadata
+
+    # @property
+    # def paddedfield(self) -> str:
+    #     if self._paddedfield is None:
+    #         metadata_table = get_ztf_metadata(
+    #             ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH * 2, self.ra + ZTF_CUTOUT_HALFWIDTH * 2),
+    #             dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH * 2, self.dec + ZTF_CUTOUT_HALFWIDTH * 2),
+    #             filter=self.bands[0],  # doesn't need to be right band to get the coordinates
+    #         )
+
+    #         # Get the field id that's in the stored field results
+    #         paddedfield = None
+    #         for field in metadata_table['field']:
+    #             field_id = str(field).zfill(6)
+    #             if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv')):
+    #                 paddedfield = field_id
+    #                 break
+    #         if paddedfield is None:
+    #             raise ValueError(f'No field stored field result found for the given RA and DEC ({self.ra}, {self.dec}).'
+    #                              f' All fields found in metadata are {list(metadata_table["field"])}.')
+    #         self._paddedfield = paddedfield
+
+    #     return self._paddedfield
 
     @property
     def field_catalogs(self) -> dict[str, Table]:
@@ -331,8 +362,9 @@ class Source():
             self._field_catalogs = {}
 
             def load_catalog(band):
-                print(f'Loading {band} catalog from locally stored catalog {self.paddedfield}_{band}...')
-                return band, load_cached_table(os.path.join(self.merged_field_basedir, f'{self.paddedfield}_{band}.ecsv')).copy()
+                padded_field = self.image_metadata[band]["field"].zfill(6)
+                print(f'Loading {band} catalog from locally stored catalog {padded_field}_{band}...')
+                return band, load_cached_table(os.path.join(self.merged_field_basedir, f'{padded_field}_{band}.ecsv')).copy()
 
             with futures.ThreadPoolExecutor() as executor:
                 future_to_band = {executor.submit(load_catalog, band): band for band in self.bands}
@@ -392,7 +424,12 @@ class Source():
 
                     # Fill in table
                     for cname in cat.colnames:
-                        if isinstance(self._data[cname][0], str):
+                        if cname == 'filter_info':
+                            # Convert the filter information to a dictionary
+                            if isinstance(cat[cname][ind_closest], str):
+                                self.filter_info = ast.literal_eval(cat[cname][ind_closest])['in_bands']
+                            entry_is_nan = False
+                        elif isinstance(self._data[cname][0], str):
                             entry_is_nan = self._data[cname][0].lower() == 'nan'
                         else:
                             entry_is_nan = np.isnan(self._data[cname][0])
@@ -415,7 +452,7 @@ class Source():
     def postage_stamps(self) -> Dict[str, Postage_Stamp]:
         if self._postage_stamps is None:
             self._postage_stamps = {
-                'ZTF': ZTF_Postage_Stamp(self.ra, self.dec, bands=self.cutout_bands),
+                'ZTF': ZTF_Postage_Stamp(self.ra, self.dec, bands=self.cutout_bands, image_metadata=self.image_metadata),
                 'PSTARR': PSTARR_Postage_Stamp(self.ra, self.dec, bands=self.cutout_bands),
             }
 
@@ -482,8 +519,16 @@ class Source():
             _, axes = plt.subplots(1, 2, figsize=(15, 7.5))
 
         # Plot
-        self.postage_stamps['PSTARR'].plot_cutout(band='g', ax=axes[0], **kwargs)
-        self.postage_stamps['ZTF'].plot_cutout(band=band, ax=axes[1], **kwargs)
+        try:
+            self.postage_stamps['PSTARR'].plot_cutout(band=band, ax=axes[0], **kwargs)
+        except Exception as e:
+            tb = traceback.format_exc()
+            print(f'Warning: Experienced error plotting the PanSTARR {band} band:\n{e}\nTraceback:\n{tb}\nSkipping...')
+        try:
+            self.postage_stamps['ZTF'].plot_cutout(band=band, ax=axes[1], **kwargs)
+        except Exception as e:
+            tb = traceback.format_exc()
+            print(f'Warning: Experienced error plotting the ZTF {band} band:\n{e}\nTraceback:\n{tb}\nSkipping...')
 
         # Annotate with the mags
         axes[0].text(
@@ -621,7 +666,7 @@ class Source():
 
         # Make axes if not given
         if axes is None:
-            _, axes = plt.subplots(2, n_bands, figsize=(15, 7 * n_bands))
+            _, axes = plt.subplots(2, n_bands, figsize=(15, 3 * n_bands))
         if not isinstance(axes, np.ndarray):
             axes = np.array(axes)
 
@@ -723,6 +768,13 @@ class Sources:
             ]
 
         self._data = None
+        self._coords = None
+
+    @property
+    def coords(self) -> SkyCoord:
+        if self._coords is None or len(self._coords) != self.__len__():
+            self._coords = SkyCoord([s.coord for s in self.sources])
+        return self._coords
 
     def __iter__(self):
         return iter(self.sources)
@@ -732,6 +784,11 @@ class Sources:
 
     def __str__(self):
         return str(self.data)
+
+    def __add__(self, other):
+        if not isinstance(other, Sources):
+            raise TypeError("Can only add Sources to Sources.")
+        return Sources(sources=self.sources + other.sources)
 
     def __getitem__(self, index):
         if isinstance(index, int):

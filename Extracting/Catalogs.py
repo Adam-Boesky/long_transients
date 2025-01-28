@@ -349,12 +349,15 @@ class ZTF_Catalog(Catalog):
             dec: float,
             data_dir: Optional[str] = None,
             catalog_bands: Iterable[str] = ('g', 'r', 'i'),
+            image_metadata: Dict[str, Dict] = {},
         ):
         super().__init__()
         self.catalog_name = 'ZTF'
         self.column_map = {'objID': 'PanSTARR_ID', 'raMean': 'ra', 'decMean': 'dec'}
         self.sextractors: Dict[str, Source_Extractor] = {}
-        self.image_metadata = {}
+        self._image_metadata = image_metadata
+
+        self.init_ra, self.init_dec = ra, dec
 
         # Set up the data directory and download the images
         if data_dir is None:
@@ -366,7 +369,7 @@ class ZTF_Catalog(Catalog):
             self.data_dirpath = data_dir
         self.bands = catalog_bands
         for band in self.bands:
-            fname, self.image_metadata[band] = self.download_image(ra, dec, band=band)
+            fname, self.image_metadata[band] = self.download_image(band=band)
             if fname is not None:
                 self.sextractors[band] = Source_Extractor(
                     fname,
@@ -376,6 +379,27 @@ class ZTF_Catalog(Catalog):
         if len(self.sextractors) == 0:
             raise ValueError(f"No {', '.join(catalog_bands)} found for the specified RA and DEC.")
         self.ra_range, self.dec_range = self.sextractors[self.bands[0]].get_coord_range()
+
+    @property
+    def image_metadata(self) -> Dict[str, Dict]:
+        if len(self._image_metadata) == 0:
+            for band in self.bands:
+                # Get the authentication credentials
+                username, password = get_credentials('irsa_login.txt')
+
+                # Get a metadata table for the specified RA and DEC
+                filtercode = f'z{band}'
+                ra_min, ra_max = self.init_ra - ZTF_CUTOUT_HALFWIDTH, self.init_ra + ZTF_CUTOUT_HALFWIDTH
+                dec_min, dec_max = self.init_dec - ZTF_CUTOUT_HALFWIDTH, self.init_dec + ZTF_CUTOUT_HALFWIDTH
+                self._image_metadata[band] = get_ztf_metadata(
+                    ra_range=(ra_min, ra_max),
+                    dec_range=(dec_min, dec_max),
+                    filter=filtercode,
+                    username=username,
+                    password=password,
+                )
+
+        return self._image_metadata
 
     def _cleanup(self):
         if os.path.exists(self.data_dirpath):
@@ -398,28 +422,23 @@ class ZTF_Catalog(Catalog):
 
         return big_table
 
-    def download_image(self, ra: float, dec: float, band: str) -> Tuple[str, dict]:
+    def download_image(self, band: str) -> Tuple[str, dict]:
 
         # Get the authentication credentials
         username, password = get_credentials('irsa_login.txt')
 
         # Get a metadata table for the specified RA and DEC
         filtercode = f'z{band}'
-        ra_min, ra_max = ra - ZTF_CUTOUT_HALFWIDTH, ra + ZTF_CUTOUT_HALFWIDTH
-        dec_min, dec_max = dec - ZTF_CUTOUT_HALFWIDTH, dec + ZTF_CUTOUT_HALFWIDTH
-        metadata_table = get_ztf_metadata(
-            ra_range=(ra_min, ra_max),
-            dec_range=(dec_min, dec_max),
-            filter=filtercode,
-            username=username,
-            password=password,
-        )
+        metadata_table = self.image_metadata[band]
         if len(metadata_table) == 0:
             print(f"No {band} images found for the specified RA and DEC.")
             return None, None
-        
+
         # Get the limiting magnitude
-        limiting_mag = metadata_table['maglimit'].iloc[0]
+        if 'maglimit' in metadata_table.keys():
+            limiting_mag = metadata_table['maglimit'].iloc[0]
+        else:
+            limiting_mag = metadata_table['limiting_mag'].iloc[0]
 
         # Download the image
         qid = metadata_table['qid'].iloc[0]
@@ -571,7 +590,7 @@ def get_ztf_metadata(
     metadata_table = pd.read_csv(StringIO(metadata_response.content.decode("utf-8")))
     metadata_table.sort_values(by=['nframes'], ascending=False, inplace=True)
 
-    return metadata_table
+    return metadata_table.reset_index()
 
 
 ### THE FOLLOWING FUNCTIONS ARE TAKEN FROM https://ps1images.stsci.edu/ps1image.html ###

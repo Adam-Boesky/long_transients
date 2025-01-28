@@ -103,13 +103,20 @@ def get_n_quadrants_merged(field_name: str) -> Dict[str, int]:
 
 
 def get_n_quadrants_merged_all_fields() -> Dict[str, Dict[str, int]]:
-    """Get number of quadrants in all merged fields. Returns dict of form {'field': {'band': number_of_quadrants}}"""
+    """Get number of quadrants in all merged fields. Returns dict of form {'field': {'band': number_of_quadrants}}
+    NOTE: ~0.73 sq deg / quadrant
+    """
     quad_counts_per_band_all_fields = {}
     for merged_field_fname in os.listdir(MERGED_RESULTS_DIRPATH):
         field_name = merged_field_fname[:6]
         quad_counts_per_band_all_fields[field_name] = get_n_quadrants_merged(field_name)
 
     return quad_counts_per_band_all_fields
+
+def metadata_from_field_dirname(field_dirname: str) -> Dict[str, str]:
+    """Get the ZTF image metadata given the field's dirname in our saved data."""
+    field, ccdid, qid = field_dirname.split('_')
+    return {'field': field, 'ccdid': ccdid, 'qid': qid}
 
 
 # Set up casjobs object

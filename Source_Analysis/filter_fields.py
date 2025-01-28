@@ -6,17 +6,17 @@ import numpy as np
 import schemdraw
 import pandas as pd
 
-from typing import Dict, List, Tuple, Union, Optional
+from typing import Dict, List, Iterable, Tuple, Union, Optional
 from astropy.io import ascii
 from astropy.table import Table
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from schemdraw.flow import Start, Arrow, Box, Decision
-from schemdraw.elements import Element, Annotate
+from schemdraw.elements import Element
 from decimal import Decimal, ROUND_HALF_UP
 
 sys.path.append('/Users/adamboesky/Research/long_transients')
 
-from Source_Analysis.Sources import Sources
+from Source_Analysis.Sources import Sources, MANDATORY_SOURCE_COLUMNS
 from Extracting.utils import get_snr_from_mag, get_data_path
 
 BANDS = ['g', 'r', 'i']
@@ -70,7 +70,9 @@ class Filters():
             'only_big_dmag': self.only_big_dmag,
             'at_least_n_bands': self.at_least_n_bands,
             'parallax_filter': self.parallax_filter,
-            'proper_motion_filter': self.proper_motion_filter
+            'proper_motion_filter': self.proper_motion_filter,
+            'no_nearby_source_filter': self.no_nearby_source_filter,
+            'pstarr_mag_less_than': self.pstarr_mag_less_than,
         }
         self.reset_filter_stats()
         self.filter_stat_fname = filter_stat_fname
@@ -91,7 +93,14 @@ class Filters():
         """Save the filtration statistics to a csv file."""
         self.filter_stats.to_csv(self.filter_stat_fname, index=False)
 
-    def filter(self, tabs: Dict[str, Union[Table, Sources]], filt_name: str, *args, **kwargs) -> Dict[str, Table]:
+    def filter(
+            self,
+            tabs: Dict[str, Union[Table, Sources]],
+            filt_name: str,
+            *args,
+            branch: str = '',
+            **kwargs,
+        ) -> Dict[str, Table]:
         """Filter the tables using the specified filter."""
         # Filtration stats
         before_counts = {band: len(tab) for band, tab in tabs.items()}
@@ -106,20 +115,23 @@ class Filters():
 
         # Update filtration stats
         after_counts = {band: len(tab) for band, tab in tabs.items()}
-        self.filter_stats = pd.concat((
-            self.filter_stats,
-            pd.DataFrame(
-                data={
-                    'filter': filt_name,
-                    'ng_before': [before_counts.get('g', 0)],
-                    'ng_after': [after_counts.get('g', 0)],
-                    'nr_before': [before_counts.get('r', 0)],
-                    'nr_after': [after_counts.get('r', 0)],
-                    'ni_before': [before_counts.get('i', 0)],
-                    'ni_after': [after_counts.get('i', 0)],
-                }
+        self.filter_stats = pd.concat(
+            (
+                self.filter_stats,
+                pd.DataFrame(
+                    data={
+                        'filter': filt_name,
+                        'ng_before': [before_counts.get('g', 0)],
+                        'ng_after': [after_counts.get('g', 0)],
+                        'nr_before': [before_counts.get('r', 0)],
+                        'nr_after': [after_counts.get('r', 0)],
+                        'ni_before': [before_counts.get('i', 0)],
+                        'ni_after': [after_counts.get('i', 0)],
+                        'branch': [branch],
+                    }
+                )
             )
-        ))
+        )
 
         # Save filtration stats if filename is given
         if self.filter_stat_fname is not None:
@@ -318,6 +330,22 @@ class Filters():
 
         return sources
 
+    def no_nearby_source_filter(self, sources: Dict[str, Sources], n_nearby_max: int = 5, *args, **kwargs) -> Dict[str, Sources]:
+        for band in sources.keys():
+            all_coords = sources[band].coords
+            seps = all_coords.separation(all_coords[:, None])
+            nearby_counts = np.sum(seps.arcsecond < 200, axis=1)
+            mask = nearby_counts <= n_nearby_max
+            sources[band] = sources[band][mask]
+
+        return sources
+
+    def pstarr_mag_less_than(self, tabs: Dict[str, Table], max_mag: float, *args, **kwargs) -> Table:
+        for band in tabs.keys():
+            tabs[band] = tabs[band][tabs[band][f'PSTARR_{band}PSFMag'] < max_mag]
+
+        return tabs
+
 
 def associate_in_btwn_distance(table1: Table, table2: Table, min_sep: float = 1.0, max_sep: float = 3.0) -> Table:
     """Associate tables using a min and max angular separation requirement.
@@ -347,9 +375,9 @@ def associate_in_btwn_distance(table1: Table, table2: Table, min_sep: float = 1.
     return associated_table, table1[np.logical_not(mask)]
 
 
-def add_filt(
+def add_filt_from_counts(
         filt_name: str,
-        tabs: Dict[str, Union[Table, Sources]],
+        counts: Dict[str, int],
         d: schemdraw.Drawing,
         init_counts: pd.Series,
         previous_element: Optional[Element] = None,
@@ -358,8 +386,7 @@ def add_filt(
     """Add filter to the flowchart."""
     # Make the label
     stats = ''
-    counts = {band: len(tab) for band, tab in tabs.items()}  # pd.Series(tab['Catalog_Flag']).value_counts()
-    counts_norm = {band: counts[band] / init_counts[band] if band in counts.keys() else 0.0 for band in init_counts.keys()}
+    counts_norm = {band: 0.0 if band not in counts.keys() or init_counts[band] == 0 else counts[band] / init_counts[band] for band in ('g', 'r', 'i')}
     for band in init_counts.keys():
         ct = counts[band] if band in counts.keys() else 0
         ct_norm = counts_norm[band] if band in counts_norm.keys() else 0.0
@@ -382,10 +409,33 @@ def add_filt(
 
     return d, new_box
 
-def add_decision(
+
+def add_filt(
         filt_name: str,
-        tabs_yes: Dict[str, Union[Table, Sources]],
-        tabs_no: Dict[str, Union[Table, Sources]],
+        tabs: Dict[str, Union[Table, Sources]],
+        d: schemdraw.Drawing,
+        init_counts: pd.Series,
+        previous_element: Optional[Element] = None,
+        start: bool = False,
+    ) -> Tuple[schemdraw.Drawing, Element]:
+    """Add filter to the flowchart."""
+    # Get the counts
+    counts = {band: len(tab) for band, tab in tabs.items()}
+
+    # Add the filter
+    return add_filt_from_counts(
+        filt_name,
+        counts,
+        d,
+        init_counts,
+        previous_element,
+        start,
+    )
+
+def add_decision_from_counts(
+        filt_name: str,
+        counts_yes: Dict[str, int],
+        counts_no: Dict[str, int],
         d: schemdraw.Drawing,
         init_counts: pd.Series,
         previous_element: Optional[Element] = None,
@@ -393,15 +443,13 @@ def add_decision(
     """Add decision to flow chart."""
     # Make the labels
     stats_yes = ''
-    counts_yes = {band: len(tab) for band, tab in tabs_yes.items()}  # pd.Series(tab['Catalog_Flag']).value_counts()
-    counts_norm_yes = {band: counts_yes[band] / init_counts[band] if band in counts_yes.keys() else 0.0 for band in init_counts.keys()}
+    counts_norm_yes = {band: counts_yes[band] / init_counts[band] if band in counts_yes.keys() else 0.0 for band in ('g', 'r', 'i')}
     for band in init_counts.keys():
         ct = counts_yes[band] if band in counts_yes.keys() else 0
         ct_norm = counts_norm_yes[band] if band in counts_norm_yes.keys() else 0.0
         stats_yes += f'{band}: {ct:,} ({format_two_sig_figs(ct_norm)})\n'
     stats_no = ''
-    counts_no = {band: len(tab) for band, tab in tabs_no.items()}  # pd.Series(tab['Catalog_Flag']).value_counts()
-    counts_norm_no = {band: counts_no[band] / init_counts[band] if band in counts_no.keys() else 0.0 for band in init_counts.keys()}
+    counts_norm_no = {band: counts_no[band] / init_counts[band] if band in counts_no.keys() else 0.0 for band in ('g', 'r', 'i')}
     for band in init_counts.keys():
         ct = counts_no[band] if band in counts_no.keys() else 0
         ct_norm = counts_norm_no[band] if band in counts_norm_no.keys() else 0.0
@@ -429,6 +477,29 @@ def add_decision(
     return d, yes_box, no_box
 
 
+def add_decision(
+        filt_name: str,
+        tabs_yes: Dict[str, Union[Table, Sources]],
+        tabs_no: Dict[str, Union[Table, Sources]],
+        d: schemdraw.Drawing,
+        init_counts: pd.Series,
+        previous_element: Optional[Element] = None,
+    ) -> Tuple[schemdraw.Drawing, Element, Element]:
+    """Add decision to flow chart."""
+    # Make the labels
+    counts_yes = {band: len(tab) for band, tab in tabs_yes.items()}  # pd.Series(tab['Catalog_Flag']).value_counts()
+    counts_no = {band: len(tab) for band, tab in tabs_no.items()}  # pd.Series(tab['Catalog_Flag']).value_counts()
+
+    return add_decision_from_counts(
+        filt_name,
+        counts_yes,
+        counts_no,
+        d,
+        init_counts,
+        previous_element,
+    )
+
+
 def add_final_filt(filt_name: str, srcs: Sources, d: schemdraw.Drawing) -> schemdraw.Drawing:
     """Add final filter to the flowchart."""
     arrow = Arrow().down(d.unit/2).label(filt_name)
@@ -438,14 +509,147 @@ def add_final_filt(filt_name: str, srcs: Sources, d: schemdraw.Drawing) -> schem
     return d
 
 
+def combine_stats(stats_dfs: Iterable[pd.DataFrame]) -> pd.DataFrame:
+    """Function to combine (sum) the stats of several given flowchart dataframes."""
+    combined_df = stats_dfs[0]
+
+    # Ensure that the filters and branches of each df are the same
+    if not np.all([
+        np.all(combined_df['filter'].to_numpy() == df['filter'].to_numpy()) and
+        np.all(combined_df['branch'].to_numpy() == df['branch'].to_numpy())
+        for df in stats_dfs[1:]
+    ]):
+        raise ValueError('All given dataframes must have the same filters and branches.')
+
+    # Combine the stats
+    for stats_df in stats_dfs[1:]:
+        combined_df = combined_df.groupby(['filter', 'branch']).sum() + stats_df.groupby(['filter', 'branch']).sum()
+
+    return combined_df
+
+
+def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str, str]] = None) -> schemdraw.Drawing:
+    """Create a flowchart given a dataframe with the statistics of a filtration.
+
+    You can easily save a flowchart by doing create_filter_flowchart(...).save('path/to/chart.pdf')
+    """
+    # Sort the dataframe sequentially
+    stats_df = stats_df.sort_values(
+        ['branch', 'ng_before', 'nr_before', 'ni_before'], ascending=[True, False, False, False]
+    )
+
+    # Try to automatically detect a decision structure in the graph
+    if decision is None:
+        all_branches = stats_df.index.get_level_values('branch')
+        no_branch = all_branches[~all_branches.isin(['in_both', ''])]
+        if len(no_branch) == 0:
+            no_branch = None
+        else:
+            no_branch = no_branch[0]
+        decision = {
+            'text': 'Within 1-3\'\'',
+            'yes': 'in_both',
+            'no': no_branch,
+        }
+
+    with schemdraw.Drawing(show=False) as d:
+
+        # Initial stats
+        init_counts = stats_df.loc[(slice(None), ''), ['ng_before', 'nr_before', 'ni_before']].iloc[0]
+        init_counts = init_counts.rename(index={'ng_before': 'g', 'nr_before': 'r', 'ni_before': 'i'}).astype(int)
+
+        # Add initial counts to the flowchart
+        d, previous_element = add_filt_from_counts(
+            'Initial Counts',
+            init_counts.to_dict(),
+            d,
+            init_counts=init_counts,
+            start=True,
+        )
+
+        # Iterate through the filters and add them to the flowchart
+        branched = False
+        prev_branch = ''
+        for (filter_name, branch), row in stats_df.iterrows():
+
+            # Grab the counts from the row
+            counts = row[['ng_after', 'nr_after', 'ni_after']].rename(
+                index={
+                    'ng_after': 'g',
+                    'nr_after': 'r',
+                    'ni_after': 'i',
+                }
+            ).astype(int).to_dict()
+
+            # Deal with decisions in the graph
+            if branch in decision.values() and not branched:
+                decision_text = decision['text']
+                yes_counts = stats_df.loc[(slice(None), decision['yes']), ['ng_before', 'nr_before', 'ni_before']].iloc[0].rename(
+                    index={
+                        'ng_before': 'g',
+                        'nr_before': 'r',
+                        'ni_before': 'i',
+                    }
+                ).astype(int).to_dict()
+                no_counts = stats_df.loc[(slice(None), decision['no']), ['ng_before', 'nr_before', 'ni_before']].iloc[0].rename(
+                    index={
+                        'ng_before': 'g',
+                        'nr_before': 'r',
+                        'ni_before': 'i',
+                    }
+                ).astype(int).to_dict()
+                d, previous_element, other_branch_element = add_decision_from_counts(
+                    decision_text,
+                    yes_counts,
+                    no_counts,
+                    d,
+                    init_counts=init_counts,
+                    previous_element=previous_element,
+                )
+                branched = True
+
+            # Handle whether we want to use the previous element, or start the other branch
+            if (prev_branch != branch) and (prev_branch != ''):
+                previous_element = other_branch_element
+            prev_branch = branch
+
+            # Add an element to the schemdraw figure
+            filter_map = {
+                'sep_extraction_filter': 'SEP Extraction Flags',
+                'snr_filter': 'SNR > 5',
+                'shape_filter': 'Axis Ratio',
+                'psf_fit_filter': 'PSF Fit',
+                'only_big_dmag': 'Delta Mag > 5 sigma',
+                'at_least_n_bands': 'Big dmag in\n>=2 bands',
+                'no_nearby_source_filter': 'Fewer than 5\nnearby sources',
+                'proper_motion_filter': 'Proper Motion',
+                'parallax_filter': 'Parallax',
+                'pstarr_mag_less_than': 'Pan-STARRS Magnitude\nless than 22.5',
+            }
+
+            if filter_name in filter_map:
+                d, previous_element = add_filt_from_counts(
+                    filter_map[filter_name],
+                    counts,
+                    d,
+                    init_counts=init_counts,
+                    previous_element=previous_element,
+                )
+
+        return d
+
+
 def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool = False):
     """Filter a field, save flowchart plots, and save candidates."""
     # Load in the tables
     print('Loading tables...')
-    g_tab = ascii.read(os.path.join(get_data_path(), f'catalog_results/field_results/{field_name}_g.ecsv'), format='ecsv')
-    r_tab = ascii.read(os.path.join(get_data_path(), f'catalog_results/field_results/{field_name}_r.ecsv'), format='ecsv')
-    i_tab = ascii.read(os.path.join(get_data_path(), f'catalog_results/field_results/{field_name}_i.ecsv'), format='ecsv')
-    tables = {'g': g_tab, 'r': r_tab, 'i': i_tab}
+    tables = {}
+    bands = ('g', 'r', 'i')
+    for band in bands:
+        try:
+            tables[band] = ascii.read(os.path.join(get_data_path(), f'catalog_results/field_results/{field_name}_{band}.ecsv'), format='ecsv')
+        except FileNotFoundError:
+            print(f'Warning: Band {band} not available for filed {field_name}...')
 
     # Set values <=0 to the upper limit for ZTF
     for band in tables.keys():
@@ -480,7 +684,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     print(f'Building flowchart for {CATALOG_KEY[0]} graph...')
     tabs = {band: tab.copy()[tab['Catalog_Flag'] == 0] for band, tab in tables.items()}
 
-    with schemdraw.Drawing() as d:
+    with schemdraw.Drawing(show=False) as d:
 
         # Initial stats
         init_counts = {band: len(tab) for band, tab in tabs.items()}
@@ -543,7 +747,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     in_ztf_tabs = {band: tab.copy()[tab['Catalog_Flag'] == 1] for band, tab in tables.items()}
     in_pstarr_tabs = {band: tab.copy()[tab['Catalog_Flag'] == 2] for band, tab in tables.items()}
 
-    with schemdraw.Drawing() as d:
+    with schemdraw.Drawing(show=False) as d:
 
         # Initial stats
         init_counts = {band: len(tab) for band, tab in in_ztf_tabs.items()}
@@ -577,9 +781,15 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 
         ######################################################################
         ##### DEAL WITH THE SOURCES THAT ARE POTENTIALLY IN BOTH CATALOGS#####
+        branch = 'in_both'        
+
+        # Drop all sources with snr < 5
+        in_both_tabs = filters.filter(in_both_tabs, 'snr_filter', snr_min=5, branch=branch)
+        add_filt('SNR > 5', in_both_tabs, d, init_counts=init_counts, previous_element=in_both_element)
+        
         # Delta mag > n sigma
-        in_both_tabs, _, _ = filters.filter(in_both_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, bin_means=bin_means, bin_stds=bin_stds)
-        add_filt(f'Delta Mag > {dmag_sigma} sigma', in_both_tabs, d, init_counts=init_counts, previous_element=in_both_element)
+        in_both_tabs, _, _ = filters.filter(in_both_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, bin_means=bin_means, bin_stds=bin_stds, branch=branch)
+        add_filt(f'Delta Mag > {dmag_sigma} sigma', in_both_tabs, d, init_counts=init_counts)
 
         # Converting to sources
         sources_in_both: Dict[str, Sources] = {
@@ -587,7 +797,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         }
 
         # Check for big dmag in >1 bands
-        sources_in_both = filters.filter(sources_in_both, 'at_least_n_bands', n=2)
+        sources_in_both = filters.filter(sources_in_both, 'at_least_n_bands', n=2, branch=branch)
         add_filt(f'Big dmag in\n>=2 bands', sources_in_both, d, init_counts=init_counts)
 
         # Store pre-gaia filteration if requested
@@ -596,18 +806,22 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
                 srcs.save(os.path.join(filter_result_dirpath, f'1_in_both_{band}_pre_gaia.ecsv'))
 
         # Check for proper motion
-        sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter')
+        sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch)
         add_filt(f'Proper Motion', sources_in_both, d, init_counts=init_counts)
 
         # Check for parallax
-        sources_in_both = filters.filter(sources_in_both, 'parallax_filter')
+        sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch)
         add_filt(f'Parallax', sources_in_both, d, init_counts=init_counts)
+
+        for band, srcs in sources_in_both.items():
+            srcs.save(os.path.join(filter_result_dirpath, f'1_wide_association_{band}.ecsv'))
 
         ######################################################################
         ##### DEAL WITH THE SOURCES THAT ARE NOT IN BOTH CATALOGS#####
+        branch = 'in_ztf'
+
         # Delta mag > n sigma
-        # breakpoint()
-        in_ztf_tabs, _, _ = filters.filter(in_ztf_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, upper_lim='PSTARR', bin_means=bin_means, bin_stds=bin_stds)
+        in_ztf_tabs, _, _ = filters.filter(in_ztf_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, upper_lim='PSTARR', bin_means=bin_means, bin_stds=bin_stds, branch=branch)
         add_filt(f'Delta Mag > {dmag_sigma} sigma', in_ztf_tabs, d, init_counts=init_counts, previous_element=just_ztf_element)
 
         # Converting to sources
@@ -615,13 +829,13 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
             band: Sources(ras=tab['ra'], decs=tab['dec'], field_catalogs=in_ztf_tabs, verbose=0) for band, tab in in_ztf_tabs.items()
         }
 
-        #### TESTING ####
-        for band, srcs in sources_in_ztf.items():
-            srcs.save(os.path.join('/Users/adamboesky/Research/long_transients/Data/filter_testing', f'weird_mags{band}.ecsv'))
+        # Check for big dmag in >1 bands
+        sources_in_ztf = filters.filter(sources_in_ztf, 'at_least_n_bands', n=2, branch=branch)
+        add_filt(f'Big dmag in\n>=2 bands', sources_in_ztf, d, init_counts=init_counts)
 
         # Check for big dmag in >1 bands
-        sources_in_ztf = filters.filter(sources_in_ztf, 'at_least_n_bands', n=2)
-        add_filt(f'Big dmag in\n>=2 bands', sources_in_ztf, d, init_counts=init_counts)
+        sources_in_ztf = filters.filter(sources_in_ztf, 'no_nearby_source_filter', n_nearby_max=5, branch=branch)
+        add_filt(f'Fewer than 5\nnearby sources', sources_in_ztf, d, init_counts=init_counts)
 
         # Store pre-gaia filteration if requested
         if store_pre_gaia:
@@ -629,11 +843,11 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
                 srcs.save(os.path.join(filter_result_dirpath, f'1_{band}_pre_gaia.ecsv'))
 
         # Check for proper motion
-        sources_in_ztf = filters.filter(sources_in_ztf, 'proper_motion_filter')
+        sources_in_ztf = filters.filter(sources_in_ztf, 'proper_motion_filter', branch=branch)
         add_filt(f'Proper Motion', sources_in_ztf, d, init_counts=init_counts)
 
         # Check for parallax
-        sources_in_ztf = filters.filter(sources_in_ztf, 'parallax_filter')
+        sources_in_ztf = filters.filter(sources_in_ztf, 'parallax_filter', branch=branch)
         add_filt(f'Parallax', sources_in_ztf, d, init_counts=init_counts)
 
         # Save the image
@@ -650,27 +864,20 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     in_ztf_tabs = {band: tab.copy()[tab['Catalog_Flag'] == 1] for band, tab in tables.items()}
     in_pstarr_tabs = {band: tab.copy()[tab['Catalog_Flag'] == 2] for band, tab in tables.items()}
 
-    with schemdraw.Drawing() as d:
+    with schemdraw.Drawing(show=False) as d:
 
         # Initial stats
         init_counts = {band: len(tab) for band, tab in in_pstarr_tabs.items()}
         add_filt('Initial Counts', in_pstarr_tabs, d, init_counts=init_counts, start=True)
 
-        # Drop all sources with bad SEP extraction flags
-        in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'sep_extraction_filter')
-        add_filt('SEP Extraction Flags', in_pstarr_tabs, d, init_counts=init_counts)
+        # Make sure that the Pan-STARRS magnitude is less than max_mag
+        max_mag = 22.5
+        in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'pstarr_mag_less_than', max_mag=max_mag)
+        add_filt(f'Pan-STARRS Magnitude\nless than {max_mag}', in_pstarr_tabs, d, init_counts=init_counts)
 
         # Drop all sources with snr < 5
         in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'snr_filter', snr_min=5)
         add_filt('SNR > 5', in_pstarr_tabs, d, init_counts=init_counts)
-
-        # Axis ratio filter
-        in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'shape_filter')
-        add_filt('Axis Ratio', in_pstarr_tabs, d, init_counts=init_counts)
-
-        # Drop bad PSF fits
-        in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'psf_fit_filter')
-        add_filt('PSF Fit', in_pstarr_tabs, d, init_counts=init_counts)
 
         # Double check ZTF sources that are a little more than 1 arcsec from PanSTARRS sources
         min_sep, max_sep = 1.0, 3.0
@@ -684,9 +891,27 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 
         ######################################################################
         ##### DEAL WITH THE SOURCES THAT ARE POTENTIALLY IN BOTH CATALOGS#####
+        branch = 'in_both'
+
+        # Drop all sources with bad SEP extraction flags
+        in_both_tabs = filters.filter(in_both_tabs, 'sep_extraction_filter', branch=branch)
+        add_filt('SEP Extraction Flags', in_both_tabs, d, init_counts=init_counts, previous_element=in_both_element)
+
+        # Drop all sources with snr < 5
+        in_both_tabs = filters.filter(in_both_tabs, 'snr_filter', snr_min=5, branch=branch)
+        add_filt('SNR > 5', in_both_tabs, d, init_counts=init_counts)
+
+        # Axis ratio filter
+        in_both_tabs = filters.filter(in_both_tabs, 'shape_filter', branch=branch)
+        add_filt('Axis Ratio', in_both_tabs, d, init_counts=init_counts)
+
+        # Drop bad PSF fits
+        in_both_tabs = filters.filter(in_both_tabs, 'psf_fit_filter', branch=branch)
+        add_filt('PSF Fit', in_both_tabs, d, init_counts=init_counts)
+
         # Delta mag > n sigma
-        in_both_tabs, _, _ = filters.filter(in_both_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, bin_means=bin_means, bin_stds=bin_stds)
-        add_filt(f'Delta Mag > {dmag_sigma} sigma', in_both_tabs, d, init_counts=init_counts, previous_element=in_both_element)
+        in_both_tabs, _, _ = filters.filter(in_both_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, bin_means=bin_means, bin_stds=bin_stds, branch=branch)
+        add_filt(f'Delta Mag > {dmag_sigma} sigma', in_both_tabs, d, init_counts=init_counts)
 
         # Converting to sources
         sources_in_both: Dict[str, Sources] = {
@@ -694,20 +919,20 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         }
 
         # Check for big dmag in >1 bands
-        sources_in_both = filters.filter(sources_in_both, 'at_least_n_bands', n=2)
+        sources_in_both = filters.filter(sources_in_both, 'at_least_n_bands', n=2, branch=branch)
         add_filt(f'Big dmag in\n>=2 bands', sources_in_both, d, init_counts=init_counts)
 
-        # Store pre-gaia filteration if requested
+        # Store pre-gaia filtration if requested
         if store_pre_gaia:
             for band, srcs in sources_in_both.items():
                 srcs.save(os.path.join(filter_result_dirpath, f'2_in_both_{band}_pre_gaia.ecsv'))
 
         # Check for proper motion
-        sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter')
+        sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch)
         add_filt(f'Proper Motion', sources_in_both, d, init_counts=init_counts)
 
         # Check for parallax
-        sources_in_both = filters.filter(sources_in_both, 'parallax_filter')
+        sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch)
         add_filt(f'Parallax', sources_in_both, d, init_counts=init_counts)
 
         for band, srcs in sources_in_both.items():
@@ -715,46 +940,64 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 
         ######################################################################
         ##### DEAL WITH THE SOURCES THAT ARE NOT IN BOTH CATALOGS#####
+        print('ADAM HERE!!!!!!!!!')
+        branch = 'in_pstarr'
+
         # Delta mag > n sigma
-        in_pstarr_tabs, _, _ = filters.filter(in_pstarr_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, upper_lim='ZTF', bin_means=bin_means, bin_stds=bin_stds)
+        in_pstarr_tabs, _, _ = filters.filter(in_pstarr_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, upper_lim='ZTF', bin_means=bin_means, bin_stds=bin_stds, branch=branch)
         add_filt(f'Delta Mag > {dmag_sigma} sigma', in_pstarr_tabs, d, init_counts=init_counts, previous_element=just_pstarr_element)
 
-        # Converting to sources
-        sources_in_pstarr: Dict[str, Sources] = {
-            band: Sources(ras=tab['ra'], decs=tab['dec'], field_catalogs=in_pstarr_tabs, verbose=0) for band, tab in in_pstarr_tabs.items()
-        }
+        #### TESTING ####
+        # SAVE SO WE CAN SEE THE DATA
+        for band, tab in in_pstarr_tabs.items():
+            tab.write(os.path.join('/Users/adamboesky/Research/long_transients/Data/filter_testing', f'testing_stuff_{band}.ecsv'), overwrite=True)
 
-        # Check for big dmag in >1 bands
-        sources_in_pstarr = filters.filter(sources_in_pstarr, 'at_least_n_bands', n=2)
-        add_filt(f'Big dmag in\n>=2 bands', sources_in_pstarr, d, init_counts=init_counts)
+        # # Converting to sources
+        # sources_in_pstarr: Dict[str, Sources] = {
+        #     band: Sources(ras=tab['ra'], decs=tab['dec'], field_catalogs=in_pstarr_tabs, verbose=0) for band, tab in in_pstarr_tabs.items()
+        # }
 
-        # Store pre-gaia filteration if requested
-        if store_pre_gaia:
-            for band, srcs in sources_in_pstarr.items():
-                srcs.save(os.path.join(filter_result_dirpath, f'1_{band}_pre_gaia.ecsv'))
+        # # Check for big dmag in >1 bands
+        # sources_in_pstarr = filters.filter(sources_in_pstarr, 'at_least_n_bands', n=2, branch=branch)
+        # add_filt(f'Big dmag in\n>=2 bands', sources_in_pstarr, d, init_counts=init_counts)
 
-        # Check for proper motion
-        sources_in_pstarr = filters.filter(sources_in_pstarr, 'proper_motion_filter')
-        add_filt(f'Proper Motion', sources_in_pstarr, d, init_counts=init_counts)
+        # # Store pre-gaia filteration if requested
+        # if store_pre_gaia:
+        #     for band, srcs in sources_in_pstarr.items():
+        #         srcs.save(os.path.join(filter_result_dirpath, f'1_{band}_pre_gaia.ecsv'))
 
-        # Check for parallax
-        sources_in_pstarr = filters.filter(sources_in_pstarr, 'parallax_filter')
-        add_filt(f'Parallax', sources_in_pstarr, d, init_counts=init_counts)
+        # # Check for proper motion
+        # sources_in_pstarr = filters.filter(sources_in_pstarr, 'proper_motion_filter', branch=branch)
+        # add_filt(f'Proper Motion', sources_in_pstarr, d, init_counts=init_counts)
+
+        # # Check for parallax
+        # sources_in_pstarr = filters.filter(sources_in_pstarr, 'parallax_filter', branch=branch)
+        # add_filt(f'Parallax', sources_in_pstarr, d, init_counts=init_counts)
 
         # Save the image
         d.save(os.path.join(filter_result_dirpath, '2_filtering_flowchart.pdf'))
-        for band, srcs in sources_in_pstarr.items():
-            srcs.save(os.path.join(filter_result_dirpath, f'2_{band}.ecsv'))
+        # for band, srcs in sources_in_pstarr.items():
+        #     srcs.save(os.path.join(filter_result_dirpath, f'2_{band}.ecsv'))
 
 
 def filter_fields():
     """Filter fields!"""
-    for field in ['000806']:
+    for field in [
+        '000499',
+        '000500',
+        '000501',
+        '000502',
+        '000503',
+        '000511',
+        '000512',
+        '000513',
+        '000806',
+    ]:
         print(f'Filtering field {field}...')
         filter_field(
             field,
             overwrite=True,
-            store_pre_gaia=True,
+            store_pre_gaia=False,
         )
 
 
