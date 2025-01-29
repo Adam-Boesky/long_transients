@@ -17,10 +17,16 @@ except ModuleNotFoundError:
 
 
 def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
+
+    # Check if we have already extracted the quadrant before doing anything
+    data_path = get_data_path()
+    if os.path.exists(os.path.join(data_path, 'catalog_results', f'{str(fieldid).zfill(6)}_{str(ccdid).zfill(2)}_{qid}')):
+        print(f'{str(fieldid).zfill(6)}_{str(ccdid).zfill(2)}_{qid} already exists. Skipping!')
+        return
+
     print(f'Extracting sources from quadrant with field_id={fieldid}, ccdid={ccdid}, qid={qid}...')
 
     # Get data
-    data_path = get_data_path()
     ztf_metadata={
         'fieldid': fieldid,
         'ccdid': ccdid,
