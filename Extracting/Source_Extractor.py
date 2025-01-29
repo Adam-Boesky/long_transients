@@ -24,7 +24,7 @@ except ModuleNotFoundError:
 
 
 class Source_Extractor():
-    def __init__(self, fits_fpath: str, band: Optional[str] = None, maglimit: Optional[float] = None):
+    def __init__(self, fits_fpath: str, band: Optional[str] = None):
         self.fits_fpath = fits_fpath
         hdul = fits.open(self.fits_fpath)
         self.image_data = hdul[0].data.byteswap().newbyteorder()
@@ -44,10 +44,7 @@ class Source_Extractor():
         except KeyError:
             self.r_fwhm = self.header['SEEING']
         self.zero_pt_mag = self.header['MAGZP']
-        if maglimit is None:
-            self.maglimit = dict(self.header).get('MAGLIM')
-        else:
-            self.maglimit = maglimit
+        self.maglimit = dict(self.header).get('MAGLIM')
         self.deblend_cont = 0.00075
         self.minarea = 5
         self.deblend_nthresh = 32

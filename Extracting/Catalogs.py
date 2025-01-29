@@ -5,7 +5,7 @@ import random
 import os
 import tempfile
 from io import StringIO, BytesIO
-from typing import Dict, Iterable, Optional, Tuple, List
+from typing import Dict, Iterable, Optional, Tuple, List, Union
 from functools import lru_cache
 
 import numpy as np
@@ -347,16 +347,16 @@ class ZTF_Catalog(Catalog):
             self,
             ra: float,
             dec: float,
+            band: str,
             data_dir: Optional[str] = None,
-            catalog_bands: Iterable[str] = ('g', 'r', 'i'),
             image_metadata: Dict[str, Dict] = {},
         ):
         super().__init__()
         self.catalog_name = 'ZTF'
         self.column_map = {'objID': 'PanSTARR_ID', 'raMean': 'ra', 'decMean': 'dec'}
-        self.sextractors: Dict[str, Source_Extractor] = {}
         self._image_metadata = image_metadata
 
+        # Initial ra, dec values to use if there is no given metadata
         self.init_ra, self.init_dec = ra, dec
 
         # Set up the data directory and download the images
@@ -367,37 +367,38 @@ class ZTF_Catalog(Catalog):
             if not os.path.exists(data_dir):
                 raise ValueError(f"Data directory {data_dir} does not exist.")
             self.data_dirpath = data_dir
-        self.bands = catalog_bands
-        for band in self.bands:
-            fname, self.image_metadata[band] = self.download_image(band=band)
-            if fname is not None:
-                self.sextractors[band] = Source_Extractor(
-                    fname,
-                    band=band,
-                    maglimit=self.image_metadata[band]['limiting_mag'],
-                )
-        if len(self.sextractors) == 0:
-            raise ValueError(f"No {', '.join(catalog_bands)} found for the specified RA and DEC.")
-        self.ra_range, self.dec_range = self.sextractors[self.bands[0]].get_coord_range()
+        self.band = band
+        fname = self.download_image(band=band)
+        if fname is not None:
+            self.sextractor = Source_Extractor(
+                fname,
+                band=band,
+            )
+        if fname is None:
+            raise ValueError(f"No ZTF {band} image found for the specified RA and DEC.")
+        self.ra_range, self.dec_range = self.sextractor.get_coord_range()
 
     @property
     def image_metadata(self) -> Dict[str, Dict]:
         if len(self._image_metadata) == 0:
-            for band in self.bands:
-                # Get the authentication credentials
-                username, password = get_credentials('irsa_login.txt')
+            # Get the authentication credentials
+            username, password = get_credentials('irsa_login.txt')
 
-                # Get a metadata table for the specified RA and DEC
-                filtercode = f'z{band}'
-                ra_min, ra_max = self.init_ra - ZTF_CUTOUT_HALFWIDTH, self.init_ra + ZTF_CUTOUT_HALFWIDTH
-                dec_min, dec_max = self.init_dec - ZTF_CUTOUT_HALFWIDTH, self.init_dec + ZTF_CUTOUT_HALFWIDTH
-                self._image_metadata[band] = get_ztf_metadata(
-                    ra_range=(ra_min, ra_max),
-                    dec_range=(dec_min, dec_max),
-                    filter=filtercode,
-                    username=username,
-                    password=password,
-                )
+            # Get a metadata table for the specified RA and DEC
+            filtercode = f'z{self.band}'
+            ra_min, ra_max = self.init_ra - ZTF_CUTOUT_HALFWIDTH, self.init_ra + ZTF_CUTOUT_HALFWIDTH
+            dec_min, dec_max = self.init_dec - ZTF_CUTOUT_HALFWIDTH, self.init_dec + ZTF_CUTOUT_HALFWIDTH
+            self._image_metadata = get_ztf_metadata_from_coords(
+                ra_range=(ra_min, ra_max),
+                dec_range=(dec_min, dec_max),
+                filter=filtercode,
+                username=username,
+                password=password,
+            ).iloc[0].to_dict()
+
+            # Take metadata out of list form
+            for k, v in self._image_metadata.items():
+                self._image_metadata[k] = v
 
         return self._image_metadata
 
@@ -412,50 +413,34 @@ class ZTF_Catalog(Catalog):
 
     def get_data(self) -> Table:
         big_table = None
-        # for band in self.bands:  TODO: replace
-        for band in self.bands:
-            table = self.sextractors[band].get_data_table()
-            if big_table is None:
-                big_table = table
-            else:
-                big_table = associate_tables_by_coordinates(big_table, table)
+        table = self.sextractor.get_data_table()
+        if big_table is None:
+            big_table = table
+        else:
+            big_table = associate_tables_by_coordinates(big_table, table)
 
         return big_table
 
-    def download_image(self, band: str) -> Tuple[str, dict]:
+    def download_image(self, band: str) -> str:
 
         # Get the authentication credentials
         username, password = get_credentials('irsa_login.txt')
 
         # Get a metadata table for the specified RA and DEC
         filtercode = f'z{band}'
-        metadata_table = self.image_metadata[band]
-        if len(metadata_table) == 0:
+        if len(self.image_metadata) == 0:
             print(f"No {band} images found for the specified RA and DEC.")
-            return None, None
-
-        # Get the limiting magnitude
-        if 'maglimit' in metadata_table.keys():
-            limiting_mag = metadata_table['maglimit'].iloc[0]
-        else:
-            limiting_mag = metadata_table['limiting_mag'].iloc[0]
+            return None
 
         # Download the image
-        qid = metadata_table['qid'].iloc[0]
-        field = metadata_table['field'].iloc[0]
-        paddedccdid = str(metadata_table['ccdid'].iloc[0]).zfill(2)
+        qid = self.image_metadata['qid']
+        field = self.image_metadata['fieldid']
+        paddedccdid = str(self.image_metadata['ccdid']).zfill(2)
         paddedfield = str(field).zfill(6)
         fieldprefix = paddedfield[:6 - len(str(field))]
         image_url = (f'https://irsa.ipac.caltech.edu/ibe/data/ztf/products/deep/{fieldprefix}/field{paddedfield}/'
                      f'{filtercode}/ccd{paddedccdid}/q{qid}/ztf_{paddedfield}_{filtercode}_c{paddedccdid}'
                      f'_q{qid}_refimg.fits')
-        metadata_dict = {
-            'field': paddedfield,
-            'ccid': paddedccdid,
-            'qid': qid,
-            'filtercode': filtercode,
-            'limiting_mag': limiting_mag,
-        }
 
         print(f"Downloading image from {image_url}")
 
@@ -463,7 +448,7 @@ class ZTF_Catalog(Catalog):
         file_path = os.path.join(self.data_dirpath, f'ztf_{paddedfield}_{filtercode}_c{paddedccdid}_q{qid}_refimg.fits')
         if os.path.exists(file_path):
             print(f"Image already downloaded and saved at {file_path}")
-            return file_path, metadata_dict
+            return file_path
 
         # Try downloading 3 times
         for _ in range(3):
@@ -474,10 +459,10 @@ class ZTF_Catalog(Catalog):
                         if chunk:
                             file.write(chunk)
                 print(f"Image downloaded and saved at {file_path}")
-                return file_path, metadata_dict
+                return file_path
 
         print(f"Failed to download image from {image_url}. Status code: {response.status_code}")
-        return None, None
+        return None
 
 
 def associate_tables_by_coordinates(
@@ -566,7 +551,7 @@ def associate_tables_by_coordinates(
 
 
 @lru_cache(maxsize=None)
-def get_ztf_metadata(
+def get_ztf_metadata_from_coords(
         ra_range: Tuple,
         dec_range: Tuple,
         filter: str,
@@ -591,6 +576,54 @@ def get_ztf_metadata(
     metadata_table.sort_values(by=['nframes'], ascending=False, inplace=True)
 
     return metadata_table.reset_index()
+
+
+def get_ztf_metadata_from_metadata(
+        ztf_metadata: Dict[str, Union[int, str]],
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        verbose: int = 1,
+    ) -> pd.DataFrame:
+    """Query the ZTF metadata for a specific RA and DEC range."""
+    # Set up the query
+    if username is None or password is None:
+        username, password = get_credentials('irsa_login.txt')
+
+    # Collect info from metadata and construct url
+    ztf_metadata['fieldid'] = str(ztf_metadata.get('field', ztf_metadata.get('fieldid'))).zfill(6)
+    metadata_url = f"https://irsa.ipac.caltech.edu/ibe/search/ztf/products/deep?WHERE=field={ztf_metadata['fieldid']}+AND+"
+    if ztf_metadata.get('ccdid', -1) >= 0:
+        metadata_url += f"ccdid={str(ztf_metadata['ccdid']).zfill(2)}+AND+"
+    if ztf_metadata.get('qid', -1) >= 0:
+        metadata_url += f"qid={ztf_metadata['qid']}+AND+"
+    if not ztf_metadata.get('filtercode', ztf_metadata.get('filter', None)) is None:
+        # Make sure the filter code starts with a z
+        filtercode = ztf_metadata.get('filtercode', ztf_metadata.get('filter'))
+        if filtercode[0] != 'z' or len(filtercode) == 1:
+            filtercode = f'z{filtercode}'
+
+        metadata_url += f"filtercode=\'{filtercode}\'+AND+"
+
+    metadata_url = metadata_url[:-5]  # delete the +AND+ from the end of the url
+
+    # Query
+    if verbose > 0:
+        print(f"Querying metadata from {metadata_url}")
+    metadata_response = requests.get(metadata_url, auth=(username, password), params={'ct': 'csv'})
+    metadata_table = pd.read_csv(StringIO(metadata_response.content.decode("utf-8")))
+    if len(metadata_table) > 1:
+        metadata_table.sort_values(by=['nframes'], ascending=False, inplace=True)
+
+    return metadata_table.reset_index()
+
+
+def ztf_image_exists(
+        ztf_metadata: Dict[str, Union[int, str]],
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        verbose: int = 1,
+    ) -> pd.DataFrame:
+    return len(get_ztf_metadata_from_metadata(ztf_metadata, username=username, password=password, verbose=verbose)) > 0
 
 
 ### THE FOLLOWING FUNCTIONS ARE TAKEN FROM https://ps1images.stsci.edu/ps1image.html ###

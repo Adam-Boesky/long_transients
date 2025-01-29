@@ -116,7 +116,7 @@ def get_n_quadrants_merged_all_fields() -> Dict[str, Dict[str, int]]:
 def metadata_from_field_dirname(field_dirname: str) -> Dict[str, str]:
     """Get the ZTF image metadata given the field's dirname in our saved data."""
     field, ccdid, qid = field_dirname.split('_')
-    return {'field': field, 'ccdid': ccdid, 'qid': qid}
+    return {'fieldid': field, 'ccdid': ccdid, 'qid': qid}
 
 
 # Set up casjobs object

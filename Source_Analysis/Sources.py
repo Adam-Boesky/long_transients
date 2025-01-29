@@ -16,7 +16,7 @@ from astropy.visualization import simple_norm
 from astroquery.gaia import Gaia
 
 from Extracting.utils import get_data_path, load_cached_table
-from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata, get_pstarr_cutout
+from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata_from_coords, get_pstarr_cutout
 from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
 import traceback
@@ -227,14 +227,16 @@ class ZTF_Postage_Stamp(Postage_Stamp):
     def get_images(self) -> Tuple[Dict[str, np.ndarray], Dict[str, WCS]]:
 
         # Get the images from the ZTF cutouts
-        ztf_catalog = ZTF_Catalog(self.ra, self.dec, catalog_bands=self.bands, image_metadata=self.image_metadata)
+        ztf_catalogs = {
+            band: ZTF_Catalog(self.ra, self.dec, band=band, image_metadata=self.image_metadata) for band in self.bands
+        }
         self._images, self._WCSs = {}, {}
         for band in self.bands:
-            im = ztf_catalog.sextractors[band].image_sub
-            self._WCSs[band] = ztf_catalog.sextractors[band].wcs
+            im = ztf_catalogs[band].sextractor.image_sub
+            self._WCSs[band] = ztf_catalogs[band].sextractor.wcs
 
             # Get the pixel location of the center of the image
-            x, y = ztf_catalog.sextractors[band].ra_dec_to_pix(self.ra, self.dec)
+            x, y = ztf_catalogs[band].sextractor.ra_dec_to_pix(self.ra, self.dec)
 
             # Get the desired region
             halfwidth_pixels = 0.5 * self.stamp_width_arcsec / self.arcsec_per_pixel
@@ -312,7 +314,7 @@ class Source():
         if self._image_metadata is None:
             self._image_metadata = {}
             for band in self.bands:
-                band_metadata = get_ztf_metadata(
+                band_metadata = get_ztf_metadata_from_coords(
                     ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH * 1, self.ra + ZTF_CUTOUT_HALFWIDTH * 1),
                     dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH * 1, self.dec + ZTF_CUTOUT_HALFWIDTH * 1),
                     filter=band,
@@ -334,7 +336,7 @@ class Source():
     # @property
     # def paddedfield(self) -> str:
     #     if self._paddedfield is None:
-    #         metadata_table = get_ztf_metadata(
+    #         metadata_table = get_ztf_metadata_from_coords(
     #             ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH * 2, self.ra + ZTF_CUTOUT_HALFWIDTH * 2),
     #             dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH * 2, self.dec + ZTF_CUTOUT_HALFWIDTH * 2),
     #             filter=self.bands[0],  # doesn't need to be right band to get the coordinates

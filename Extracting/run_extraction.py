@@ -3,83 +3,56 @@ import sys
 import ztffields
 import numpy as np
 
+from typing import Iterable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 try:
     from Tile import Tile
+    from Catalogs import ztf_image_exists, get_ztf_metadata_from_metadata
     from utils import get_data_path
 except ModuleNotFoundError:
     from .Tile import Tile
+    from .Catalogs import ztf_image_exists, get_ztf_metadata_from_metadata
     from .utils import get_data_path
 
 
-def process_quadrant(quadrant, field_id, data_path, parallel):
-    # Get the center of the quadrant
-    ra_center, dec_center = np.mean(quadrant[:, 0]), np.mean(quadrant[:, 1])
+def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
+    print(f'Extracting sources from quadrant with field_id={fieldid}, ccdid={ccdid}, qid={qid}...')
 
-    # Make a tile, run extraction, and store the catalogs
-    tile = Tile(
-        ra_center,
-        dec_center,
-        bands=['g', 'r', 'i'],
-        data_dir=os.path.join(data_path, 'ztf_data'),
-        parallel=parallel
-    )
-    if tile.n_bands > 0:
-        print(f'Extracting sources from quadrant {field_id} at ({ra_center:.3f}, {dec_center:.3f})...')
-        tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=False)
-        print(f'Extracted sources from quadrant {field_id} at ({ra_center:.3f}, {dec_center:.3f}). Stored at: {tile_output_path}')
-    else:
-        print(f'Skipping quadrant extraction {field_id} at ({ra_center:.3f}, {dec_center:.3f}) due to missing bands.')
-
-
-def process_field(field_id, field_poly, data_path, parallel):
-    print(f'Extracting sources from field ID {field_id}...')
-    for quadrant in field_poly:
-        try:
-            process_quadrant(quadrant, field_id, data_path, parallel)
-        except Exception as e:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-
-            # Navigate to the innermost traceback
-            while exc_tb.tb_next:
-                next_tb = exc_tb.tb_next
-                filename = next_tb.tb_frame.f_code.co_filename
-                # Skip if the file is not part of your project (e.g., from site-packages)
-                if "site-packages" not in filename and "dist-packages" not in filename:
-                    exc_tb = next_tb
-                else:
-                    break
-            fname = exc_tb.tb_frame.f_code.co_filename
-            exception_info = f'{fname}:{exc_tb.tb_lineno}\n{exc_type}: {e}'
-            print(f'EXCEPTION INFO FOR FIELD {field_id} AT ({np.mean(quadrant[:, 0]):.3f}, {np.mean(quadrant[:, 1]):.3f}):\n{exception_info}')
-            if raise_exceptions:
-                raise e
-
-
-def extract_sources():
-
-    # Config
-    global raise_exceptions
-    raise_exceptions = False
-    parallel = False
+    # Get data
     data_path = get_data_path()
+    ztf_metadata={
+        'fieldid': fieldid,
+        'ccdid': ccdid,
+        'qid': qid,
+    }
 
-    # Load the field geometries
-    FIELDS = ztffields.Fields()
-    fields = ztffields.get_fieldid(galb_range=[[-90,-15], [15,90]], grid="main")  # all fields 15deg from the galactic plane
-    field_info, field_polygons = FIELDS.get_field_vertices(
-        fields[:10],
-        level='quadrant',
-        steps=2,
+    # Run extraction and store
+    tile = Tile(
+        ztf_metadata=ztf_metadata,
+        bands=bands,
+        data_dir=os.path.join(data_path, 'ztf_data'),
     )
+    tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=False)
+    print(f'Extracted sources from field with metadata {ztf_metadata}. Stored at: {tile_output_path}')
 
-    # Iterate through the field and quadrants, extracting sources
+
+def process_field(field_id: int):
+    # Get the field dataframe
+    field_df = get_ztf_metadata_from_metadata(ztf_metadata={'fieldid': field_id})
+
+    # Iterate through the field, extracting sources with quadrants parallelized
     with ProcessPoolExecutor(max_workers=8) as executor:
         futures = [
-            executor.submit(process_field, field_id, field_poly, data_path, parallel)
-            for field_id, field_poly in zip(field_info['fieldid'], field_polygons)
+            executor.submit(
+                process_quadrant,
+                fieldid,
+                ccdid,
+                qid,
+                [c[1] for c in df['filtercode']]
+            ) for (fieldid, ccdid, qid), df in field_df.groupby(['field', 'ccdid', 'qid'])
         ]
+
         for future in as_completed(futures):
             try:
                 # Call result() to propagate any exceptions that occurred
@@ -87,6 +60,22 @@ def extract_sources():
             except Exception as exc:
                 print(f'WARNING: Field processing generated an exception: {exc}')
                 raise exc
+
+
+def extract_sources():
+
+    # Config
+    global raise_exceptions
+    raise_exceptions = False
+    data_path = get_data_path()
+
+    # Load the field geometries
+    print('Loading fields!')
+    imaged_fields = np.load(os.path.join(data_path, 'imaged_fields.npy'))
+
+    # Extract field
+    for fid in imaged_fields:
+        process_field(fid)
 
 
 if __name__=='__main__':

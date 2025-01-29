@@ -3,7 +3,7 @@ import shutil
 import pickle
 import numpy as np
 
-from typing import Iterable, Optional, Tuple, Union
+from typing import Dict, Iterable, Optional, Tuple, Union
 from astropy.table import Table
 from concurrent.futures import ThreadPoolExecutor
 
@@ -16,8 +16,9 @@ except ModuleNotFoundError:
 class Tile():
     def __init__(
             self,
-            ra: float,
-            dec: float,
+            ra: float = None,
+            dec: float = None,
+            ztf_metadata: Dict[str, Union[str, int]] = None,
             bands: Union[Iterable[str], str] = ['g', 'r', 'i'],
             data_dir: Optional[str] = None,
             parallel: bool = False,
@@ -27,14 +28,14 @@ class Tile():
         if isinstance(bands, str):
             bands = [bands]
 
+        if not isinstance(ztf_metadata, dict) and not isinstance(ra, float) and not isinstance(dec, float):
+            raise ValueError('Tile must be given either (ra, dec) or a ztf_metadata dictionary.')
+
         # Get the ZTF catalog and coordinate range for the tile
         def _create_ztf_catalog(band):
             """Function to help create catalogs."""
-            try:
-                return ZTF_Catalog(ra, dec, catalog_bands=band, data_dir=data_dir)
-            except ValueError as e:
-                print(f"Band {band} not found in the ZTF data directory. Skipping.")
-                return None
+            return ZTF_Catalog(ra, dec, band=band, data_dir=data_dir, image_metadata=ztf_metadata)
+
         self.parallel = parallel
         if self.parallel:
             with ThreadPoolExecutor() as executor:
@@ -72,7 +73,7 @@ class Tile():
 
             # Function to process each band
             def process_band(band: str) -> Tuple[str, Table]:
-                self.ztf_catalogs[band].sextractors[band].set_sources_for_psf(
+                self.ztf_catalogs[band].sextractor.set_sources_for_psf(
                     self.pstar_catalog.data[
                         ['ra', 'dec', f'{band}KronMag', f'{band}KronMagErr', f'{band}PSFMag', f'{band}PSFMagErr']
                     ]
@@ -105,7 +106,7 @@ class Tile():
             only_pstarr_sources = self.data_dicts[band][self.data_dicts[band]['Catalog'] == 'PSTARR']
             with open(f'PSTARR{band}_{fpath}', 'w') as f:
                 for row in only_pstarr_sources:
-                    x, y = self.ztf_catalogs[band].sextractors[band].ra_dec_to_pix(row['PSTARR_ra'], row['PSTARR_dec'])
+                    x, y = self.ztf_catalogs[band].sextractor.ra_dec_to_pix(row['PSTARR_ra'], row['PSTARR_dec'])
                     f.write(f"{x} {y}\n")
 
     def prefecth_catalogs(self):
@@ -114,7 +115,7 @@ class Tile():
 
         # Set the PSF sources
         def _set_sources_for_psf(band: str):
-            self.ztf_catalogs[band].sextractors[band].set_sources_for_psf(
+            self.ztf_catalogs[band].sextractor.set_sources_for_psf(
                 self.pstar_catalog.data[
                     ['ra', 'dec', f'{band}KronMag', f'{band}KronMagErr', f'{band}PSFMag', f'{band}PSFMagErr']
                 ]
@@ -135,7 +136,7 @@ class Tile():
     def store_catalogs(self, out_parent_dir: str, overwrite: bool = False) -> str:
         """Store the ZTF and PanSTARRS catalogs."""
         # Get the output directory
-        out_subdir = f"{self.ztf_catalogs[self.bands[0]].image_metadata[self.bands[0]]['field']}_{self.ztf_catalogs[self.bands[0]].image_metadata[self.bands[0]]['ccid']}_{self.ztf_catalogs[self.bands[0]].image_metadata[self.bands[0]]['qid']}"
+        out_subdir = f"{self.ztf_catalogs[self.bands[0]].image_metadata['fieldid']}_{self.ztf_catalogs[self.bands[0]].image_metadata['ccdid']}_{self.ztf_catalogs[self.bands[0]].image_metadata['qid']}"
         outdir = os.path.join(out_parent_dir, out_subdir)
 
         if not overwrite and os.path.exists(outdir):
@@ -160,14 +161,14 @@ class Tile():
 
         # Store the ZTF catalogs, ZTF nan masks, and WCSs
         for band in self.bands:
-            
+
             # Save the ztf catalog
             self.ztf_catalogs[band].data.write(os.path.join(outdir, f'ZTF_{band}.ecsv'))
 
             # Save the ZTF catalog's nan mask, WCS, and EPSF fit
-            np.save(os.path.join(outdir, 'nan_masks', f'ZTF_{band}_nan_mask.npy'), self.ztf_catalogs[band].sextractors[band].nan_mask)
+            np.save(os.path.join(outdir, 'nan_masks', f'ZTF_{band}_nan_mask.npy'), self.ztf_catalogs[band].sextractor.nan_mask)
             with open(os.path.join(outdir, 'WCSs', f'ZTF_{band}_wcs.pkl'), 'wb') as f:
-                pickle.dump(self.ztf_catalogs[band].sextractors[band].wcs, f)
-            np.save(os.path.join(outdir, 'EPSFs', f'ZTF_{band}_EPSF.npy'), self.ztf_catalogs[band].sextractors[band].epsf.data)
+                pickle.dump(self.ztf_catalogs[band].sextractor.wcs, f)
+            np.save(os.path.join(outdir, 'EPSFs', f'ZTF_{band}_EPSF.npy'), self.ztf_catalogs[band].sextractor.epsf.data)
 
         return outdir
