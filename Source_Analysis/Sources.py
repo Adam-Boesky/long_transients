@@ -16,7 +16,7 @@ from astropy.visualization import simple_norm
 from astroquery.gaia import Gaia
 
 from Extracting.utils import get_data_path, load_cached_table
-from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata_from_coords, get_pstarr_cutout
+from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata_from_coords, get_ztf_metadata_from_metadata, get_pstarr_cutout
 from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
 import traceback
@@ -181,6 +181,10 @@ class Postage_Stamp():
         if ax is None:
             _, ax = plt.subplots()
 
+        # If no image, just return
+        if self.images[band] is None:
+            return ax
+
         # Set up plotting parameters
         if 'origin' not in kwargs:
             kwargs['origin'] = 'lower'
@@ -227,30 +231,41 @@ class ZTF_Postage_Stamp(Postage_Stamp):
     def get_images(self) -> Tuple[Dict[str, np.ndarray], Dict[str, WCS]]:
 
         # Get the images from the ZTF cutouts
+        bands_with_images = [
+            b[1] for b in get_ztf_metadata_from_metadata(ztf_metadata={
+                'fieldid': self.image_metadata.get('fieldid', self.image_metadata.get('field')),
+                'ccdid': self.image_metadata['ccdid'],
+                'qid': self.image_metadata['qid'],
+            })['filtercode']
+        ]
+        bands_with_images = [b for b in bands_with_images if b in self.bands]
         ztf_catalogs = {
-            band: ZTF_Catalog(self.ra, self.dec, band=band, image_metadata=self.image_metadata) for band in self.bands
+            band: ZTF_Catalog(self.ra, self.dec, band=band, image_metadata=self.image_metadata) for band in bands_with_images
         }
         self._images, self._WCSs = {}, {}
         for band in self.bands:
-            im = ztf_catalogs[band].sextractor.image_sub
-            self._WCSs[band] = ztf_catalogs[band].sextractor.wcs
+            if band not in bands_with_images:
+                self._images[band] = None
+            else:
+                im = ztf_catalogs[band].sextractor.image_sub
+                self._WCSs[band] = ztf_catalogs[band].sextractor.wcs
 
-            # Get the pixel location of the center of the image
-            x, y = ztf_catalogs[band].sextractor.ra_dec_to_pix(self.ra, self.dec)
+                # Get the pixel location of the center of the image
+                x, y = ztf_catalogs[band].sextractor.ra_dec_to_pix(self.ra, self.dec)
 
-            # Get the desired region
-            halfwidth_pixels = 0.5 * self.stamp_width_arcsec / self.arcsec_per_pixel
-            self._images[band] = im[
-                int(y - halfwidth_pixels):int(y + halfwidth_pixels),
-                int(x - halfwidth_pixels):int(x + halfwidth_pixels),
-            ]
+                # Get the desired region
+                halfwidth_pixels = 0.5 * self.stamp_width_arcsec / self.arcsec_per_pixel
+                self._images[band] = im[
+                    int(y - halfwidth_pixels):int(y + halfwidth_pixels),
+                    int(x - halfwidth_pixels):int(x + halfwidth_pixels),
+                ]
 
-            # Adjust the origin
-            self.x_origin_offsets[band] += x - (halfwidth_pixels)
-            self.y_origin_offsets[band] += y - (halfwidth_pixels)
+                # Adjust the origin
+                self.x_origin_offsets[band] += x - (halfwidth_pixels)
+                self.y_origin_offsets[band] += y - (halfwidth_pixels)
 
-            # Rotate and flip the image to align with PanSTARRS orientation
-            self._images[band] = np.flipud(np.fliplr(self._images[band]))
+                # Rotate and flip the image to align with PanSTARRS orientation
+                self._images[band] = np.flipud(np.fliplr(self._images[band]))
 
         return self._images, self._WCSs
 
@@ -327,14 +342,15 @@ class Source():
                 if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv')):
                     inds_extracted.append(ind)
                     test_paths.append(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv'))
-            self._image_metadata = self._image_metadata.iloc[inds_extracted].copy().reset_index()
+            self._image_metadata = self._image_metadata.iloc[inds_extracted].copy().reset_index(drop=True)
 
             # If we haven't extracted this field, throw and error
             if len(self._image_metadata) == 0 or self._image_metadata is None:
                 raise ValueError(f'Metadata for source at {self.coord} appears to be for a field that has not been extracted.')
 
             # Sort by the biggest stack, and make into a dict
-            self._image_metadata.sort_values(by=['nframes'], ascending=False, inplace=True).iloc[0].to_dict()
+            self._image_metadata.sort_values(by=['nframes'], ascending=False, inplace=True, ignore_index=True)
+            self._image_metadata = self._image_metadata.reset_index(drop=True).iloc[0].to_dict()
 
             # Take metadata out of list form
             for k, v in self._image_metadata.items():

@@ -310,6 +310,7 @@ WHERE rn = 1 into mydb.{tab_name}
                     # Retrieve the table
                     print(f'Retrieving {table_name} from MyDB!')
                     band_tables.append(MASTCASJOBS.get_table(table_name))
+                    break
 
                 except Exception:
                     print(f'Exception retrieving {table_name} from MyDB. Trying again.')
@@ -581,9 +582,9 @@ def get_ztf_metadata_from_coords(
     # Query
     metadata_response = requests.get(metadata_url, auth=(username, password), params={'ct': 'csv'})
     metadata_table = pd.read_csv(StringIO(metadata_response.content.decode("utf-8")))
-    metadata_table.sort_values(by=['nframes'], ascending=False, inplace=True)
+    metadata_table.sort_values(by=['nframes'], ascending=False, inplace=True, ignore_index=True)
 
-    return metadata_table.reset_index()
+    return metadata_table.reset_index(drop=True)
 
 
 def get_ztf_metadata_from_metadata(
@@ -620,9 +621,9 @@ def get_ztf_metadata_from_metadata(
     metadata_response = requests.get(metadata_url, auth=(username, password), params={'ct': 'csv'})
     metadata_table = pd.read_csv(StringIO(metadata_response.content.decode("utf-8")))
     if len(metadata_table) > 1:
-        metadata_table.sort_values(by=['nframes'], ascending=False, inplace=True)
+        metadata_table.sort_values(by=['nframes'], ascending=False, inplace=True, ignore_index=True)
 
-    return metadata_table.reset_index()
+    return metadata_table.reset_index(drop=True)
 
 
 def ztf_image_exists(
