@@ -244,6 +244,9 @@ WHERE rn = 1 into mydb.{tab_name}
                     if k in tab.columns:
                         final_table[k] = final_table[k].astype(tab[k].dtype)
 
+                # Fill missing values in 'gKronMag' with a placeholder, e.g., -999 or another sentinel value
+                final_table = final_table.filled(-999)
+
                 # Join!
                 final_table = join(final_table, tab, join_type='outer')
 
@@ -311,6 +314,7 @@ WHERE rn = 1 into mydb.{tab_name}
                 except Exception:
                     print(f'Exception retrieving {table_name} from MyDB. Trying again.')
 
+                    mydb_table_list = MASTCASJOBS.list_tables()
                     if len(mydb_table_list) > 700:
                         print('WARNING: mydb appears to be pretty cluttered. Deleting some first...')
                         tabs_to_delete = random.sample(mydb_table_list, k=len(mydb_table_list) - 500)

@@ -136,7 +136,7 @@ class Tile():
     def store_catalogs(self, out_parent_dir: str, overwrite: bool = False) -> str:
         """Store the ZTF and PanSTARRS catalogs."""
         # Get the output directory
-        out_subdir = f"{self.ztf_catalogs[self.bands[0]].image_metadata['fieldid']}_{self.ztf_catalogs[self.bands[0]].image_metadata['ccdid']}_{self.ztf_catalogs[self.bands[0]].image_metadata['qid']}"
+        out_subdir = f"{str(self.ztf_catalogs[self.bands[0]].image_metadata['fieldid']).zfill(6)}_{self.ztf_catalogs[self.bands[0]].image_metadata['ccdid']}_{self.ztf_catalogs[self.bands[0]].image_metadata['qid']}"
         outdir = os.path.join(out_parent_dir, out_subdir)
 
         if not overwrite and os.path.exists(outdir):
