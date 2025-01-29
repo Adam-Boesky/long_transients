@@ -285,11 +285,13 @@ class Source():
             field_catalogs: Optional[dict[str, Table]] = None,
             max_arcsec: float = 1.0,
             verbose: int = 1,
+            catch_plotting_exceptions: bool = True,
         ):
         self.ra = ra
         self.dec = dec
         self.coord = SkyCoord(ra=ra, dec=dec, unit='deg')
         self.verbose = verbose
+        self.catch_plotting_exceptions = catch_plotting_exceptions
 
         # Get the field for the given RA and DEC
         self.bands = bands
@@ -312,24 +314,31 @@ class Source():
     @property
     def image_metadata(self) -> Dict[str, Dict]:
         if self._image_metadata is None:
-            self._image_metadata = {}
-            for band in self.bands:
-                band_metadata = get_ztf_metadata_from_coords(
-                    ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH * 1, self.ra + ZTF_CUTOUT_HALFWIDTH * 1),
-                    dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH * 1, self.dec + ZTF_CUTOUT_HALFWIDTH * 1),
-                    filter=band,
-                )
+            self._image_metadata = get_ztf_metadata_from_coords(
+                ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH * 1, self.ra + ZTF_CUTOUT_HALFWIDTH * 1),
+                dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH * 1, self.dec + ZTF_CUTOUT_HALFWIDTH * 1),
+            )
 
-                # Filter for fields that we have actually extracted and stored
-                inds_extracted = []
-                test_paths = []
-                for ind, field in band_metadata['field'].items():
-                    field_id = str(field).zfill(6)
-                    if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv')):
-                        inds_extracted.append(ind)
-                        test_paths.append(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv'))
-                self._image_metadata[band] = band_metadata.iloc[inds_extracted].copy().reset_index()
-                self._image_metadata[band].sort_values(by=['nframes'], ascending=False, inplace=True)
+            # Filter for fields that we have actually extracted and stored
+            inds_extracted = []
+            test_paths = []
+            for ind, field in self._image_metadata['field'].items():
+                field_id = str(field).zfill(6)
+                if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv')):
+                    inds_extracted.append(ind)
+                    test_paths.append(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv'))
+            self._image_metadata = self._image_metadata.iloc[inds_extracted].copy().reset_index()
+
+            # If we haven't extracted this field, throw and error
+            if len(self._image_metadata) == 0 or self._image_metadata is None:
+                raise ValueError(f'Metadata for source at {self.coord} appears to be for a field that has not been extracted.')
+
+            # Sort by the biggest stack, and make into a dict
+            self._image_metadata.sort_values(by=['nframes'], ascending=False, inplace=True).iloc[0].to_dict()
+
+            # Take metadata out of list form
+            for k, v in self._image_metadata.items():
+                self._image_metadata[k] = v
 
         return self._image_metadata
 
@@ -521,16 +530,22 @@ class Source():
             _, axes = plt.subplots(1, 2, figsize=(15, 7.5))
 
         # Plot
-        try:
+        if self.catch_plotting_exceptions:  # if the user wants to catch plotting exceptions
+            try:
+                self.postage_stamps['PSTARR'].plot_cutout(band=band, ax=axes[0], **kwargs)
+            except Exception as e:
+                    tb = traceback.format_exc()
+                    print(f'Warning: Experienced error plotting the PanSTARR {band} band:\n{e}\nTraceback:\n{tb}\nSkipping...')
+        else:
             self.postage_stamps['PSTARR'].plot_cutout(band=band, ax=axes[0], **kwargs)
-        except Exception as e:
-            tb = traceback.format_exc()
-            print(f'Warning: Experienced error plotting the PanSTARR {band} band:\n{e}\nTraceback:\n{tb}\nSkipping...')
-        try:
+        if self.catch_plotting_exceptions:
+            try:
+                self.postage_stamps['ZTF'].plot_cutout(band=band, ax=axes[1], **kwargs)
+            except Exception as e:
+                tb = traceback.format_exc()
+                print(f'Warning: Experienced error plotting the ZTF {band} band:\n{e}\nTraceback:\n{tb}\nSkipping...')
+        else:
             self.postage_stamps['ZTF'].plot_cutout(band=band, ax=axes[1], **kwargs)
-        except Exception as e:
-            tb = traceback.format_exc()
-            print(f'Warning: Experienced error plotting the ZTF {band} band:\n{e}\nTraceback:\n{tb}\nSkipping...')
 
         # Annotate with the mags
         axes[0].text(
@@ -754,6 +769,7 @@ class Sources:
             ras: Optional[Iterable[float]] = None,
             decs: Optional[Iterable[float]] = None,
             sources: Optional[List[Source]] = None,
+            catch_plotting_exceptions: bool = True,
             **kwargs,
         ):
         if sources is not None:

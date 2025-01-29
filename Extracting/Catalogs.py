@@ -315,7 +315,7 @@ WHERE rn = 1 into mydb.{tab_name}
                     print(f'Exception retrieving {table_name} from MyDB. Trying again.')
 
                     mydb_table_list = MASTCASJOBS.list_tables()
-                    if len(mydb_table_list) > 700:
+                    if len(mydb_table_list) > 50:
                         print('WARNING: mydb appears to be pretty cluttered. Deleting some first...')
                         tabs_to_delete = random.sample(mydb_table_list, k=len(mydb_table_list) - 500)
                         for t in tabs_to_delete:
@@ -438,7 +438,7 @@ class ZTF_Catalog(Catalog):
 
         # Download the image
         qid = self.image_metadata['qid']
-        field = self.image_metadata['fieldid']
+        field = self.image_metadata.get('fieldid', self.image_metadata.get('field'))
         paddedccdid = str(self.image_metadata['ccdid']).zfill(2)
         paddedfield = str(field).zfill(6)
         fieldprefix = paddedfield[:6 - len(str(field))]
@@ -558,7 +558,7 @@ def associate_tables_by_coordinates(
 def get_ztf_metadata_from_coords(
         ra_range: Tuple,
         dec_range: Tuple,
-        filter: str,
+        filter: Optional[str] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
     ) -> pd.DataFrame:
@@ -567,11 +567,15 @@ def get_ztf_metadata_from_coords(
     if username is None or password is None:
         username, password = get_credentials('irsa_login.txt')
 
-    # Make sure filtercode is setup correctly
-    if filter[0] != 'z' or len(filter) == 1:
-        filter = f'z{filter}'
+    # Construct url
+    metadata_url = f"https://irsa.ipac.caltech.edu/ibe/search/ztf/products/deep?WHERE=ra>{ra_range[0]}+AND+ra<{ra_range[1]}+AND+dec>{dec_range[0]}+AND+dec<{dec_range[1]}"
+    if filter is not None:
 
-    metadata_url = f"https://irsa.ipac.caltech.edu/ibe/search/ztf/products/deep?WHERE=ra>{ra_range[0]}+AND+ra<{ra_range[1]}+AND+dec>{dec_range[0]}+AND+dec<{dec_range[1]}+AND+filtercode='{filter}'"
+        # Make sure filtercode is setup correctly
+        if filter[0] != 'z' or len(filter) == 1:
+            filter = f'z{filter}'
+        metadata_url = metadata_url + f"+AND+filtercode='{filter}'"
+
     print(f"Querying metadata from {metadata_url}")
 
     # Query
