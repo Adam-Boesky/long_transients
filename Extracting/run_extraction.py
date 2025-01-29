@@ -59,7 +59,8 @@ def process_field(field_id: int):
                 future.result()
             except Exception as exc:
                 print(f'WARNING: Field processing generated an exception: {exc}')
-                raise exc
+                if raise_exceptions:
+                    raise exc
 
 
 def extract_sources():
