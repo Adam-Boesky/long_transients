@@ -204,7 +204,7 @@ WHERE rn = 1 into mydb.{tab_name}
 
                     mydb_table_list = MASTCASJOBS.list_tables()
                     if len(mydb_table_list) > 50:
-                        delete_prop = 0.75
+                        delete_prop = 0.25
                         print(f'WARNING: mydb appears to be pretty cluttered. Deleting some ({delete_prop * 100}% of '
                               'mydb) first...')
                         tabs_to_delete = random.sample(mydb_table_list, k=int(len(mydb_table_list) * delete_prop))

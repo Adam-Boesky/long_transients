@@ -78,7 +78,7 @@ def extract_sources():
 
     # Load the field geometries
     print('Loading fields!')
-    imaged_fields = np.load(os.path.join(data_path, 'imaged_fields.npy'))
+    imaged_fields = np.load(os.path.join(data_path, 'i_imaged_fields.npy'))  # NOTE: if imaged in i, imaged in all bands
 
     # Extract field
     for fid in imaged_fields:
