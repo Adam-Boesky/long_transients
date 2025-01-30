@@ -18,9 +18,9 @@ from photutils.psf import PSFPhotometry, EPSFBuilder, EPSFFitter, EPSFStars, ext
 from scipy.interpolate import NearestNDInterpolator
 
 try:
-    from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS
+    from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
 except ModuleNotFoundError:
-    from .utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS
+    from .utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
 
 
 class Source_Extractor():
@@ -510,7 +510,7 @@ def query_cone_ps1(
     '''
 
     # Get the PS1 MAST username and password from /Users/username/3PI_key.txt
-    key_location = os.path.join(pathlib.Path.home(), 'vault/mast_login.txt')
+    key_location = os.path.join(pathlib.Path.home(), f'vault/{MAST_CREDENTIAL_FNAME}')
 
     # 3PI query
     # Kron Magnitude, ps_score (we define galaxies as ps_score < 0.9)

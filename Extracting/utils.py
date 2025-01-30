@@ -9,6 +9,9 @@ from typing import Optional, Tuple, Union, Dict
 
 import numpy as np
 
+MAST_CREDENTIAL_FNAME = 'mast_login_harvard.txt'
+print(f'CasJobs will use the credentials from {MAST_CREDENTIAL_FNAME}')
+
 
 def get_credentials(fname: str) -> Union[Tuple[str, str], str]:
     """Retrieves credentials from a specified file in my ~/vault/directory."""
@@ -120,5 +123,5 @@ def metadata_from_field_dirname(field_dirname: str) -> Dict[str, str]:
 
 
 # Set up casjobs object
-wsid, password = get_credentials('mast_login.txt')
+wsid, password = get_credentials(MAST_CREDENTIAL_FNAME)
 MASTCASJOBS = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password, request_type='POST')

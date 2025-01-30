@@ -81,9 +81,12 @@ def extract_sources():
     imaged_fields = np.load(os.path.join(data_path, 'i_imaged_fields.npy'))  # NOTE: if imaged in i, imaged in all bands
 
     # Extract field
-    for fid in imaged_fields:
+    # for fid in imaged_fields:
+    #     process_field(fid)
+    # for fid in imaged_fields[100:]:  # start at 100 for parallel processing
+    #     process_field(fid)
+    for fid in imaged_fields[200:]:  # start at 200 for parallel processing
         process_field(fid)
-
 
 if __name__=='__main__':
     extract_sources()
