@@ -144,14 +144,7 @@ WHERE rn = 1 into mydb.{tab_name}
 
         return final_table
 
-    def _submit_table_query(self, band: str) -> Tuple[int, str]:
-        # Make the table name
-        ra_range_strs = [str(ra).replace('.', 'p').replace('-', 'n')[:6] for ra in self.ra_range]      # formatting coords
-        dec_range_strs = [str(dec).replace('.', 'p').replace('-', 'n')[:6] for dec in self.dec_range]  # formatting coords
-        table_name = f'pstarr_sources_ra{ra_range_strs[0]}_{ra_range_strs[1]}_dec{dec_range_strs[0]}_{dec_range_strs[1]}'
-
-        # Submit the queries
-        table_name = f'{band}_{table_name}'
+    def _submit_table_query(self, band: str, table_name: str) -> int:
 
         # Submit the query and monitor it
         band_query = self._get_band_query(band, tab_name=table_name)
@@ -159,7 +152,7 @@ WHERE rn = 1 into mydb.{tab_name}
         MASTCASJOBS.monitor(jobid)
         print(f'Submitted query for {table_name} with id={jobid}')
 
-        return jobid, table_name
+        return jobid
 
     def get_data(self) -> Table:
         # Query Pan-STARRS DR2 using the specified RA and DEC range
@@ -178,6 +171,8 @@ WHERE rn = 1 into mydb.{tab_name}
         for band in self.bands:
 
             # Construct the table name
+            ra_range_strs = [str(ra).replace('.', 'p').replace('-', 'n')[:6] for ra in self.ra_range]      # formatting coords
+            dec_range_strs = [str(dec).replace('.', 'p').replace('-', 'n')[:6] for dec in self.dec_range]  # formatting coords
             table_name = f'{band}_pstarr_sources_ra{ra_range_strs[0]}_{ra_range_strs[1]}_dec{dec_range_strs[0]}_{dec_range_strs[1]}'
 
             # If overwriting myDB, drop the table
@@ -193,7 +188,7 @@ WHERE rn = 1 into mydb.{tab_name}
                     mydb_table_list = MASTCASJOBS.list_tables()
                     if table_name not in mydb_table_list:
                         print(f'{table_name} not in MyDB, submitting request to make it!')
-                        self._submit_table_query(band)
+                        self._submit_table_query(band, table_name)
 
                     # Retrieve the table
                     print(f'Retrieving {table_name} from MyDB!')
