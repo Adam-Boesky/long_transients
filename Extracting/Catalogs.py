@@ -318,7 +318,7 @@ WHERE rn = 1 into mydb.{tab_name}
                     mydb_table_list = MASTCASJOBS.list_tables()
                     if len(mydb_table_list) > 50:
                         print('WARNING: mydb appears to be pretty cluttered. Deleting some first...')
-                        tabs_to_delete = random.sample(mydb_table_list, k=len(mydb_table_list) - 500)
+                        tabs_to_delete = random.sample(mydb_table_list, k=int(len(mydb_table_list) * 0.75))
                         for t in tabs_to_delete:
                             MASTCASJOBS.drop_table_if_exists(t)
 

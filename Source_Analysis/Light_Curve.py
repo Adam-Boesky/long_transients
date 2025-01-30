@@ -70,8 +70,15 @@ class Light_Curve:
         # Query the catalog
         print(f"Querying {catalog} catalog...")
         if catalog == 'ztf':
+            # See Section 10.3 for BAD_CATFLAG_MASK info
+            # https://irsa.ipac.caltech.edu/data/ZTF/docs/ztf_explanatory_supplement.pdf
             lightcurve_tab = Table.from_pandas(
-                lightcurve.LCQuery.from_position(self.ra, self.dec, self.query_rad_arcsec).data
+                lightcurve.LCQuery.from_position(
+                    self.ra,
+                    self.dec,
+                    self.query_rad_arcsec,
+                    BAD_CATFLAGS_MASK=6141,
+                ).data
             )
             lightcurve_tab = lightcurve_tab[desired_colnames]
         else:
