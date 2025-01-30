@@ -91,7 +91,7 @@ class PSTARR_Catalog(Catalog):
         # Get the keys for the bands we want
         band_mags_str = (
         f'\tm.{band}KronMag, m.{band}KronMagErr,\n'
-        f'\tm.{band}ApMag, m.{band}ApMagErr,\n'
+        # f'\tm.{band}ApMag, m.{band}ApMagErr,\n'
         f'\tm.{band}PSFMag, m.{band}PSFMagErr,\n'
         f'\ta.{band}psfLikelihood, m.{band}infoFlag2,\n'
         )
@@ -144,7 +144,7 @@ WHERE rn = 1 into mydb.{tab_name}
 
         return final_table
 
-    def _submit_table_query(self, band: str) -> str:
+    def _submit_table_query(self, band: str) -> Tuple[int, str]:
         # Make the table name
         ra_range_strs = [str(ra).replace('.', 'p').replace('-', 'n')[:6] for ra in self.ra_range]      # formatting coords
         dec_range_strs = [str(dec).replace('.', 'p').replace('-', 'n')[:6] for dec in self.dec_range]  # formatting coords
@@ -157,8 +157,9 @@ WHERE rn = 1 into mydb.{tab_name}
         band_query = self._get_band_query(band, tab_name=table_name)
         jobid = MASTCASJOBS.submit(band_query, task_name=f"{band}_PanSTARRS_DR2_TILE_QUERY")
         MASTCASJOBS.monitor(jobid)
+        print(f'Submitted query for {table_name} with id={jobid}')
 
-        return table_name
+        return jobid, table_name
 
     def get_data(self) -> Table:
         # Query Pan-STARRS DR2 using the specified RA and DEC range
