@@ -438,6 +438,10 @@ class Source_Extractor():
         ra_range = (np.min(corner_ras), np.max(corner_ras))
         dec_range = (np.min(corner_decs), np.max(corner_decs))
 
+        # Account for wrapping at 360 deg
+        if ra_range[0] < 10.0 and ra_range[1] > 350.0:
+            ra_range = (ra_range[1], ra_range[0] + 360.0)
+
         return ra_range, dec_range
 
     def get_data_table(self, include_kron: bool = True, include_psf: bool = True) -> Table:

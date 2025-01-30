@@ -87,119 +87,6 @@ class PSTARR_Catalog(Catalog):
         if prefetch:
             self.prefetch()
 
-#     def _get_sql_query(self, table_name: str, query_type: str = 'vanilla') -> str:
-#         """Get casjobs sql query to get PanSTARRS data.
-
-#         NOTE: that this query gives us a 0.003 padding in RA and DEC to ensure we get all sources.
-#         """
-#         if query_type not in ('vanilla', 'fancy'):
-#             raise ValueError(f"Query type {query_type} not recognized.")
-
-#         if query_type == 'fancy':
-#             query = f"""
-# WITH
-#     base AS (
-#         SELECT DISTINCT o.objID, o.raMean, o.decMean
-#         FROM ObjectThin o
-#         WHERE o.raMean BETWEEN {self.ra_range[0] - 0.003} AND {self.ra_range[1] + 0.003}
-#             AND o.decMean BETWEEN {self.dec_range[0] - 0.003} AND {self.ra_range[1] + 0.003}
-#             AND (o.nStackDetections > 0 OR o.nDetections > 1)
-#     ),"""
-
-#             for band in self.bands:
-#                 query += f"""
-#     {band}_band AS (
-#         SELECT
-#             o.objID,
-#             m.{band}KronMag,
-#             m.{band}KronMagErr,
-#             m.{band}PSFMag,
-#             m.{band}PSFMagErr,
-#             a.{band}psfLikelihood,
-#             m.{band}infoFlag2,
-#             ROW_NUMBER() OVER (
-#                 PARTITION BY o.objID 
-#                 ORDER BY 
-#                     CASE WHEN m.{band}infoFlag2 = 0 THEN 0 ELSE 1 END,
-#                     m.primaryDetection DESC
-#             ) AS rn
-#         FROM base o
-#         INNER JOIN StackObjectThin m ON o.objID = m.objID
-#         INNER JOIN StackObjectAttributes a ON o.objID = a.objID
-#         WHERE (m.{band}infoFlag2 & 4) = 0
-#     ),"""
-
-#             for band in self.bands:
-#                 query += f"""
-#     {band}_table AS (
-#         SELECT * FROM {band}_band WHERE rn = 1
-#     ),"""
-
-#             # Remove the trailing comma after the last CTE
-#             query = query.rstrip(',') + "\n"
-#             query += """
-
-#     SELECT
-#         base.objID,
-#         base.raMean,
-#         base.decMean,"""
-
-#             for band in self.bands:
-#                 query += f"""
-#         {band}_table.{band}KronMag,
-#         {band}_table.{band}KronMagErr,
-#         {band}_table.{band}PSFMag,
-#         {band}_table.{band}PSFMagErr,
-#         {band}_table.{band}psfLikelihood,
-#         {band}_table.{band}infoFlag2,"""
-
-#             # Remove the trailing comma from the last column
-#             query = query.rstrip(',')
-
-#             query += f"""
-
-#             INTO mydb.{table_name}
-
-#             FROM base"""
-
-#             for band in self.bands:
-#                 query += f"""
-#             LEFT JOIN {band}_table ON base.objID = {band}_table.objID"""
-
-#             query += ";"
-
-#         elif query_type == 'vanilla':
-#             # Get the keys for the bands we want
-#             band_mags_str = ''
-#             for band in self.bands:
-#                 band_mags_str += (
-#                     f'\t\tm.{band}KronMag, m.{band}KronMagErr,\n'
-#                     f'\t\tm.{band}ApMag, m.{band}ApMagErr,\n'
-#                     f'\t\tm.{band}PSFMag, m.{band}PSFMagErr,\n'
-#                     f'\t\ta.{band}psfLikelihood, m.{band}infoFlag2,\n'
-#                 )
-
-#             query = f"""
-# WITH ranked AS (
-#     SELECT
-#         o.objID, o.raMean, o.decMean,
-# {band_mags_str}\t\tm.primaryDetection,
-#         ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) as rn into mydb.{table_name}
-#     FROM ObjectThin o
-#     INNER JOIN StackObjectThin m ON o.objID = m.objID
-#     INNER JOIN StackObjectAttributes a ON o.objID = a.objID
-#     WHERE o.raMean BETWEEN {self.ra_range[0] - 0.003} AND {self.ra_range[1] + 0.003}
-#     AND o.decMean BETWEEN {self.dec_range[0] - 0.003} AND {self.dec_range[1] + 0.003}
-#     AND (o.nStackDetections > 0 OR o.nDetections > 1)
-# )
-# SELECT * FROM ranked
-# WHERE rn = 1
-#             """
-#         else:
-#             query = None
-
-#         return query
-
     def _get_band_query(self, band: str, tab_name: str) -> str:
         # Get the keys for the bands we want
         band_mags_str = (
@@ -317,8 +204,10 @@ WHERE rn = 1 into mydb.{tab_name}
 
                     mydb_table_list = MASTCASJOBS.list_tables()
                     if len(mydb_table_list) > 50:
-                        print('WARNING: mydb appears to be pretty cluttered. Deleting some first...')
-                        tabs_to_delete = random.sample(mydb_table_list, k=int(len(mydb_table_list) * 0.75))
+                        delete_prop = 0.75
+                        print(f'WARNING: mydb appears to be pretty cluttered. Deleting some ({delete_prop * 100}% of '
+                              'mydb) first...')
+                        tabs_to_delete = random.sample(mydb_table_list, k=int(len(mydb_table_list) * delete_prop))
                         for t in tabs_to_delete:
                             MASTCASJOBS.drop_table_if_exists(t)
 

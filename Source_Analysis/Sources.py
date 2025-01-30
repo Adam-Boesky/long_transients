@@ -1,5 +1,6 @@
 import os
 import ast
+import traceback
 import numpy as np
 import pandas as pd
 import astropy.units as u
@@ -14,12 +15,14 @@ from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from astropy.visualization import simple_norm
 from astroquery.gaia import Gaia
+from astropy.time import Time
 
 from Extracting.utils import get_data_path, load_cached_table
 from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata_from_coords, get_ztf_metadata_from_metadata, get_pstarr_cutout
 from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
-import traceback
+from Light_Curve import Light_Curve
+from astropy.visualization import time_support
 
 ACCEPTABLE_PROC_STATUS = [0]
 MANDATORY_SOURCE_COLUMNS = [
@@ -326,6 +329,9 @@ class Source():
         self.filter_info = {}
         self._image_metadata = None
 
+        # The lightcurve class for the source
+        self.light_curve = Light_Curve(self.ra, self.dec, query_rad_arcsec=self.max_arcsec)
+
     @property
     def image_metadata(self) -> Dict[str, Dict]:
         if self._image_metadata is None:
@@ -357,29 +363,6 @@ class Source():
                 self._image_metadata[k] = v
 
         return self._image_metadata
-
-    # @property
-    # def paddedfield(self) -> str:
-    #     if self._paddedfield is None:
-    #         metadata_table = get_ztf_metadata_from_coords(
-    #             ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH * 2, self.ra + ZTF_CUTOUT_HALFWIDTH * 2),
-    #             dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH * 2, self.dec + ZTF_CUTOUT_HALFWIDTH * 2),
-    #             filter=self.bands[0],  # doesn't need to be right band to get the coordinates
-    #         )
-
-    #         # Get the field id that's in the stored field results
-    #         paddedfield = None
-    #         for field in metadata_table['field']:
-    #             field_id = str(field).zfill(6)
-    #             if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv')):
-    #                 paddedfield = field_id
-    #                 break
-    #         if paddedfield is None:
-    #             raise ValueError(f'No field stored field result found for the given RA and DEC ({self.ra}, {self.dec}).'
-    #                              f' All fields found in metadata are {list(metadata_table["field"])}.')
-    #         self._paddedfield = paddedfield
-
-    #     return self._paddedfield
 
     @property
     def field_catalogs(self) -> dict[str, Table]:
@@ -751,6 +734,35 @@ class Source():
         ax_light_curves.set_ylabel('Mag' if y_units == 'mag' else 'Fluxdiff')
 
         return ax_pstarr_cutout, ax_ztf_cutout, ax_light_curves
+
+    def plot_lc(self, bands: Optional[List[str]] = None, ax: Optional[Axes] = None, **kwargs) -> Axes:
+        """Plot lightcurve for all bands specified in 'bands', or all bands if bands is None."""
+        if ax is None:
+            _, ax = plt.subplots(figsize=(12, 5))
+
+        # If not given, get the bands from the lightcurve data itself        
+        if bands is None:
+            bands = [b for b in self.light_curve.colnames if b[-4:] == '_mag']
+
+        # Time vector to mjd
+        time = Time([self.light_curve.lc['mjd']], format='mjd')
+        time_support()
+
+        # Iterate through bands and plot
+        for band in bands:
+            ax.errorbar(
+                x=time,
+                y=self.light_curve.lc[band],
+                yerr=f'{self.light_curve.lc[band]}err',
+                label=band,
+                **kwargs,
+            )
+
+        # Format
+        ax.invert_yaxis()
+        ax.set_ylabel('Mag')
+
+        return ax
 
     def get_TNS_info(self, tns_df: Optional[pd.DataFrame] = None, tns_coords: Optional[SkyCoord] = None) -> bool:
         # Load TNS if it is not given
