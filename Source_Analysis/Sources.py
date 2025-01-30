@@ -23,6 +23,7 @@ from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
 from Light_Curve import Light_Curve
 from astropy.visualization import time_support
+time_support()
 
 ACCEPTABLE_PROC_STATUS = [0]
 MANDATORY_SOURCE_COLUMNS = [
@@ -742,25 +743,36 @@ class Source():
 
         # If not given, get the bands from the lightcurve data itself        
         if bands is None:
-            bands = [b for b in self.light_curve.colnames if b[-4:] == '_mag']
+            bands = [b for b in self.light_curve.lc.colnames if b[-4:] == '_mag']
 
         # Time vector to mjd
-        time = Time([self.light_curve.lc['mjd']], format='mjd')
-        time_support()
+        time = Time(self.light_curve.lc['mjd'], format='mjd')
+
+        # Update kwargs with default parameters if not already provided
+        default_params = {
+            'markersize': 5,
+            'capsize': 2,
+            'fmt': 'o'
+        }
+        for key, value in default_params.items():
+            kwargs.setdefault(key, value)
 
         # Iterate through bands and plot
         for band in bands:
-            ax.errorbar(
-                x=time,
-                y=self.light_curve.lc[band],
-                yerr=f'{self.light_curve.lc[band]}err',
-                label=band,
-                **kwargs,
-            )
+            if not np.all(self.light_curve.lc[band].mask):  # make sure everything is not nan
+                ax.errorbar(
+                    x=time.jd,
+                    y=self.light_curve.lc[band].filled(fill_value=np.nan),
+                    yerr=self.light_curve.lc[f'{band}err'].filled(fill_value=np.nan),
+                    label=band,
+                    **kwargs,
+                )
 
         # Format
         ax.invert_yaxis()
         ax.set_ylabel('Mag')
+        ax.set_xlabel('Time [mjd]')
+        ax.legend()
 
         return ax
 

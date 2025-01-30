@@ -135,8 +135,9 @@ class Light_Curve:
             cat_lc = self.get_catalog_lc(catalog_name)
 
             # Data only for the closest object
-            cat_lc = cat_lc[cat_lc[f'{catalog_name}_id'] == cat_lc[f'{catalog_name}_id'][0]]
-            lcs.append(cat_lc)
+            if len(cat_lc) > 0:
+                cat_lc = cat_lc[cat_lc[f'{catalog_name}_id'] == cat_lc[f'{catalog_name}_id'][0]]
+                lcs.append(cat_lc)
 
         # Join the tables
         tab = lcs[0]
