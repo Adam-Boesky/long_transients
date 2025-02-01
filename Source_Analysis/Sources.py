@@ -234,7 +234,7 @@ class ZTF_Postage_Stamp(Postage_Stamp):
 
     def get_images(self) -> Tuple[Dict[str, np.ndarray], Dict[str, WCS]]:
 
-        # Get the images from the ZTF cutouts
+        # Get the bands with images for the given metadata and load ztf catalogs
         bands_with_images = [
             b[1] for b in get_ztf_metadata_from_metadata(ztf_metadata={
                 'fieldid': self.image_metadata.get('fieldid', self.image_metadata.get('field')),
@@ -243,9 +243,15 @@ class ZTF_Postage_Stamp(Postage_Stamp):
             })['filtercode']
         ]
         bands_with_images = [b for b in bands_with_images if b in self.bands]
-        ztf_catalogs = {
-            band: ZTF_Catalog(self.ra, self.dec, band=band, image_metadata=self.image_metadata) for band in bands_with_images
-        }
+
+        # Preload ztf catalogs in parallel to speed up image downloads
+        with futures.ThreadPoolExecutor() as executor:
+            ztf_catalogs = dict(zip(
+            bands_with_images,
+            executor.map(lambda band: ZTF_Catalog(self.ra, self.dec, band=band, image_metadata=self.image_metadata), bands_with_images)
+        ))
+
+        # Get the images and crop to postage stamps
         self._images, self._WCSs = {}, {}
         for band in self.bands:
             if band not in bands_with_images:
@@ -284,11 +290,15 @@ class PSTARR_Postage_Stamp(Postage_Stamp):
         # Get the images from the ZTF cutouts
         images = {}
         wcss = {}
-        for band in self.bands:
+        with futures.ThreadPoolExecutor() as executor:
+            results = list(executor.map(
+            lambda band: (band, get_pstarr_cutout(self.ra, self.dec, size=self.stamp_width_arcsec / self.arcsec_per_pixel, filter=band)),
+            self.bands
+            ))
 
-            # Query the image
-            width_pixels = self.stamp_width_arcsec / self.arcsec_per_pixel
-            images[band], wcss[band] = get_pstarr_cutout(self.ra, self.dec, size=width_pixels, filter=band)
+        for band, (image, wcs) in results:
+            images[band] = image
+            wcss[band] = wcs
 
         return images, wcss
 
@@ -336,32 +346,51 @@ class Source():
     @property
     def image_metadata(self) -> Dict[str, Dict]:
         if self._image_metadata is None:
-            self._image_metadata = get_ztf_metadata_from_coords(
-                ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH * 1, self.ra + ZTF_CUTOUT_HALFWIDTH * 1),
-                dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH * 1, self.dec + ZTF_CUTOUT_HALFWIDTH * 1),
-            )
 
-            # Filter for fields that we have actually extracted and stored
-            inds_extracted = []
-            test_paths = []
-            for ind, field in self._image_metadata['field'].items():
-                field_id = str(field).zfill(6)
-                if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv')):
-                    inds_extracted.append(ind)
-                    test_paths.append(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv'))
-            self._image_metadata = self._image_metadata.iloc[inds_extracted].copy().reset_index(drop=True)
+            # Iterate through bands and get the first metadata that works
+            metadata = {}
+            for band in self.bands:
+                if isinstance(self.data[f'ZTF_{band}_fieldid'][0], (float, int)):
+                    metadata['fieldid'] = int(self.data[f'ZTF_{band}_fieldid'][0])
+                if isinstance(self.data[f'ZTF_{band}_ccdid'][0], (float, int)):
+                    metadata['ccdid'] = int(self.data[f'ZTF_{band}_ccdid'][0])
+                if isinstance(self.data[f'ZTF_{band}_qid'][0], (float, int)):
+                    metadata['qid'] = int(self.data[f'ZTF_{band}_qid'][0])
 
-            # If we haven't extracted this field, throw and error
-            if len(self._image_metadata) == 0 or self._image_metadata is None:
-                raise ValueError(f'Metadata for source at {self.coord} appears to be for a field that has not been extracted.')
+                if len(metadata) >= 3:
+                    self._image_metadata = metadata
+                    break
 
-            # Sort by the biggest stack, and make into a dict
-            self._image_metadata.sort_values(by=['nframes'], ascending=False, inplace=True, ignore_index=True)
-            self._image_metadata = self._image_metadata.reset_index(drop=True).iloc[0].to_dict()
 
-            # Take metadata out of list form
-            for k, v in self._image_metadata.items():
-                self._image_metadata[k] = v
+            # If was not set, use (ra, dec) query
+            if self._image_metadata is None:
+                print('Falling back on ZTF image metadata with coordinate query...')
+                self._image_metadata = get_ztf_metadata_from_coords(
+                    ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH * 1, self.ra + ZTF_CUTOUT_HALFWIDTH * 1),
+                    dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH * 1, self.dec + ZTF_CUTOUT_HALFWIDTH * 1),
+                )
+
+                # Filter for fields that we have actually extracted and stored
+                inds_extracted = []
+                test_paths = []
+                for ind, field in self._image_metadata['field'].items():
+                    field_id = str(field).zfill(6)
+                    if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv')):
+                        inds_extracted.append(ind)
+                        test_paths.append(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv'))
+                self._image_metadata = self._image_metadata.iloc[inds_extracted].copy().reset_index(drop=True)
+
+                # If we haven't extracted this field, throw and error
+                if len(self._image_metadata) == 0 or self._image_metadata is None:
+                    raise ValueError(f'Metadata for source at {self.coord} appears to be for a field that has not been extracted.')
+
+                # Sort by the biggest stack, and make into a dict
+                self._image_metadata.sort_values(by=['nframes'], ascending=False, inplace=True, ignore_index=True)
+                self._image_metadata = self._image_metadata.reset_index(drop=True).iloc[0].to_dict()
+
+                # Take metadata out of list form
+                for k, v in self._image_metadata.items():
+                    self._image_metadata[k] = v
 
         return self._image_metadata
 
@@ -736,7 +765,7 @@ class Source():
 
         return ax_pstarr_cutout, ax_ztf_cutout, ax_light_curves
 
-    def plot_lc(self, bands: Optional[List[str]] = None, ax: Optional[Axes] = None, **kwargs) -> Axes:
+    def plot_lc(self, bands: Optional[List[str]] = None, ax: Optional[Axes] = None, time_as_str: bool = True, **kwargs) -> Axes:
         """Plot lightcurve for all bands specified in 'bands', or all bands if bands is None."""
         if ax is None:
             _, ax = plt.subplots(figsize=(12, 5))
@@ -761,7 +790,7 @@ class Source():
         for band in bands:
             if not np.all(self.light_curve.lc[band].mask):  # make sure everything is not nan
                 ax.errorbar(
-                    x=time.jd,
+                    x=time.mjd,
                     y=self.light_curve.lc[band].filled(fill_value=np.nan),
                     yerr=self.light_curve.lc[f'{band}err'].filled(fill_value=np.nan),
                     label=band,
@@ -772,6 +801,14 @@ class Source():
         ax.invert_yaxis()
         ax.set_ylabel('Mag')
         ax.set_xlabel('Time [mjd]')
+        if time_as_str:
+            ticks_as_time = Time(ax.get_xticks(), format='mjd')
+            ax.set_xticks(
+                ticks_as_time.mjd,
+                ticks_as_time.strftime('%m-%d-%Y'),
+                rotation=45,
+                ha='right',
+            )
         ax.legend()
 
         return ax

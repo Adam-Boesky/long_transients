@@ -8,6 +8,7 @@ from ztfquery import lightcurve
 from astropy.table import Table, vstack
 from astroquery.ipac.irsa import Irsa
 from astropy.coordinates import SkyCoord
+from concurrent.futures import ThreadPoolExecutor
 
 
 class Light_Curve:
@@ -68,7 +69,7 @@ class Light_Curve:
             column_rename_map = [('oid', 'ptf_id'), ('obsmjd', 'mjd')]
 
         # Query the catalog
-        print(f"Querying {catalog} catalog...")
+        print(f"Querying {catalog} catalog for light curve...")
         if catalog == 'ztf':
             # See Section 10.3 for BAD_CATFLAG_MASK info
             # https://irsa.ipac.caltech.edu/data/ZTF/docs/ztf_explanatory_supplement.pdf
@@ -127,17 +128,23 @@ class Light_Curve:
 
     def get_lc(self) -> Table:
         """Get the light curve."""
-        # Query the lightcurves for each catalog
+        # Query the lightcurves for each catalog in parallel
         lcs: List[Table] = []
-        for catalog_name in self.catalogs:
-
+        def get_lc_from_cat(catalog_name):
             # Grab the data
             cat_lc = self.get_catalog_lc(catalog_name)
 
             # Data only for the closest object
             if len(cat_lc) > 0:
                 cat_lc = cat_lc[cat_lc[f'{catalog_name}_id'] == cat_lc[f'{catalog_name}_id'][0]]
-                lcs.append(cat_lc)
+                return cat_lc
+            return None
+
+        with ThreadPoolExecutor() as executor:
+            results = list(executor.map(get_lc_from_cat, self.catalogs))
+
+        # Filter out None results
+        lcs = [result for result in results if result is not None]
 
         # Join the tables
         tab = lcs[0]
