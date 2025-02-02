@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import re
+import sys
 import pickle
 import argparse
 import numpy as np
@@ -16,6 +17,8 @@ try:
 except ModuleNotFoundError:
     from .utils import get_data_path, true_nearby, metadata_from_field_dirname
 import multiprocessing
+
+sys.stdout.flush()
 
 
 def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs: WCS, max_sep: float = 1.0) -> Table:
