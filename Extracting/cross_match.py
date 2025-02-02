@@ -13,9 +13,9 @@ from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 
 try:
-    from utils import get_data_path, true_nearby, metadata_from_field_dirname
+    from utils import get_data_path, true_nearby, metadata_from_field_dirname, load_ecsv
 except ModuleNotFoundError:
-    from .utils import get_data_path, true_nearby, metadata_from_field_dirname
+    from .utils import get_data_path, true_nearby, metadata_from_field_dirname, load_ecsv
 import multiprocessing
 
 sys.stdout.flush()
@@ -186,7 +186,7 @@ def cross_match_quadrant(quadrant_dirpath: str):
             return
 
     print(f'Cross matching quadrant {quadrant_dirpath.split("/")[-1]}')
-    pstar_tab = ascii.read(os.path.join(quadrant_dirpath, 'PSTARR.ecsv'))
+    pstar_tab = load_ecsv(os.path.join(quadrant_dirpath, 'PSTARR.ecsv'))
 
     # Iterate through the ZTF band catalogs
     for band, fname in zip(BANDS, [f'ZTF_{band}.ecsv' for band in BANDS]):
@@ -195,7 +195,7 @@ def cross_match_quadrant(quadrant_dirpath: str):
         if os.path.exists(full_fpath):
 
             # Load the ZTF data, nan mask, and WCS
-            ztf_tab = ascii.read(full_fpath)
+            ztf_tab = load_ecsv(full_fpath)
             ztf_nan_mask = np.load(os.path.join(quadrant_dirpath, 'nan_masks', f'ZTF_{band}_nan_mask.npy'))
             with open(os.path.join(quadrant_dirpath, 'WCSs', f'ZTF_{band}_wcs.pkl'), 'rb') as f:
                 wcs = pickle.load(f)
@@ -233,7 +233,7 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
         while getting_first_tab and len(field_quad_dirs) > 0:
             first_tab_path = os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv')
             if os.path.exists(first_tab_path):
-                tab = ascii.read(os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv'))
+                tab = load_ecsv(os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv'))
                 getting_first_tab = False
 
                 # Add on the field info for each source
@@ -252,7 +252,7 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
         for fqdir in field_quad_dirs[1:]:
             fqpath = os.path.join(CATALOG_DIR, fqdir, f'{band}_associated.ecsv')
             if os.path.exists(fqpath):
-                tab_to_stack = ascii.read(fqpath)
+                tab_to_stack = load_ecsv(fqpath)
 
                 # Add on the field info for each source
                 field_quadrant_metadata = metadata_from_field_dirname(fqdir)

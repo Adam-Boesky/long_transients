@@ -7,7 +7,6 @@ import schemdraw
 import pandas as pd
 
 from typing import Dict, List, Iterable, Tuple, Union, Optional
-from astropy.io import ascii
 from astropy.table import Table
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from schemdraw.flow import Start, Arrow, Box, Decision
@@ -17,7 +16,7 @@ from decimal import Decimal, ROUND_HALF_UP
 sys.path.append('/Users/adamboesky/Research/long_transients')
 
 from Source_Analysis.Sources import Sources, MANDATORY_SOURCE_COLUMNS
-from Extracting.utils import get_snr_from_mag, get_data_path
+from Extracting.utils import get_snr_from_mag, get_data_path, load_ecsv
 
 BANDS = ['g', 'r', 'i']
 CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Coverage'}
@@ -647,7 +646,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     bands = ('g', 'r', 'i')
     for band in bands:
         try:
-            tables[band] = ascii.read(os.path.join(get_data_path(), f'catalog_results/field_results/{field_name}_{band}.ecsv'), format='ecsv')
+            tables[band] = load_ecsv(os.path.join(get_data_path(), f'catalog_results/field_results/{field_name}_{band}.ecsv'))
         except FileNotFoundError:
             print(f'Warning: Band {band} not available for filed {field_name}...')
 

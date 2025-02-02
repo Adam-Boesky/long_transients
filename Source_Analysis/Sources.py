@@ -354,11 +354,11 @@ class Source():
             # Iterate through bands and get the first metadata that works
             metadata = {}
             for band in self.bands:
-                if isinstance(self.data[f'ZTF_{band}_fieldid'][0], (float, int)):
+                if isinstance(self.data[f'ZTF_{band}_fieldid'][0], (float, int)) and not np.isnan(self.data[f'ZTF_{band}_fieldid'][0]):
                     metadata['fieldid'] = int(self.data[f'ZTF_{band}_fieldid'][0])
-                if isinstance(self.data[f'ZTF_{band}_ccdid'][0], (float, int)):
+                if isinstance(self.data[f'ZTF_{band}_ccdid'][0], (float, int)) and not np.isnan(self.data[f'ZTF_{band}_ccdid'][0]):
                     metadata['ccdid'] = int(self.data[f'ZTF_{band}_ccdid'][0])
-                if isinstance(self.data[f'ZTF_{band}_qid'][0], (float, int)):
+                if isinstance(self.data[f'ZTF_{band}_qid'][0], (float, int)) and not np.isnan(self.data[f'ZTF_{band}_qid'][0]):
                     metadata['qid'] = int(self.data[f'ZTF_{band}_qid'][0])
 
                 if len(metadata) >= 3:

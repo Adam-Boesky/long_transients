@@ -8,6 +8,7 @@ from mastcasjobs import MastCasJobs
 from typing import Optional, Tuple, Union, Dict
 
 import numpy as np
+import pandas as pd
 
 MAST_CREDENTIAL_FNAME = 'mast_login_harvard.txt'
 print(f'CasJobs will use the credentials from {MAST_CREDENTIAL_FNAME}')
@@ -116,10 +117,15 @@ def get_n_quadrants_merged_all_fields() -> Dict[str, Dict[str, int]]:
 
     return quad_counts_per_band_all_fields
 
+
 def metadata_from_field_dirname(field_dirname: str) -> Dict[str, str]:
     """Get the ZTF image metadata given the field's dirname in our saved data."""
     field, ccdid, qid = field_dirname.split('_')
     return {'fieldid': field, 'ccdid': ccdid, 'qid': qid}
+
+
+def load_ecsv(fpath: str) -> Table:
+    return Table.from_pandas(pd.read_csv(fpath, comment='#', delimiter=' '))
 
 
 # Set up casjobs object
