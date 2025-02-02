@@ -313,6 +313,7 @@ class Source():
             merged_field_basedir: str = '/Users/adamboesky/Research/long_transients/Data/catalog_results/field_results',
             field_catalogs: Optional[dict[str, Table]] = None,
             max_arcsec: float = 1.0,
+            gaia_max_arcsec: float = 5.0,
             verbose: int = 1,
             catch_plotting_exceptions: bool = True,
         ):
@@ -328,7 +329,10 @@ class Source():
         self.merged_field_basedir = merged_field_basedir
 
         # The maximum distance for an object to be considered a match
+        # We will use a different value for our GAIA queries because sources are likely in motion or have a considerable
+        # parallax
         self.max_arcsec = max_arcsec
+        self.gaia_max_arcsec = gaia_max_arcsec
 
         # Properties
         self._field_catalogs = field_catalogs
@@ -826,15 +830,16 @@ class Source():
             return None
         return tns_df.iloc[[idx]]
 
+    def _get_GAIA_info(self, max_arcsec: float):
+        return Gaia.query_object_async(
+            coordinate=self.coord,
+            radius=max_arcsec * u.arcsec,
+        )
+
     @property
     def GAIA_info(self) -> Table:
-        rad_arcsec: float = 1.0
         if self._GAIA_info is None:
-            self._GAIA_info = Gaia.query_object_async(
-                coordinate=self.coord,
-                width=rad_arcsec * u.arcsec,
-                height=rad_arcsec * u.arcsec,
-            )
+            self._GAIA_info = self._get_GAIA_info(self.gaia_max_arcsec)
 
         return self._GAIA_info
 

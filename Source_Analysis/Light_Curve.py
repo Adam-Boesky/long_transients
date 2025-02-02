@@ -10,6 +10,10 @@ from astroquery.ipac.irsa import Irsa
 from astropy.coordinates import SkyCoord
 from concurrent.futures import ThreadPoolExecutor
 
+ALL_LC_COLNAMES = ['ptf_id', 'wise_id', 'ztf_id', 'ra', 'dec', 'mjd', 'g_mag', 'g_magerr', 'r_mag', 'r_magerr', 'i_mag',
+                   'i_magerr', 'w1_mag', 'w1_magerr', 'w2_mag', 'w2_magerr', 'w3_mag', 'w3_magerr', 'w4_mag',
+                   'w4_magerr', 'R_mag', 'R_magerr']
+
 
 class Light_Curve:
     def __init__(
@@ -147,9 +151,12 @@ class Light_Curve:
         lcs = [result for result in results if result is not None]
 
         # Join the tables
-        tab = lcs[0]
-        for lc in lcs[1:]:
-            tab = vstack([tab, lc])
+        if len(lcs) > 0:
+            tab = lcs[0]
+            for lc in lcs[1:]:
+                tab = vstack([tab, lc])
+        else:
+            tab = Table(names=ALL_LC_COLNAMES, masked=True)
 
         # Drop unecessary colnames
         for colname in tab.colnames:

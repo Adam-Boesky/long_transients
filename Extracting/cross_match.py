@@ -145,7 +145,7 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
         true_nearby(
             row=y,
             column=x,
-            radius=5,
+            radius=15,  # nan within 15 pixels is bad!
             mask=ztf_nan_mask,
         ) for x, y in zip(ztf_xs, ztf_ys)
     ])
