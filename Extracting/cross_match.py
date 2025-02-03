@@ -239,7 +239,7 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
                 # Add on the field info for each source
                 field_quadrant_metadata = metadata_from_field_dirname(field_quad_dirs[0])
                 for k, v in field_quadrant_metadata.items():
-                    tab[f'ZTF_{k}'] = v
+                    tab[k] = v
             else:
                 print(f'WARNING: {first_tab_path} does not exist. Skipping...')
                 field_quad_dirs.remove(field_quad_dirs[0])
@@ -257,7 +257,7 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
                 # Add on the field info for each source
                 field_quadrant_metadata = metadata_from_field_dirname(fqdir)
                 for k, v in field_quadrant_metadata.items():
-                    tab_to_stack[f'ZTF_{k}'] = v
+                    tab_to_stack[k] = v
 
                 # Stack
                 tab = vstack((tab, tab_to_stack))
