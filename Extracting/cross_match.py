@@ -176,6 +176,55 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
     return combined_table
 
 
+def first_not_nan(v: np.ndarray) -> np.float64:
+    """Helper function to get the first non-nan value from a 1D numpy array. Returns nan if all values are nan."""
+    if not isinstance(v, np.ndarray):
+        v = np.array(v)
+    not_nans = v[~np.isnan(v) & (v != -999)]
+    return not_nans[0] if len(not_nans) > 0 else np.nan
+
+
+def first_not_nan_vectorized(arr):
+    """Vectorized version of first_not_nan applied column-wise."""
+    return np.apply_along_axis(first_not_nan, axis=0, arr=arr)
+
+
+def collapse_nonunique_srcs(tab: Table) -> Table:
+    """Collapse the non-unique rows of a table based on duplicate coordinates and Pan-STARR ID."""
+    
+    # Step 1: Collapse by (ra, dec)
+    tab.sort(['ra', 'dec'])
+    grouped_by_coords = tab.group_by(['ra', 'dec'])
+
+    # Extract indices for slicing
+    indices = grouped_by_coords.groups.indices
+    collapsed_data = {}
+
+    # Process each column efficiently
+    for col in tab.colnames:
+        col_data = np.array(tab[col])  # Extract column as NumPy array
+        grouped_col_data = [col_data[indices[i]:indices[i+1]] for i in range(len(indices)-1)]
+        collapsed_data[col] = np.array([first_not_nan(group) for group in grouped_col_data])
+
+    collapsed_by_coords = Table(collapsed_data)
+
+    # Step 2: Collapse by Pan-STARR ID
+    collapsed_by_coords.sort(['PanSTARR_ID'])
+    grouped_by_id = collapsed_by_coords.group_by(['PanSTARR_ID'])
+
+    # Extract indices for slicing
+    indices = grouped_by_id.groups.indices
+    collapsed_final_data = {}
+
+    # Process each column again
+    for col in collapsed_by_coords.colnames:
+        col_data = np.array(collapsed_by_coords[col])
+        grouped_col_data = [col_data[indices[i]:indices[i+1]] for i in range(len(indices)-1)]
+        collapsed_final_data[col] = np.array([first_not_nan(group) for group in grouped_col_data])
+
+    return Table(collapsed_final_data)
+
+
 def cross_match_quadrant(quadrant_dirpath: str):
     """Cross match the g, r, i catalogs with the panstarrs catalog for a single quadrant."""
     if OVERWRITE is False:
@@ -187,6 +236,10 @@ def cross_match_quadrant(quadrant_dirpath: str):
 
     print(f'Cross matching quadrant {quadrant_dirpath.split("/")[-1]}')
     pstar_tab = load_ecsv(os.path.join(quadrant_dirpath, 'PSTARR.ecsv'))
+
+    # Collapse the non-unique Pan-STARRS sources
+    pstar_tab.remove_column('primaryDetection')  # we can remove primaryDetection cuz it's a nuissance and always true
+    pstar_tab = collapse_nonunique_srcs(pstar_tab)
 
     # Iterate through the ZTF band catalogs
     for band, fname in zip(BANDS, [f'ZTF_{band}.ecsv' for band in BANDS]):

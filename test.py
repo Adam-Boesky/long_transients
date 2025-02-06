@@ -1,10 +1,11 @@
 import sys
-import matplotlib.pyplot as plt
 
 sys.path.append('/Users/adamboesky/Research/long_transients')
 
-from Source_Analysis.Sources import Source
+from Source_Analysis.Light_Curve import Light_Curve
+lc = Light_Curve(352.55095852, -24.80405223, query_in_parallel=False)
+lc.lc
 
-src = Source(18.64737035466559, 9.25191865650902, max_arcsec=10)
-src.plot_all_cutouts()
-plt.show()
+breakpoint()
+
+# lc.lc['ztf_r_mag'][~lc.lc['ztf_r_mag'].mask]

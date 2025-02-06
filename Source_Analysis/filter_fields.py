@@ -949,7 +949,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         #### TESTING ####
         # SAVE SO WE CAN SEE THE DATA
         for band, tab in in_pstarr_tabs.items():
-            tab.write(os.path.join('/Users/adamboesky/Research/long_transients/Data/filter_testing', f'testing_stuff_{band}.ecsv'), overwrite=True)
+            tab.write(os.path.join(filter_result_dirpath, f'2_{band}_test.ecsv'), overwrite=True)
 
         # # Converting to sources
         # sources_in_pstarr: Dict[str, Sources] = {

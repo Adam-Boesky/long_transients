@@ -5,24 +5,30 @@ import numpy as np
 import pandas as pd
 import astropy.units as u
 import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
+import matplotlib.patches as mpatches
 
 from concurrent import futures
 from typing import List, Tuple, Union, Optional, Iterable, Dict
 from matplotlib.axes._axes import Axes
 
 from astropy.wcs import WCS
+from astropy.time import Time
 from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky
-from astropy.visualization import simple_norm
+from astropy.visualization import simple_norm, time_support
+from astropy.io.fits import HDUList
 from astroquery.gaia import Gaia
-from astropy.time import Time
+from astroquery.sdss import SDSS
 
 from Extracting.utils import get_data_path, load_cached_table
 from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata_from_coords, get_ztf_metadata_from_metadata, get_pstarr_cutout
 from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
-from Light_Curve import Light_Curve
-from astropy.visualization import time_support
+try:
+    from Light_Curve import Light_Curve, LC_MARKER_INFO, LC_COLOR_INFO, ALL_BAND_DF
+except ModuleNotFoundError:
+    from .Light_Curve import Light_Curve, LC_MARKER_INFO, LC_COLOR_INFO, ALL_BAND_DF
 time_support()
 
 ACCEPTABLE_PROC_STATUS = [0]
@@ -316,6 +322,7 @@ class Source():
             gaia_max_arcsec: float = 5.0,
             verbose: int = 1,
             catch_plotting_exceptions: bool = True,
+            lc_catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss'],
         ):
         self.ra = ra
         self.dec = dec
@@ -343,9 +350,24 @@ class Source():
         self._GAIA_info = None
         self.filter_info = {}
         self._image_metadata = None
+        self._spectrum = None
 
         # The lightcurve class for the source
-        self.light_curve = Light_Curve(self.ra, self.dec, query_rad_arcsec=self.max_arcsec)
+        self.light_curve = Light_Curve(self.ra, self.dec, query_rad_arcsec=self.max_arcsec, catalogs=lc_catalogs)
+
+    @property
+    def spectrum(self) -> List[HDUList]:
+        if self._spectrum is None:
+            # The source spectrum
+            print('Getting source spectrum from SDSS...')
+            sdss_res = SDSS.query_region(self.coord, radius=self.max_arcsec*u.arcsec, spectro=True)
+
+            if sdss_res is not None:
+                self._spectrum = SDSS.get_spectra(matches=sdss_res) if len(sdss_res) > 0 else None
+        if self._spectrum is None:
+            print(f'Source at ({self.coord.ra.deg}, {self.coord.dec.deg}) has no spectrum in SDSS.')
+
+        return self._spectrum
 
     @property
     def image_metadata(self) -> Dict[str, Dict]:
@@ -353,48 +375,61 @@ class Source():
 
             # Iterate through bands and get the first metadata that works
             metadata = {}
-            for band in self.bands:
-                if isinstance(self.data[f'ZTF_{band}_fieldid'][0], (float, int)) and not np.isnan(self.data[f'ZTF_{band}_fieldid'][0]):
-                    metadata['fieldid'] = int(self.data[f'ZTF_{band}_fieldid'][0])
-                if isinstance(self.data[f'ZTF_{band}_ccdid'][0], (float, int)) and not np.isnan(self.data[f'ZTF_{band}_ccdid'][0]):
-                    metadata['ccdid'] = int(self.data[f'ZTF_{band}_ccdid'][0])
-                if isinstance(self.data[f'ZTF_{band}_qid'][0], (float, int)) and not np.isnan(self.data[f'ZTF_{band}_qid'][0]):
-                    metadata['qid'] = int(self.data[f'ZTF_{band}_qid'][0])
+            field_vals = np.array([self.data[k][0] for k in self.data.columns if 'field' in k])
+            ccd_vals = np.array([self.data[k][0] for k in self.data.columns if 'ccd' in k])
+            qid_vals = np.array([self.data[k][0] for k in self.data.columns if 'qid' in k])
+            if np.sum(~np.isnan(field_vals)) > 0:
+                metadata['fieldid'] = int(field_vals[~np.isnan(field_vals)][0])
+                metadata['ccdid'] = int(ccd_vals[~np.isnan(ccd_vals)][0])
+                metadata['qid'] = int(qid_vals[~np.isnan(qid_vals)][0])
 
-                if len(metadata) >= 3:
-                    self._image_metadata = metadata
-                    break
+            if len(metadata) >= 3:
+                self._image_metadata = metadata
 
+            # for band in self.bands:
+            #     if isinstance(self.data[f'ZTF_{band}_fieldid'][0], (float, int)) and not np.isnan(self.data[f'ZTF_{band}_fieldid'][0]):
+            #         metadata['fieldid'] = int(self.data[f'ZTF_{band}_fieldid'][0])
+            #     if isinstance(self.data[f'ZTF_{band}_ccdid'][0], (float, int)) and not np.isnan(self.data[f'ZTF_{band}_ccdid'][0]):
+            #         metadata['ccdid'] = int(self.data[f'ZTF_{band}_ccdid'][0])
+            #     if isinstance(self.data[f'ZTF_{band}_qid'][0], (float, int)) and not np.isnan(self.data[f'ZTF_{band}_qid'][0]):
+            #         metadata['qid'] = int(self.data[f'ZTF_{band}_qid'][0])
 
-            # If was not set, use (ra, dec) query
-            if self._image_metadata is None:
-                print('Falling back on ZTF image metadata with coordinate query...')
-                self._image_metadata = get_ztf_metadata_from_coords(
-                    ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH * 1, self.ra + ZTF_CUTOUT_HALFWIDTH * 1),
-                    dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH * 1, self.dec + ZTF_CUTOUT_HALFWIDTH * 1),
-                )
+            #     if len(metadata) >= 3:
+            #         self._image_metadata = metadata
+            #         break
 
-                # Filter for fields that we have actually extracted and stored
-                inds_extracted = []
-                test_paths = []
-                for ind, field in self._image_metadata['field'].items():
-                    field_id = str(field).zfill(6)
-                    if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv')):
-                        inds_extracted.append(ind)
-                        test_paths.append(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv'))
+        # If was not set, use (ra, dec) query
+        if self._image_metadata is None:
+            print('Falling back on ZTF image metadata with coordinate query...')
+            self._image_metadata = get_ztf_metadata_from_coords(
+                ra_range=(self.ra - ZTF_CUTOUT_HALFWIDTH * 1, self.ra + ZTF_CUTOUT_HALFWIDTH * 1),
+                dec_range=(self.dec - ZTF_CUTOUT_HALFWIDTH * 1, self.dec + ZTF_CUTOUT_HALFWIDTH * 1),
+            )
+
+            # Filter for fields that we have actually extracted and stored
+            inds_extracted = []
+            test_paths = []
+            for ind, field in self._image_metadata['field'].items():
+                field_id = str(field).zfill(6)
+                if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv')):
+                    inds_extracted.append(ind)
+                    test_paths.append(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv'))
+            if len(inds_extracted) > 0:
                 self._image_metadata = self._image_metadata.iloc[inds_extracted].copy().reset_index(drop=True)
+            else:
+                self._image_metadata = self._image_metadata.iloc[[0]].copy().reset_index(drop=True)
 
-                # If we haven't extracted this field, throw and error
-                if len(self._image_metadata) == 0 or self._image_metadata is None:
-                    raise ValueError(f'Metadata for source at {self.coord} appears to be for a field that has not been extracted.')
+            # If we haven't extracted this field, throw and error
+            if len(self._image_metadata) == 0 or self._image_metadata is None:
+                raise ValueError(f'Metadata for source at {self.coord} appears to be for a field that has not been extracted.')
 
-                # Sort by the biggest stack, and make into a dict
-                self._image_metadata.sort_values(by=['nframes'], ascending=False, inplace=True, ignore_index=True)
-                self._image_metadata = self._image_metadata.reset_index(drop=True).iloc[0].to_dict()
+            # Sort by the biggest stack, and make into a dict
+            self._image_metadata.sort_values(by=['nframes'], ascending=False, inplace=True, ignore_index=True)
+            self._image_metadata = self._image_metadata.reset_index(drop=True).iloc[0].to_dict()
 
-                # Take metadata out of list form
-                for k, v in self._image_metadata.items():
-                    self._image_metadata[k] = v
+            # Take metadata out of list form
+            for k, v in self._image_metadata.items():
+                self._image_metadata[k] = v
 
         return self._image_metadata
 
@@ -772,19 +807,23 @@ class Source():
     def plot_lc(self, bands: Optional[List[str]] = None, ax: Optional[Axes] = None, time_as_str: bool = True, **kwargs) -> Axes:
         """Plot lightcurve for all bands specified in 'bands', or all bands if bands is None."""
         if ax is None:
-            _, ax = plt.subplots(figsize=(12, 5))
+            _, ax = plt.subplots(figsize=(10, 4))
 
-        # If not given, get the bands from the lightcurve data itself        
+        # If not given, get the bands from the lightcurve data itself
+        # don't include wise data
         if bands is None:
-            bands = [b for b in self.light_curve.lc.colnames if b[-4:] == '_mag']
+            bands = [
+                b for b in self.light_curve.lc.colnames if (b[-4:] == '_mag') and (b[:2] not in ('w1', 'w2', 'w3', 'w4')) and ('Psf_mag' not in b)
+            ]
 
         # Time vector to mjd
         time = Time(self.light_curve.lc['mjd'], format='mjd')
 
         # Update kwargs with default parameters if not already provided
         default_params = {
-            'markersize': 5,
-            'capsize': 2,
+            'ecolor': 'k',
+            'lw': 0.5,
+            'capsize': 2.0,
             'fmt': 'o'
         }
         for key, value in default_params.items():
@@ -797,7 +836,8 @@ class Source():
                     x=time.mjd,
                     y=self.light_curve.lc[band].filled(fill_value=np.nan),
                     yerr=self.light_curve.lc[f'{band}err'].filled(fill_value=np.nan),
-                    label=band,
+                    marker=LC_MARKER_INFO[ALL_BAND_DF.loc['survey', band]],
+                    color=LC_COLOR_INFO[ALL_BAND_DF.loc['band', band]],
                     **kwargs,
                 )
 
@@ -813,7 +853,78 @@ class Source():
                 rotation=45,
                 ha='right',
             )
+
+        # Create legend handles for markers
+        marker_handles = []
+        for label, marker in LC_MARKER_INFO.items():
+            # We use a dummy black marker (or any color you prefer) to represent the marker type.
+            handle = mlines.Line2D([], [], marker=marker, color='gray', linestyle='None', label=label)
+            marker_handles.append(handle)
+
+        # Create the first legend for markers and add it to the axis
+        legend_markers = ax.legend(handles=marker_handles, loc='upper right')
+        ax.add_artist(legend_markers)
+
+        # Create legend handles for colors
+        color_handles = []
+        for label, color in LC_COLOR_INFO.items():
+            # Use a patch to show the color
+            handle = mpatches.Patch(color=color, label=label)
+            color_handles.append(handle)
+
+        # Create the second legend for colors and add it to the axis
+        legend_colors = ax.legend(handles=color_handles, ncols=3, loc='upper left')
+        ax.add_artist(legend_colors)
+
+        return ax
+
+    def plot_wise_mag_hist(self, ax: Optional[Axes] = None, snr_thresh: float = 0.0, **kwargs) -> Axes:
+        """Plot the distribution of W1 - W2 magnitudes. Sources with W1 - W2 > 0.8 are AGN according to
+        https://iopscience.iop.org/article/10.1088/0004-637X/753/1/30/pdf
+        """
+        if ax is None:
+            _, ax = plt.subplots()
+
+        # Mask for SNR minimum
+        mask = np.logical_and(self.light_curve.lc['w1_snr'] > snr_thresh, self.light_curve.lc['w2_snr'] > snr_thresh)
+        delta_mag = self.light_curve.lc['w1_mag'] - self.light_curve.lc['w2_mag']
+        delta_mag = delta_mag[mask]
+
+        # Plot
+        ax.hist(delta_mag, color='k', bins=10)
+
+        # Plot summary stats and the 0.8 criterion
+        ax.axvline(0.8, color='red', lw=0.75, label=r'$\rm{W}1 - \rm{W}2 = 0.8$')
+        ax.axvline(np.mean(delta_mag), label='Mean', color='green')
+        ax.axvline(np.median(delta_mag), label='Median', color='green', linestyle='--')
+
+        # Format
+        ax.set_xlabel('W1 - W2')
+        ax.set_ylabel('Number')
         ax.legend()
+
+        return ax
+
+    def plot_spectrum(self, ax: Optional[Axes] = None) -> Axes:
+        """Plot the spectrum from SDSS."""
+        if ax is None:
+            _, ax = plt.subplots(figsize=(12, 5))
+
+        # Label axes
+        ax.set_xlabel(r'log(Wavelength [$\rm{\AA}$])')
+        ax.set_ylabel(r'$F_\lambda \ [10^{-17} \ \rm{erg} \ \rm{cm}^{-2} \ \rm{s}^{-1} \ \rm{\AA}^{-1}]$')
+
+        # If no spectrum just return ax
+        if self.spectrum is None:
+            print(f'No spectrum for source at ({self.coord.ra.deg}, {self.coord.dec.deg}). Skipping plotting...')
+            return ax
+
+        # Plot
+        ax.plot(self.spectrum[0][1].data['loglam'], self.spectrum[0][1].data['flux'], color='gray', label='Data')
+        ax.plot(self.spectrum[0][1].data['loglam'], self.spectrum[0][1].data['model'], color='k', label='Model')
+
+        # Add legend
+        ax.legend(loc='upper right')
 
         return ax
 
@@ -826,7 +937,7 @@ class Source():
 
         # Get info from TNS
         idx, sep2d, _ = match_coordinates_sky(self.coord, tns_coords)
-        if sep2d.arcsec > 1:
+        if sep2d.arcsec > self.max_arcsec:
             return None
         return tns_df.iloc[[idx]]
 
