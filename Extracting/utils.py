@@ -131,3 +131,42 @@ def load_ecsv(fpath: str) -> Table:
 # Set up casjobs object
 wsid, password = get_credentials(MAST_CREDENTIAL_FNAME)
 MASTCASJOBS = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password, request_type='POST')
+
+
+def _add_pstarr_mag_cols(tab: Table) -> Table:
+    mags, magerrs = img_flux_to_ab_mag(tab['psfFlux'], fluxerr=tab['psfFluxErr'], zero_point=8.9)  # 8.9 is used by 
+    tab['mag'] = mags
+    tab['magerr'] = magerrs
+
+    return tab
+
+
+def get_pstarr_lc_from_id(objid: int) -> Table:
+    if not isinstance(objid, int):
+        objid = int(objid)
+
+    # Construct the query
+    query = f"""
+SELECT d.objID, d.obsTime, d.filterID, d.psfFlux, d.psfFluxErr, d.infoFlag2, d.zp FROM Detection d WHERE d.objID = {objid}
+"""
+
+    # Get table and add mag cols
+    tab = MASTCASJOBS.quick(query, task_name=f"PanSTARRS_lc")
+    tab = _add_pstarr_mag_cols(tab)
+
+    return tab
+
+
+def get_pstarr_lc_from_coord(ra: float, dec: float, rad_arcsec: float = 1.0) -> Table:
+    # Construct the query
+    query = f"""
+SELECT d.objID, d.ra, d.dec, d.obsTime, d.filterID, d.psfFlux, d.psfFluxErr, d.infoFlag2, d.zp
+FROM fGetNearbyObjEq({ra}, {dec}, {rad_arcsec}) nb
+INNER JOIN Detection d on d.objID = nb.objID
+"""
+
+    # Get table and add mag cols
+    tab = MASTCASJOBS.quick(query, task_name=f"PanSTARRS_lc")
+    tab = _add_pstarr_mag_cols(tab)
+
+    return tab

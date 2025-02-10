@@ -4,13 +4,15 @@ import numpy as np
 import pandas as pd
 import astropy.units as u
 
-from typing import List, Optional
+from typing import List, Tuple, Optional
 from ztfquery import lightcurve
 from astropy.table import Table, vstack
 from astroquery.sdss import SDSS
 from astroquery.ipac.irsa import Irsa
 from astropy.coordinates import SkyCoord
 from concurrent.futures import ThreadPoolExecutor
+
+from Extracting.utils import get_pstarr_lc_from_coord, get_pstarr_lc_from_id
 
 ALL_LC_COLNAMES = ['ptf_id', 'wise_id', 'ztf_id', 'ra', 'dec', 'mjd', 'g_mag', 'g_magerr', 'r_mag', 'r_magerr', 'i_mag',
                    'i_magerr', 'w1_mag', 'w1_magerr', 'w2_mag', 'w2_magerr', 'w3_mag', 'w3_magerr', 'w4_mag',
@@ -19,12 +21,13 @@ LC_MARKER_INFO = {
     'ptf': '.',
     'ztf': 'v',
     'sdss': 'd',
+    'panstarrs': '3',
 }
 LC_COLOR_INFO = {
     'u': 'black',
     'g': 'forestgreen',
     'r': 'firebrick',
-    'i': 'indigo',
+    'i': 'darkorchid',
     'z': 'lightcoral',
     'y': 'gold',
 }
@@ -41,6 +44,11 @@ ALL_BAND_DF = pd.DataFrame(
         'iModel_mag': ['i', 'sdss'],
         'zModel_mag': ['z', 'sdss'],
         'yModel_mag': ['y', 'sdss'],
+        'pstarr_g_mag': ['g', 'panstarrs'],
+        'pstarr_r_mag': ['r', 'panstarrs'],
+        'pstarr_i_mag': ['i', 'panstarrs'],
+        'pstarr_z_mag': ['z', 'panstarrs'],
+        'pstarr_y_mag': ['y', 'panstarrs'],
     },
     index=['band', 'survey'],
 )
@@ -51,9 +59,10 @@ class Light_Curve:
             self,
             ra: float,
             dec: float,
-            catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss'],
+            catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs'],
             query_rad_arcsec: float = 1.5,
             query_in_parallel: bool = True,
+            pstarr_coord: Optional[Tuple[float]] = None,
         ):
         self.ra = ra
         self.dec = dec
@@ -61,6 +70,7 @@ class Light_Curve:
         self.catalogs = catalogs
         self.query_rad_arcsec = query_rad_arcsec  # query radius in arcseconds
         self.query_in_parallel = query_in_parallel  # whether we should query the apis in parallel or not
+        self.pstarr_coord = pstarr_coord
 
         # Map class catalog names to astroquery catalog names
         self.catalog_astroquery_map = {
@@ -127,6 +137,18 @@ class Light_Curve:
                 [(f'modelMag_{b}', f'{b}Model_mag') for b in sdss_bands] + \
                 [(f'modelMagerr_{b}', f'{b}Model_magerr') for b in sdss_bands]
 
+        elif catalog == 'panstarrs':
+            # Desired columns
+            desired_colnames = ['objID', 'ra', 'dec', 'obsTime', 'infoFlag2'] + [
+                    item for sublist in zip(
+                        [f'pstarr_{band}_mag' for band in 'grizy'],
+                        [f'pstarr_{band}_magerr' for band in 'grizy'],
+                    ) for item in sublist
+                ]
+
+            # Rename columns
+            column_rename_map = [('objID', 'panstarrs_id'), ('obsTime', 'mjd'), ('infoFlag2', 'pstarr_infoFlag2')]
+
         # Query the catalog
         print(f"Querying {catalog} catalog for light curve...")
         if catalog == 'ztf':
@@ -141,6 +163,17 @@ class Light_Curve:
                 ).data
             )
             lightcurve_tab = lightcurve_tab[desired_colnames]
+        elif catalog == 'panstarrs':
+            # TODO: Switch to objid query
+            if self.pstarr_coord is None:
+                ra, dec = self.ra, self.dec
+            else:
+                ra, dec = self.pstarr_coord
+            lightcurve_tab = get_pstarr_lc_from_coord(ra, dec, rad_arcsec=0.1)
+            # lightcurve_tab = get_pstarr_lc_from_id(pstarr_objid)
+
+            # Drop bad flags
+            lightcurve_tab = lightcurve_tab[lightcurve_tab['infoFlag2'] & 4 == 0]
         elif catalog == 'sdss':
             lightcurve_tab: Table = SDSS.query_crossid(
                 SkyCoord(self.ra, self.dec, unit='deg'),
@@ -178,8 +211,24 @@ class Light_Curve:
             lightcurve_tab['R_magerr'] = np.ones(len(lightcurve_tab)) * np.nan
             lightcurve_tab['R_mag'][R_mask] = lightcurve_tab['mag_autocorr'][R_mask]
             lightcurve_tab['R_magerr'][R_mask] = lightcurve_tab['magerr_auto'][R_mask]
+        elif catalog == 'panstarrs':  # filterID (1=g, 2=r, 3=i, 4=z, 5=y)
+            # Iterate through bands and add band magnitude columns
+            for i, band in enumerate('grizy'):
+
+                # Get a mask for the filter ID
+                filter_id = i + 1
+                filter_mask = lightcurve_tab['filterID'].astype(int) == filter_id
+
+                # Fill in the table
+                lightcurve_tab[f'pstarr_{band}_mag'] = np.ones(len(lightcurve_tab)) * np.nan
+                lightcurve_tab[f'pstarr_{band}_magerr'] = np.ones(len(lightcurve_tab)) * np.nan
+                lightcurve_tab[f'pstarr_{band}_mag'][filter_mask] = lightcurve_tab['mag'][filter_mask]
+                lightcurve_tab[f'pstarr_{band}_magerr'][filter_mask] = lightcurve_tab['magerr'][filter_mask]
+
+            # Drop unnecessary columns
+            lightcurve_tab = lightcurve_tab[desired_colnames]
         elif catalog == 'ztf':
-            for band in ('g', 'r', 'i'):
+            for band in 'gri':
                 band_mask = lightcurve_tab[f'filtercode'] == f'z{band}'
                 lightcurve_tab[f'{band}_mag'] = np.ones(len(lightcurve_tab)) * np.nan
                 lightcurve_tab[f'{band}_magerr'] = np.ones(len(lightcurve_tab)) * np.nan

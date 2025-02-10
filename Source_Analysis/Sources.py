@@ -1,4 +1,5 @@
 import os
+import sys
 import ast
 import traceback
 import numpy as np
@@ -20,6 +21,8 @@ from astropy.visualization import simple_norm, time_support
 from astropy.io.fits import HDUList
 from astroquery.gaia import Gaia
 from astroquery.sdss import SDSS
+
+sys.path.append('/Users/adamboesky/Research/long_transients')
 
 from Extracting.utils import get_data_path, load_cached_table
 from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata_from_coords, get_ztf_metadata_from_metadata, get_pstarr_cutout
@@ -322,7 +325,7 @@ class Source():
             gaia_max_arcsec: float = 5.0,
             verbose: int = 1,
             catch_plotting_exceptions: bool = True,
-            lc_catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss'],
+            lc_catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs'],
         ):
         self.ra = ra
         self.dec = dec
@@ -334,6 +337,7 @@ class Source():
         self.bands = bands
         self.cutout_bands = bands if cutout_bands is None else cutout_bands
         self.merged_field_basedir = merged_field_basedir
+        self.lc_catalogs = lc_catalogs
 
         # The maximum distance for an object to be considered a match
         # We will use a different value for our GAIA queries because sources are likely in motion or have a considerable
@@ -351,21 +355,43 @@ class Source():
         self.filter_info = {}
         self._image_metadata = None
         self._spectrum = None
-
-        # The lightcurve class for the source
-        self.light_curve = Light_Curve(self.ra, self.dec, query_rad_arcsec=self.max_arcsec, catalogs=lc_catalogs)
+        self._has_spectrum = True
+        self._light_curve = None
 
     @property
-    def spectrum(self) -> List[HDUList]:
-        if self._spectrum is None:
+    def light_curve(self) -> Light_Curve:
+        """The lightcurve class for the source"""
+        if self._light_curve is None:
+            self._light_curve = Light_Curve(
+                self.ra,
+                self.dec,
+                query_rad_arcsec=self.max_arcsec,
+                catalogs=self.lc_catalogs,
+                pstarr_coord=(
+                    self.data['PSTARR_ra'][0],
+                    self.data['PSTARR_dec'][0],
+                ) if not np.any(
+                    np.isnan((
+                        self.data['PSTARR_ra'][0],
+                        self.data['PSTARR_dec'][0],
+                    ))
+                ) else None,
+            )
+
+        return self._light_curve
+
+    @property
+    def spectrum(self) -> Union[List[HDUList], None]:
+        if self._has_spectrum and self._spectrum is None:
             # The source spectrum
             print('Getting source spectrum from SDSS...')
             sdss_res = SDSS.query_region(self.coord, radius=self.max_arcsec*u.arcsec, spectro=True)
 
-            if sdss_res is not None:
+            if sdss_res is None:
+                print(f'Source at ({self.coord.ra.deg}, {self.coord.dec.deg}) has no spectrum in SDSS.')
+                self._has_spectrum = False
+            else:
                 self._spectrum = SDSS.get_spectra(matches=sdss_res) if len(sdss_res) > 0 else None
-        if self._spectrum is None:
-            print(f'Source at ({self.coord.ra.deg}, {self.coord.dec.deg}) has no spectrum in SDSS.')
 
         return self._spectrum
 
@@ -804,10 +830,22 @@ class Source():
 
         return ax_pstarr_cutout, ax_ztf_cutout, ax_light_curves
 
-    def plot_lc(self, bands: Optional[List[str]] = None, ax: Optional[Axes] = None, time_as_str: bool = True, **kwargs) -> Axes:
+    def plot_lc(
+            self,
+            bands: Optional[List[str]] = None,
+            ax: Optional[Axes] = None,
+            time_as_str: bool = True,
+            xlab_kwags: dict = {'rotation': 45, 'ha': 'right'},
+            **kwargs,
+        ) -> Axes:
         """Plot lightcurve for all bands specified in 'bands', or all bands if bands is None."""
         if ax is None:
             _, ax = plt.subplots(figsize=(10, 4))
+
+        # Annotate if no light curve present
+        if self.light_curve.lc is None:
+            ax.text(0.5, 0.5, 'Source has no light curve.', horizontalalignment='center', verticalalignment='center')
+            return ax
 
         # If not given, get the bands from the lightcurve data itself
         # don't include wise data
@@ -838,6 +876,7 @@ class Source():
                     yerr=self.light_curve.lc[f'{band}err'].filled(fill_value=np.nan),
                     marker=LC_MARKER_INFO[ALL_BAND_DF.loc['survey', band]],
                     color=LC_COLOR_INFO[ALL_BAND_DF.loc['band', band]],
+                    markeredgewidth=2 if ALL_BAND_DF.loc['survey', band] == 'panstarrs' else 1,
                     **kwargs,
                 )
 
@@ -850,15 +889,15 @@ class Source():
             ax.set_xticks(
                 ticks_as_time.mjd,
                 ticks_as_time.strftime('%m-%d-%Y'),
-                rotation=45,
-                ha='right',
+                **xlab_kwags,
             )
 
         # Create legend handles for markers
         marker_handles = []
         for label, marker in LC_MARKER_INFO.items():
             # We use a dummy black marker (or any color you prefer) to represent the marker type.
-            handle = mlines.Line2D([], [], marker=marker, color='gray', linestyle='None', label=label)
+            handle = mlines.Line2D([], [], marker=marker, color='gray', linestyle='None', label=label,
+                                   markeredgewidth=2 if marker == '3' else 1)
             marker_handles.append(handle)
 
         # Create the first legend for markers and add it to the axis
@@ -885,18 +924,37 @@ class Source():
         if ax is None:
             _, ax = plt.subplots()
 
+        # Annotate if no data
+        if 'w1_snr' not in self.light_curve.lc.columns or 'w2_snr' not in self.light_curve.lc.columns:
+            ax.text(0.5, 0.5, 'Source has no WISE data.', verticalalignment='center', horizontalalignment='center')
+            return ax
+
         # Mask for SNR minimum
-        mask = np.logical_and(self.light_curve.lc['w1_snr'] > snr_thresh, self.light_curve.lc['w2_snr'] > snr_thresh)
+        snr_mask = np.logical_and(self.light_curve.lc['w1_snr'] > snr_thresh, self.light_curve.lc['w2_snr'] > snr_thresh)
+
+        # Annotate if no sufficient SNR
+        if np.sum(snr_mask) == 0:
+            ax.text(
+                0.5,
+                0.5,
+                f'Source has no WISE data\nwith SNR $>$ {snr_thresh}.',
+                verticalalignment='center',
+                horizontalalignment='center',
+            )
+            return ax
+
+        # Get the delta mags
         delta_mag = self.light_curve.lc['w1_mag'] - self.light_curve.lc['w2_mag']
-        delta_mag = delta_mag[mask]
+        delta_mag = delta_mag[snr_mask]
 
         # Plot
         ax.hist(delta_mag, color='k', bins=10)
 
         # Plot summary stats and the 0.8 criterion
         ax.axvline(0.8, color='red', lw=0.75, label=r'$\rm{W}1 - \rm{W}2 = 0.8$')
-        ax.axvline(np.mean(delta_mag), label='Mean', color='green')
-        ax.axvline(np.median(delta_mag), label='Median', color='green', linestyle='--')
+        mean_dmag, median_dmag = np.mean(delta_mag), np.median(delta_mag)
+        ax.axvline(mean_dmag, label=f'Mean ({mean_dmag:.2f})', color='green')
+        ax.axvline(median_dmag, label=f'Median ({median_dmag:.2f})', color='green', linestyle='--')
 
         # Format
         ax.set_xlabel('W1 - W2')
@@ -909,6 +967,11 @@ class Source():
         """Plot the spectrum from SDSS."""
         if ax is None:
             _, ax = plt.subplots(figsize=(12, 5))
+        
+        # Annotate if no spectrum
+        if self.spectrum is None:
+            ax.text(0.5, 0.5, 'Source has no spectrum from SDSS.', horizontalalignment='center', verticalalignment='center')
+            return ax
 
         # Label axes
         ax.set_xlabel(r'log(Wavelength [$\rm{\AA}$])')
@@ -953,6 +1016,65 @@ class Source():
             self._GAIA_info = self._get_GAIA_info(self.gaia_max_arcsec)
 
         return self._GAIA_info
+
+    def plot_everything(self) -> Axes:
+        """Function that plots everything on one page!"""
+        # Set up the layout
+        plt.figure(figsize=(12, 18))
+        ax0 = plt.subplot2grid((5, 3), (0, 0))
+        ax1 = plt.subplot2grid((5, 3), (0, 1))
+        ax2 = plt.subplot2grid((5, 3), (0, 2))
+        ax3 = plt.subplot2grid((5, 3), (1, 0))
+        ax4 = plt.subplot2grid((5, 3), (1, 1))
+        ax5 = plt.subplot2grid((5, 3), (1, 2))
+        lc_ax = plt.subplot2grid((5, 3), (2, 0), colspan=3)
+        spec_ax = plt.subplot2grid((5, 3), (3, 0), colspan=3)
+        wise_ax = plt.subplot2grid((5, 3), (4, 2))
+        cutout_axes = np.array([[ax0, ax1, ax2], [ax3, ax4, ax5]])
+        axes = np.array([cutout_axes, lc_ax, spec_ax, wise_ax], dtype=object)
+
+        # Axis for text stuff
+        text_ax = plt.subplot2grid((5, 3), (4, 0), colspan=2)
+
+        # Plot
+        snr_thresh = 3.0  # snr min for our WISE observations
+        self.plot_all_cutouts(axes=cutout_axes)
+        self.plot_lc(ax=lc_ax, xlab_kwags={})
+        self.plot_spectrum(ax=spec_ax)
+        self.plot_wise_mag_hist(ax=wise_ax, snr_thresh=snr_thresh)
+
+        # Annotate text info at the bottom
+        info_string = fr'\textbf{{Source Information:}}' f'\nCoordinates: ({self.ra:.5f}, {self.dec:.5f})'
+        tns_info = self.get_TNS_info()
+        if tns_info is None:
+            info_string += '\nSource not in TNS.'
+        else:
+            tns_info = self.get_TNS_info().iloc[0]
+            info_string += (
+                f'\nTNS Name: {tns_info["name_prefix"]} {tns_info["name"]}'
+                f'\nTNS Discovery date: {tns_info["discoverydate"]}'
+                f'\nTNS Reporter: {tns_info["reporting_group"]}'
+                f'\nTNS Type: {tns_info["type"]}'
+            )
+        if self.spectrum is None:
+            info_string += '\nNo SDSS Source Classification.'
+        else:
+            info_string += f'\nSDSS Class: {self.spectrum[0][2].data["CLASS"]}'
+        if 'w1_snr' in self.light_curve.lc.columns and 'w2_snr' in self.light_curve.lc.columns:
+            snr_mask = np.logical_and(self.light_curve.lc['w1_snr'] > snr_thresh, self.light_curve.lc['w2_snr'] > snr_thresh)
+            if np.sum(snr_mask) > 0:
+                delta_mag = self.light_curve.lc['w1_mag'] - self.light_curve.lc['w2_mag']
+                delta_mag = delta_mag[snr_mask]
+                info_string += (
+                    f'\nWISE W1-W2 Mean (SNR $>$ {snr_thresh}) $=$ {np.mean(delta_mag):.2f}'
+                    f'\nWISE W1-W2 Median (SNR $>$ {snr_thresh}) $=$ {np.median(delta_mag):.2f}'
+                )
+        else:
+            info_string += '\nNo WISE W1-W2 data.'
+        text_ax.text(0, 0.95, s=info_string, verticalalignment='top', fontsize='large')
+        text_ax.axis('off')
+
+        return axes
 
 
 class Sources:

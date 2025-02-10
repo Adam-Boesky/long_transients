@@ -646,7 +646,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     bands = ('g', 'r', 'i')
     for band in bands:
         try:
-            tables[band] = load_ecsv(os.path.join(get_data_path(), f'catalog_results/field_results/{field_name}_{band}.ecsv'))
+            tables[band] = load_ecsv(os.path.join(get_data_path(), f'testing_no_dups/field_results/{field_name}_{band}.ecsv'))
         except FileNotFoundError:
             print(f'Warning: Band {band} not available for filed {field_name}...')
 
@@ -982,24 +982,25 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 def filter_fields():
     """Filter fields!"""
     for field in [
-        '000292',
+        # '000292',
+        # '000581',
+        # '000445',
+        # '000578',
+        # '000276',
+        # '000446',
+        # '000582',
+        # '000294',
+        # '000444',
+        # '000293',
+        # '000246',
+        # '000245',
+        # '000228',
+        # '000447',
+        # '000579',
+        # '000295',
+        # '000580',
+        # '000202',
         '000581',
-        '000445',
-        '000578',
-        '000276',
-        '000446',
-        '000582',
-        '000294',
-        '000444',
-        '000293',
-        '000246',
-        '000245',
-        '000228',
-        '000447',
-        '000579',
-        '000295',
-        '000580',
-        '000202',
     ]:
         print(f'Filtering field {field}...')
         filter_field(
