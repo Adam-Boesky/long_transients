@@ -141,17 +141,26 @@ def _add_pstarr_mag_cols(tab: Table) -> Table:
     return tab
 
 
+def _drop_bad_pstarr_flags(tab: Table) -> Table:
+    """Drop bad flags. For flag references see https://outerspace.stsci.edu/display/PANSTARRS/PS1+Detection+Flags."""
+    tab = tab[tab['infoFlag'] & 2048 == 0]  # source is thought to be a defect
+    tab = tab[tab['infoFlag2'] & 4 == 0]    # weird forced photometry thing
+
+    return tab
+
+
 def get_pstarr_lc_from_id(objid: int) -> Table:
     if not isinstance(objid, int):
         objid = int(objid)
 
     # Construct the query
     query = f"""
-SELECT d.objID, d.obsTime, d.filterID, d.psfFlux, d.psfFluxErr, d.infoFlag2, d.zp FROM Detection d WHERE d.objID = {objid}
+SELECT d.objID, d.obsTime, d.filterID, d.psfFlux, d.psfFluxErr, d.infoFlag, d.infoFlag2, d.zp FROM Detection d WHERE d.objID = {objid}
 """
 
     # Get table and add mag cols
     tab = MASTCASJOBS.quick(query, task_name=f"PanSTARRS_lc")
+    tab = _drop_bad_pstarr_flags(tab)
     tab = _add_pstarr_mag_cols(tab)
 
     return tab
@@ -160,13 +169,14 @@ SELECT d.objID, d.obsTime, d.filterID, d.psfFlux, d.psfFluxErr, d.infoFlag2, d.z
 def get_pstarr_lc_from_coord(ra: float, dec: float, rad_arcsec: float = 1.0) -> Table:
     # Construct the query
     query = f"""
-SELECT d.objID, d.ra, d.dec, d.obsTime, d.filterID, d.psfFlux, d.psfFluxErr, d.infoFlag2, d.zp
+SELECT d.objID, d.ra, d.dec, d.obsTime, d.filterID, d.psfFlux, d.psfFluxErr, d.infoFlag, d.infoFlag2, d.zp
 FROM fGetNearbyObjEq({ra}, {dec}, {rad_arcsec}) nb
 INNER JOIN Detection d on d.objID = nb.objID
 """
 
     # Get table and add mag cols
     tab = MASTCASJOBS.quick(query, task_name=f"PanSTARRS_lc")
+    tab = _drop_bad_pstarr_flags(tab)
     tab = _add_pstarr_mag_cols(tab)
 
     return tab

@@ -4,24 +4,26 @@ import numpy as np
 import pandas as pd
 import astropy.units as u
 
-from typing import List, Tuple, Optional
+from typing import List, Iterable, Tuple, Optional
 from ztfquery import lightcurve
+from astropy.time import Time
 from astropy.table import Table, vstack
 from astroquery.sdss import SDSS
 from astroquery.ipac.irsa import Irsa
 from astropy.coordinates import SkyCoord
 from concurrent.futures import ThreadPoolExecutor
 
-from Extracting.utils import get_pstarr_lc_from_coord, get_pstarr_lc_from_id
+from Extracting.utils import get_pstarr_lc_from_coord, get_pstarr_lc_from_id, img_flux_to_ab_mag
 
 ALL_LC_COLNAMES = ['ptf_id', 'wise_id', 'ztf_id', 'ra', 'dec', 'mjd', 'g_mag', 'g_magerr', 'r_mag', 'r_magerr', 'i_mag',
                    'i_magerr', 'w1_mag', 'w1_magerr', 'w2_mag', 'w2_magerr', 'w3_mag', 'w3_magerr', 'w4_mag',
                    'w4_magerr', 'R_mag', 'R_magerr']
 LC_MARKER_INFO = {
     'ptf': '.',
-    'ztf': 'v',
+    'ztf': '<',
     'sdss': 'd',
     'panstarrs': '3',
+    'gaia': 'X'
 }
 LC_COLOR_INFO = {
     'u': 'black',
@@ -30,6 +32,7 @@ LC_COLOR_INFO = {
     'i': 'darkorchid',
     'z': 'lightcoral',
     'y': 'gold',
+    'b': 'steelblue',
 }
 ALL_BAND_DF = pd.DataFrame(
     data={
@@ -49,9 +52,13 @@ ALL_BAND_DF = pd.DataFrame(
         'pstarr_i_mag': ['i', 'panstarrs'],
         'pstarr_z_mag': ['z', 'panstarrs'],
         'pstarr_y_mag': ['y', 'panstarrs'],
+        'gaia_g_mag': ['g', 'gaia'],
+        'gaia_rp_mag': ['r', 'gaia'],
+        'gaia_bp_mag': ['b', 'gaia'],
     },
     index=['band', 'survey'],
 )
+GAIA_ZERO_PTS = {'g': 25.8010, 'bp': 25.3540, 'rp': 25.1040}  # from Table 5.4 in https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu5pho/cu5pho_sec_photProc/cu5pho_ssec_photCal.html#SSS3.P2
 
 
 class Light_Curve:
@@ -59,7 +66,7 @@ class Light_Curve:
             self,
             ra: float,
             dec: float,
-            catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs'],
+            catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs', 'gaia'],
             query_rad_arcsec: float = 1.5,
             query_in_parallel: bool = True,
             pstarr_coord: Optional[Tuple[float]] = None,
@@ -76,7 +83,8 @@ class Light_Curve:
         self.catalog_astroquery_map = {
             'ztf': 'ztf_objects_dr23',
             'wise': 'allwise_p3as_mep',
-            'ptf': 'ptf_lightcurves'
+            'ptf': 'ptf_lightcurves',
+            'gaia': 'gaia_dr3_source',
         }
 
         self._lc = None
@@ -89,7 +97,6 @@ class Light_Curve:
 
     def get_catalog_lc(self, catalog: str) -> Optional[Table]:
         """Query the IRSA service for the specified catalog and return the light curve data."""
-
         # Construct the lightcurve
         if catalog == 'ztf':
             # Desired column names
@@ -149,44 +156,62 @@ class Light_Curve:
             # Rename columns
             column_rename_map = [('objID', 'panstarrs_id'), ('obsTime', 'mjd'), ('infoFlag2', 'pstarr_infoFlag2')]
 
+        elif catalog == 'gaia':
+            # Desired columns
+            gaia_bands = ('g', 'rp', 'bp')
+            desired_colnames = ['source_id', 'ra', 'dec', 'ref_epoch'] + [item for sublist in zip(
+                [f'phot_{band}_mean_flux' for band in gaia_bands],
+                [f'phot_{band}_mean_flux_error' for band in gaia_bands],
+            ) for item in sublist]
+
+            # Rename columns
+            column_rename_map = [('source_id', 'gaia_id')]
+
         # Query the catalog
         print(f"Querying {catalog} catalog for light curve...")
-        if catalog == 'ztf':
-            # See Section 10.3 for BAD_CATFLAG_MASK info
-            # https://irsa.ipac.caltech.edu/data/ZTF/docs/ztf_explanatory_supplement.pdf
-            lightcurve_tab = Table.from_pandas(
-                lightcurve.LCQuery.from_position(
-                    self.ra,
-                    self.dec,
-                    self.query_rad_arcsec,
-                    BAD_CATFLAGS_MASK=6141,
-                ).data
-            )
-            lightcurve_tab = lightcurve_tab[desired_colnames]
-        elif catalog == 'panstarrs':
-            # TODO: Switch to objid query
-            if self.pstarr_coord is None:
-                ra, dec = self.ra, self.dec
-            else:
-                ra, dec = self.pstarr_coord
-            lightcurve_tab = get_pstarr_lc_from_coord(ra, dec, rad_arcsec=0.1)
-            # lightcurve_tab = get_pstarr_lc_from_id(pstarr_objid)
+        max_attempts = 3
+        for i_attempt in range(max_attempts):
+            try:
+                if catalog == 'ztf':
+                    # See Section 10.3 for BAD_CATFLAG_MASK info
+                    # https://irsa.ipac.caltech.edu/data/ZTF/docs/ztf_explanatory_supplement.pdf
+                    lightcurve_tab = Table.from_pandas(
+                        lightcurve.LCQuery.from_position(
+                            self.ra,
+                            self.dec,
+                            self.query_rad_arcsec,
+                            BAD_CATFLAGS_MASK=6141,
+                        ).data
+                    )
+                    lightcurve_tab = lightcurve_tab[desired_colnames]
+                elif catalog == 'panstarrs':
+                    # TODO: Switch to objid query
+                    if self.pstarr_coord is None:
+                        ra, dec = self.ra, self.dec
+                    else:
+                        ra, dec = self.pstarr_coord
+                    lightcurve_tab = get_pstarr_lc_from_coord(ra, dec, rad_arcsec=0.1)
+                    # lightcurve_tab = get_pstarr_lc_from_id(pstarr_objid)
+                elif catalog == 'sdss':
+                    lightcurve_tab: Table = SDSS.query_crossid(
+                        SkyCoord(self.ra, self.dec, unit='deg'),
+                        photoobj_fields=desired_colnames,
+                    )
+                else:
+                    lightcurve_tab: Table = Irsa.query_region(
+                        coordinates=self.skycoord,
+                        catalog=self.catalog_astroquery_map[catalog],
+                        spatial='Cone',
+                        radius=self.query_rad_arcsec * u.arcsec,
+                        columns=','.join(desired_colnames),
+                    )
 
-            # Drop bad flags
-            lightcurve_tab = lightcurve_tab[lightcurve_tab['infoFlag2'] & 4 == 0]
-        elif catalog == 'sdss':
-            lightcurve_tab: Table = SDSS.query_crossid(
-                SkyCoord(self.ra, self.dec, unit='deg'),
-                photoobj_fields=desired_colnames,
-            )
-        else:
-            lightcurve_tab: Table = Irsa.query_region(
-                coordinates=self.skycoord,
-                catalog=self.catalog_astroquery_map[catalog],
-                spatial='Cone',
-                radius=self.query_rad_arcsec * u.arcsec,
-                columns=','.join(desired_colnames),
-            )
+                break
+            except:
+                if i_attempt >= max_attempts - 1:
+                    raise
+                else:
+                    print(f'Attempt {i_attempt + 1} / {max_attempts} to query for light curves failed. Trying again...')
 
         # Add the wise SNRs and drop the flux columns
         if catalog == 'wise':
@@ -234,6 +259,25 @@ class Light_Curve:
                 lightcurve_tab[f'{band}_magerr'] = np.ones(len(lightcurve_tab)) * np.nan
                 lightcurve_tab[f'{band}_mag'][band_mask] = lightcurve_tab['mag'][band_mask]
                 lightcurve_tab[f'{band}_magerr'][band_mask] = lightcurve_tab['magerr'][band_mask]
+        elif catalog == 'gaia':
+            # Convert time column to mjd
+            lightcurve_tab['mjd'] = Time(lightcurve_tab['ref_epoch'], format='jyear', scale='tcb').mjd
+            lightcurve_tab.remove_column('ref_epoch')
+
+            # Add magnitude columns
+            flux_cols = [f'phot_{band}_mean_flux' for band in gaia_bands]
+            mag_cols = [f'gaia_{band}_mag' for band in gaia_bands]
+            for band, flux_colname, mag_colname in zip(gaia_bands, flux_cols, mag_cols):
+                mag, magerr = img_flux_to_ab_mag(
+                    lightcurve_tab[flux_colname],
+                    fluxerr=lightcurve_tab[f'{flux_colname}_error'],
+                    zero_point=GAIA_ZERO_PTS[band],
+                )  # zp from https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu5pho/cu5pho_sec_photProc/cu5pho_ssec_photCal.html#SSS3.P2
+                lightcurve_tab[mag_colname] = mag
+                lightcurve_tab[f'{mag_colname}err'] = magerr
+
+            # Drop flux and flux error columns
+            lightcurve_tab.remove_columns(flux_cols + [f'{col}_error' for col in flux_cols])
 
         if lightcurve_tab is None:
             return Table()
@@ -246,6 +290,45 @@ class Light_Curve:
         for col in lightcurve_tab.colnames:
             if lightcurve_tab[col].dtype.kind in 'f':  # check if the column is of float type
                 lightcurve_tab[col] = np.ma.masked_invalid(lightcurve_tab[col])
+
+        # Collapse two measurements from the same night. Pan-STARRS single-epoch measurements visit the same spot
+        # twice every night so we can just count that as one measurement
+        if catalog == 'panstarrs':
+
+            # The mag and magerr columns
+            pstarr_mag_cols = [f'pstarr_{band}_mag' for band in 'grizy']
+            pstarr_magerr_cols = [f'pstarr_{band}_magerr' for band in 'grizy']
+
+            # Iterate through the tables of different panstarrs magnitudes
+            collapsed_tab = Table(names=lightcurve_tab.columns, dtype=lightcurve_tab.dtype)
+            for mag_col, magerr_col in zip(pstarr_mag_cols, pstarr_magerr_cols):
+                mag_tab = lightcurve_tab[~lightcurve_tab.mask[mag_col]]
+
+                # Collapse
+                while len(mag_tab) > 0:
+                    row = mag_tab[0]
+                    dt = np.abs(row['mjd'] - mag_tab['mjd'])
+                    same_night_mask = (0 < dt) & (dt <= 1)
+
+                    # If there's another observation that night, combine into one row and drop the second one
+                    if np.sum(same_night_mask) > 0:
+
+                        # Take the mean of the mag columns and propagate their error
+                        row['mjd'] = np.nanmean(np.hstack((row['mjd'], mag_tab[same_night_mask]['mjd'])))
+                        row[mag_col] = np.nanmean(np.hstack((row[mag_col], mag_tab[same_night_mask][mag_col])))
+                        row[magerr_col] = 1 / (np.sum(same_night_mask) + 1) * np.sqrt(
+                            np.nansum(
+                                np.hstack((row[magerr_col]**2, mag_tab[same_night_mask][magerr_col]**2))
+                            )
+                        )  # 1/n * sqrt(sum(sigma_i^2))
+
+                        # Drop the other observation
+                        mag_tab = mag_tab[~same_night_mask]
+
+                    # Stack and drop the row
+                    collapsed_tab = vstack((collapsed_tab, row))
+                    mag_tab.remove_row(0)
+            lightcurve_tab = collapsed_tab
 
         return lightcurve_tab
 
@@ -266,6 +349,8 @@ class Light_Curve:
                     src_coord = SkyCoord(cat_lc[0]['ra'], cat_lc[0]['dec'], unit='deg')
                     all_coords = SkyCoord(cat_lc['ra'], cat_lc['dec'], unit='deg')
                     mask = src_coord.separation(all_coords).arcsec < 0.5
+                elif catalog_name == 'panstarrs':  # TODO: PanSTARRS IDs are weird
+                    mask = np.ones(len(cat_lc)).astype(bool)
                 else:  # otherwise, we can just ensure that the IDs line up
                     mask = cat_lc[f'{catalog_name}_id'] == cat_lc[f'{catalog_name}_id'][0]
                 cat_lc = cat_lc[mask]

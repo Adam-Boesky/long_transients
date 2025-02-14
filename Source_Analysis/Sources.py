@@ -91,6 +91,7 @@ class Postage_Stamp():
             dec: float,
             stamp_width_arcsec: int = 50,
             bands: list = ['g', 'r', 'i'],
+            ztf_data_dir: Optional[str] = None,
         ):
         self.ra = ra
         self.dec = dec
@@ -98,6 +99,7 @@ class Postage_Stamp():
         self.bands = bands
         self.stamp_width_arcsec = stamp_width_arcsec
         self.arcsec_per_pixel = None
+        self.ztf_data_dir = ztf_data_dir
 
         # Offset used for coordinates in the cutout image and the WCS
         self.x_origin_offsets, self.y_origin_offsets = {band: 0 for band in self.bands}, {band: 0 for band in self.bands}
@@ -257,7 +259,13 @@ class ZTF_Postage_Stamp(Postage_Stamp):
         with futures.ThreadPoolExecutor() as executor:
             ztf_catalogs = dict(zip(
             bands_with_images,
-            executor.map(lambda band: ZTF_Catalog(self.ra, self.dec, band=band, image_metadata=self.image_metadata), bands_with_images)
+            executor.map(lambda band: ZTF_Catalog(
+                self.ra,
+                self.dec,
+                band=band,
+                image_metadata=self.image_metadata,
+                data_dir=self.ztf_data_dir,
+            ), bands_with_images)
         ))
 
         # Get the images and crop to postage stamps
@@ -320,12 +328,13 @@ class Source():
             bands: list = ['g', 'r', 'i'],
             cutout_bands: Optional[List[str]] = None,
             merged_field_basedir: str = '/Users/adamboesky/Research/long_transients/Data/catalog_results/field_results',
+            ztf_data_dir: Optional[str] = None,
             field_catalogs: Optional[dict[str, Table]] = None,
             max_arcsec: float = 1.0,
             gaia_max_arcsec: float = 5.0,
             verbose: int = 1,
             catch_plotting_exceptions: bool = True,
-            lc_catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs'],
+            lc_catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs', 'gaia'],
         ):
         self.ra = ra
         self.dec = dec
@@ -337,6 +346,7 @@ class Source():
         self.bands = bands
         self.cutout_bands = bands if cutout_bands is None else cutout_bands
         self.merged_field_basedir = merged_field_basedir
+        self.ztf_data_dir = ztf_data_dir
         self.lc_catalogs = lc_catalogs
 
         # The maximum distance for an object to be considered a match
@@ -518,7 +528,7 @@ class Source():
 
             if self.verbose > 0: print('Searching for source in the catalogs!')
             for band, cat in self.field_catalogs.items():
-                if self.verbose > 0: print(f'Searching {band}...')
+                if self.verbose > 0: print(f'Searching {band} catalog for source...')
 
                 # Get the source from each catalog
                 coords = SkyCoord(ra=cat['ra'], dec=cat['dec'], unit='deg')
@@ -557,7 +567,7 @@ class Source():
     def postage_stamps(self) -> Dict[str, Postage_Stamp]:
         if self._postage_stamps is None:
             self._postage_stamps = {
-                'ZTF': ZTF_Postage_Stamp(self.ra, self.dec, bands=self.cutout_bands, image_metadata=self.image_metadata),
+                'ZTF': ZTF_Postage_Stamp(self.ra, self.dec, bands=self.cutout_bands, image_metadata=self.image_metadata, ztf_data_dir=self.ztf_data_dir),
                 'PSTARR': PSTARR_Postage_Stamp(self.ra, self.dec, bands=self.cutout_bands),
             }
 
@@ -834,13 +844,17 @@ class Source():
             self,
             bands: Optional[List[str]] = None,
             ax: Optional[Axes] = None,
+            fig: Optional[Axes] = None,
             time_as_str: bool = True,
             xlab_kwags: dict = {'rotation': 45, 'ha': 'right'},
+            include_wise: bool = True,
             **kwargs,
         ) -> Axes:
         """Plot lightcurve for all bands specified in 'bands', or all bands if bands is None."""
         if ax is None:
-            _, ax = plt.subplots(figsize=(10, 4))
+            fig, ax = plt.subplots(figsize=(10, 4))
+        elif fig is None:
+            fig = plt.gcf()
 
         # Annotate if no light curve present
         if self.light_curve.lc is None:
@@ -870,13 +884,15 @@ class Source():
         # Iterate through bands and plot
         for band in bands:
             if not np.all(self.light_curve.lc[band].mask):  # make sure everything is not nan
+                pos_err_mask = self.light_curve.lc[f'{band}err'].filled(fill_value=np.nan) > 0
                 ax.errorbar(
-                    x=time.mjd,
-                    y=self.light_curve.lc[band].filled(fill_value=np.nan),
-                    yerr=self.light_curve.lc[f'{band}err'].filled(fill_value=np.nan),
+                    x=time.mjd[pos_err_mask],
+                    y=self.light_curve.lc[band].filled(fill_value=np.nan)[pos_err_mask],
+                    yerr=self.light_curve.lc[f'{band}err'].filled(fill_value=np.nan)[pos_err_mask],
                     marker=LC_MARKER_INFO[ALL_BAND_DF.loc['survey', band]],
                     color=LC_COLOR_INFO[ALL_BAND_DF.loc['band', band]],
                     markeredgewidth=2 if ALL_BAND_DF.loc['survey', band] == 'panstarrs' else 1,
+                    zorder=1,
                     **kwargs,
                 )
 
@@ -884,13 +900,56 @@ class Source():
         ax.invert_yaxis()
         ax.set_ylabel('Mag')
         ax.set_xlabel('Time [mjd]')
-        if time_as_str:
-            ticks_as_time = Time(ax.get_xticks(), format='mjd')
-            ax.set_xticks(
-                ticks_as_time.mjd,
-                ticks_as_time.strftime('%m-%d-%Y'),
-                **xlab_kwags,
+
+        # Add WISE mags if requested
+        if include_wise:
+
+            # Create axis and label it
+            wise_ax = ax.twinx()
+            wise_ax.set_ylabel('WISE Mag')
+
+            # Plot W1 and W2
+            if 'w1_mag' in self.light_curve.lc.columns:
+                wise_ax.errorbar(
+                    x=time.mjd,
+                    y=self.light_curve.lc['w1_mag'].filled(fill_value=np.nan),
+                    yerr=self.light_curve.lc[f'w1_magerr'].filled(fill_value=np.nan),
+                    marker='*',
+                    color='saddlebrown',
+                    zorder=1,
+                    **kwargs,
+                )
+            if 'w2_mag' in self.light_curve.lc.columns:
+                wise_ax.errorbar(
+                    x=time.mjd,
+                    y=self.light_curve.lc['w2_mag'].filled(fill_value=np.nan),
+                    yerr=self.light_curve.lc['w2_magerr'].filled(fill_value=np.nan),
+                    marker='*',
+                    color='sandybrown',
+                    zorder=1,
+                    **kwargs,
+                )
+
+            # Make the handles for a legend
+            w1_handle = mlines.Line2D(
+                [],
+                [],
+                marker='*',
+                color='saddlebrown',
+                linestyle='None',
+                markersize=8,
+                label='W1'
             )
+            w2_handle = mlines.Line2D(
+                [],
+                [],
+                marker='*',
+                color='sandybrown',
+                linestyle='None',
+                markersize=8,
+                label='W2'
+            )
+            wise_ax.invert_yaxis()
 
         # Create legend handles for markers
         marker_handles = []
@@ -900,9 +959,19 @@ class Source():
                                    markeredgewidth=2 if marker == '3' else 1)
             marker_handles.append(handle)
 
+        # Decide on which axes to add the legends for markers and colors.
+        legend_ax = wise_ax if include_wise else ax
+
         # Create the first legend for markers and add it to the axis
-        legend_markers = ax.legend(handles=marker_handles, loc='upper right')
-        ax.add_artist(legend_markers)
+        legend_markers = legend_ax.legend(
+            handles=marker_handles,
+            loc='upper right',
+            framealpha=0.8,
+            handletextpad=0.3,
+            columnspacing=0.85,
+            ncols=3,
+        )
+        legend_ax.add_artist(legend_markers).set_zorder(10)
 
         # Create legend handles for colors
         color_handles = []
@@ -912,9 +981,60 @@ class Source():
             color_handles.append(handle)
 
         # Create the second legend for colors and add it to the axis
-        legend_colors = ax.legend(handles=color_handles, ncols=3, loc='upper left')
-        ax.add_artist(legend_colors)
+        legend_colors = legend_ax.legend(
+            handles=color_handles,
+            ncols=4,
+            loc='upper left',
+            framealpha=0.8,
+            columnspacing=0.85,
+            handlelength=0.8,
+            handletextpad=0.3,
+        )
+        legend_ax.add_artist(legend_colors).set_zorder(10)
 
+        # If requested, make time into date strings
+        if time_as_str:
+            ticks_as_time = Time(ax.get_xticks(), format='mjd')
+            ax.set_xticks(
+                ticks_as_time.mjd,
+                ticks_as_time.strftime('%m-%d-%Y'),
+                **xlab_kwags,
+            )
+    
+        # Add wise legend and adjust y bounds a little
+        if include_wise:
+            # Get x anchor
+            renderer = fig.canvas.get_renderer()
+            bbox_disp = legend_colors.get_window_extent(renderer=renderer)
+            bbox_axes = legend_ax.transAxes.inverted().transform(bbox_disp)
+            x_anchor = bbox_axes[1, 0]  # the right edge (x1) of the first legend in axes coordinates
+
+            # Make the legend and add it to the axes
+            wise_legend = legend_ax.legend(
+                handles=[w1_handle, w2_handle],
+                loc='upper left',
+                bbox_to_anchor=(x_anchor, 1),
+                framealpha=0.8,
+                handletextpad=0.3,
+            )
+            legend_ax.add_artist(wise_legend).set_zorder(10)
+
+            # Increase ylim a little for the wise legend
+            wise_ylim = wise_ax.get_ylim()
+            wise_ax.set_ylim((
+                wise_ylim[0],
+                wise_ylim[0] - 1.1 * (wise_ylim[0] - wise_ylim[1]),
+            ))
+
+        # Increase ylim a little for the legends
+        ylim = ax.get_ylim()
+        ax.set_ylim((
+            ylim[0],
+            ylim[0] - 1.1 * (ylim[0] - ylim[1]),
+        ))
+
+        if include_wise:
+            return ax, wise_ax
         return ax
 
     def plot_wise_mag_hist(self, ax: Optional[Axes] = None, snr_thresh: float = 0.0, **kwargs) -> Axes:
@@ -1017,10 +1137,45 @@ class Source():
 
         return self._GAIA_info
 
+    def get_info_string(self, wise_snr_thresh: float = 3.0) -> str:
+        """Get string with all the necessary source information."""
+        info_string = r'\textbf{Source Information:}' f'\nCoordinates: ({self.ra:.5f}, {self.dec:.5f})'
+        tns_info = self.get_TNS_info()
+        if tns_info is None:
+            info_string += '\nSource not in TNS.'
+        else:
+            tns_info = self.get_TNS_info().iloc[0]
+            info_string += (
+                f'\nTNS Name: {tns_info["name_prefix"]} {tns_info["name"]}'
+                f'\nTNS Discovery date: {tns_info["discoverydate"]}'
+                f'\nTNS Reporter: {tns_info["reporting_group"]}'
+                f'\nTNS Type: {tns_info["type"]}'
+            )
+        if self.spectrum is None:
+            info_string += '\nNo SDSS Source Classification.'
+        else:
+            info_string += f'\nSDSS Class: {self.spectrum[0][2].data["CLASS"]}'
+        if 'w1_snr' in self.light_curve.lc.columns and 'w2_snr' in self.light_curve.lc.columns:
+            snr_mask = np.logical_and(
+                self.light_curve.lc['w1_snr'] > wise_snr_thresh,
+                self.light_curve.lc['w2_snr'] > wise_snr_thresh,
+            )
+            if np.sum(snr_mask) > 0:
+                delta_mag = self.light_curve.lc['w1_mag'] - self.light_curve.lc['w2_mag']
+                delta_mag = delta_mag[snr_mask]
+                info_string += (
+                    f'\nWISE W1-W2 Mean (SNR $>$ {wise_snr_thresh}) $=$ {np.mean(delta_mag):.2f}'
+                    f'\nWISE W1-W2 Median (SNR $>$ {wise_snr_thresh}) $=$ {np.median(delta_mag):.2f}'
+                )
+        else:
+            info_string += '\nNo WISE W1-W2 data.'
+        
+        return info_string
+
     def plot_everything(self) -> Axes:
         """Function that plots everything on one page!"""
         # Set up the layout
-        plt.figure(figsize=(12, 18))
+        fig = plt.figure(figsize=(12, 18))
         ax0 = plt.subplot2grid((5, 3), (0, 0))
         ax1 = plt.subplot2grid((5, 3), (0, 1))
         ax2 = plt.subplot2grid((5, 3), (0, 2))
@@ -1039,38 +1194,12 @@ class Source():
         # Plot
         snr_thresh = 3.0  # snr min for our WISE observations
         self.plot_all_cutouts(axes=cutout_axes)
-        self.plot_lc(ax=lc_ax, xlab_kwags={})
+        self.plot_lc(ax=lc_ax, fig=fig, xlab_kwags={})
         self.plot_spectrum(ax=spec_ax)
         self.plot_wise_mag_hist(ax=wise_ax, snr_thresh=snr_thresh)
 
         # Annotate text info at the bottom
-        info_string = fr'\textbf{{Source Information:}}' f'\nCoordinates: ({self.ra:.5f}, {self.dec:.5f})'
-        tns_info = self.get_TNS_info()
-        if tns_info is None:
-            info_string += '\nSource not in TNS.'
-        else:
-            tns_info = self.get_TNS_info().iloc[0]
-            info_string += (
-                f'\nTNS Name: {tns_info["name_prefix"]} {tns_info["name"]}'
-                f'\nTNS Discovery date: {tns_info["discoverydate"]}'
-                f'\nTNS Reporter: {tns_info["reporting_group"]}'
-                f'\nTNS Type: {tns_info["type"]}'
-            )
-        if self.spectrum is None:
-            info_string += '\nNo SDSS Source Classification.'
-        else:
-            info_string += f'\nSDSS Class: {self.spectrum[0][2].data["CLASS"]}'
-        if 'w1_snr' in self.light_curve.lc.columns and 'w2_snr' in self.light_curve.lc.columns:
-            snr_mask = np.logical_and(self.light_curve.lc['w1_snr'] > snr_thresh, self.light_curve.lc['w2_snr'] > snr_thresh)
-            if np.sum(snr_mask) > 0:
-                delta_mag = self.light_curve.lc['w1_mag'] - self.light_curve.lc['w2_mag']
-                delta_mag = delta_mag[snr_mask]
-                info_string += (
-                    f'\nWISE W1-W2 Mean (SNR $>$ {snr_thresh}) $=$ {np.mean(delta_mag):.2f}'
-                    f'\nWISE W1-W2 Median (SNR $>$ {snr_thresh}) $=$ {np.median(delta_mag):.2f}'
-                )
-        else:
-            info_string += '\nNo WISE W1-W2 data.'
+        info_string = self.get_info_string(wise_snr_thresh=snr_thresh)
         text_ax.text(0, 0.95, s=info_string, verticalalignment='top', fontsize='large')
         text_ax.axis('off')
 
