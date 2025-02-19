@@ -82,6 +82,7 @@ def store_source_plots():
             'i': combined_i_tabs[0],
         },
         max_arcsec=3,
+        ztf_data_dir='/Users/adamboesky/Research/long_transients/Data/ztf_data',
     )
     with Pool(processes=3) as pool:
         # Construct the source name
@@ -116,6 +117,8 @@ def store_source_plots():
             'r': combined_r_tabs[1],
             'i': combined_i_tabs[1],
         },
+        max_arcsec=3,
+        ztf_data_dir='/Users/adamboesky/Research/long_transients/Data/ztf_data',
     )
     with Pool(processes=3) as pool:
         # Construct the source name
@@ -143,6 +146,7 @@ def store_source_plots():
             'i': combined_i_wide_tabs[1],
         },
         max_arcsec=3,
+        ztf_data_dir='/Users/adamboesky/Research/long_transients/Data/ztf_data',
     )
     with Pool(processes=3) as pool:
         # Construct the source name

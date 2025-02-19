@@ -88,6 +88,16 @@ class PSTARR_Catalog(Catalog):
             self.prefetch()
 
     def _get_band_query(self, band: str, tab_name: str) -> str:
+        # Get the string for RAs
+        if self.ra_range[1] < 360.0:
+            ra_str = f"""o.raMean BETWEEN {self.ra_range[0] - self.query_buffer} AND {self.ra_range[1] + self.query_buffer}"""
+        else:
+            ra_str = f"""(
+        (o.raMean BETWEEN {self.ra_range[0] - self.query_buffer} AND {self.ra_range[1] + self.query_buffer})
+        OR (o.raMean BETWEEN {self.ra_range[0] - self.query_buffer - 360} AND {self.ra_range[1] + self.query_buffer - 360})
+    )
+"""
+
         # Get the keys for the bands we want
         band_mags_str = (
         f'\tm.{band}KronMag, m.{band}KronMagErr,\n'
@@ -104,7 +114,7 @@ WITH ranked AS (
     FROM ObjectThin o
     INNER JOIN StackObjectThin m ON o.objID = m.objID
     INNER JOIN StackObjectAttributes a ON o.objID = a.objID
-    WHERE o.raMean BETWEEN {self.ra_range[0] - self.query_buffer} AND {self.ra_range[1] + self.query_buffer}
+    WHERE {ra_str}
     AND o.decMean BETWEEN {self.dec_range[0] - self.query_buffer} AND {self.dec_range[1] + self.query_buffer}
     AND (o.nStackDetections > 0 OR o.nDetections > 1)
     AND (m.{band}infoFlag2 & 4) = 0

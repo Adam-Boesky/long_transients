@@ -1,83 +1,32 @@
-# import google.auth
-# from googleapiclient.discovery import build
-# from googleapiclient.errors import HttpError
-# from googleapiclient.http import MediaFileUpload
+import os
+
+from astropy.table import Table
+
+from Extracting.utils import get_data_path
+from Source_Analysis.Sources import Source, Sources
 
 
-# def upload_basic():
-#     """Insert new file.
-#     Returns : Id's of the file uploaded
+cat_num = 1
 
-#     Load pre-authorized user credentials from the environment.
-#     TODO(developer) - See https://developers.google.com/identity
-#     for guides on implementing OAuth2 for the application.
-#     """
-#     creds, _ = google.auth.default(scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/drive.file'])
+combined_g_tabs = Table.read(os.path.join(get_data_path(), f'filter_results/combined/{cat_num}_g.ecsv'), format='ascii.ecsv')
+combined_r_tabs = Table.read(os.path.join(get_data_path(), f'filter_results/combined/{cat_num}_r.ecsv'), format='ascii.ecsv')
+combined_i_tabs = Table.read(os.path.join(get_data_path(), f'filter_results/combined/{cat_num}_i.ecsv'), format='ascii.ecsv')
 
-#     try:
-#         # create drive api client
-#         service = build("drive", "v3", credentials=creds)
-
-#         file_metadata = {"name": "/Users/adamboesky/Research/long_transients/Data/filter_results/candidates/in_both/100_candidate_217p42_20p355.pdf"}
-#         media = MediaFileUpload("/Users/adamboesky/Research/long_transients/Data/filter_results/candidates/in_both/100_candidate_217p42_20p355.pdf")
-#         # pylint: disable=maybe-no-member
-#         file = (
-#             service.files()
-#             .create(body=file_metadata, media_body=media, fields="id")
-#             .execute()
-#         )
-#         print(f'File ID: {file.get("id")}')
-
-#     except HttpError as error:
-#         print(f"An error occurred: {error}")
-#         file = None
-
-#     return file.get("id")
-
-
-# if __name__ == "__main__":
-#   upload_basic()
-
-
-
-import google.auth
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaFileUpload
-
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
-
-def upload_basic():
-  """Insert new file.
-  Returns : Id's of the file uploaded
-
-  Load pre-authorized user credentials from the environment.
-  TODO(developer) - See https://developers.google.com/identity
-  for guides on implementing OAuth2 for the application.
-  """
-  creds = Credentials.from_authorized_user_file("/Users/adamboesky/token.json", SCOPES)
-
-  try:
-    # create drive api client
-    service = build("drive", "v3", credentials=creds)
-
-    file_metadata = {"name": "/Users/adamboesky/Research/long_transients/Data/filter_results/candidates/in_both/100_candidate_217p42_20p355.pdf"}
-    media = MediaFileUpload("/Users/adamboesky/Research/long_transients/Data/filter_results/candidates/in_both/100_candidate_217p42_20p355.pdf")
-    # pylint: disable=maybe-no-member
-    file = (
-        service.files()
-        .create(body=file_metadata, media_body=media, fields="id")
-        .execute()
+src = Source(
+        ra=12.56254,
+        dec=12.88404,
+        field_catalogs={
+            'g': combined_g_tabs,
+            'r': combined_r_tabs,
+            'i': combined_i_tabs,
+        },
+        max_arcsec=3,
+        ztf_data_dir='/Users/adamboesky/Research/long_transients/Data/ztf_data',
     )
-    print(f'File ID: {file.get("id")}')
 
-  except HttpError as error:
-    print(f"An error occurred: {error}")
-    file = None
-
-  return file.get("id")
-
-
-if __name__ == "__main__":
-  upload_basic()
+print(src.data[['ZTF_g_fieldid', 'ZTF_g_ccdid', 'ZTF_g_qid']])
+print(src.data[['ZTF_r_fieldid', 'ZTF_r_ccdid', 'ZTF_r_qid']])
+print(src.data[['ZTF_i_fieldid', 'ZTF_i_ccdid', 'ZTF_i_qid']])
+# for c in src.data.columns:
+    # print(c[['fieldid', 'qid']])
+    # print(src.data.columns)

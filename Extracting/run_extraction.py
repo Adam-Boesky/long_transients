@@ -85,7 +85,9 @@ def extract_sources():
     #     process_field(fid)
     # for fid in imaged_fields[100:]:  # start at 100 for parallel processing
     #     process_field(fid)
-    for fid in imaged_fields[200:]:  # start at 200 for parallel processing
+    # for fid in imaged_fields[200:]:  # start at 200 for parallel processing
+    #     process_field(fid)
+    for fid in [245, 294]:  # redoing fields that cross the 360 degree ra
         process_field(fid)
 
 if __name__=='__main__':
