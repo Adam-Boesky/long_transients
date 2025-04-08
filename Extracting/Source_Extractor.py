@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import sep
 from numpy.lib.recfunctions import rename_fields
+from matplotlib.axes._axes import Axes
 
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
@@ -396,12 +397,15 @@ class Source_Extractor():
             fpath: Optional[str] = None,
             source_mask: Optional[np.ndarray] = None,
             color='red',
-        ):
+            ax: Optional[Axes] = None,
+            **kwargs,
+        ) -> Axes:
         """Plot the segmentation map of the image."""
-        _, ax = plt.subplots(figsize=(15, 15))
+        if ax is None:
+            _, ax = plt.subplots(figsize=(15, 15))
         if image_is_subtracted:
-            norm = simple_norm(self.image_sub, 'log', percent=99.0)
-            ax.imshow(self.image_sub, norm=norm, origin='lower', cmap='viridis')
+            norm = simple_norm(self.image_sub, 'log', percent=99.75)
+            ax.imshow(self.image_sub, norm=norm, origin='lower', cmap='gray')
         else:
             if self._segmap is None:
                 self.get_sources()
@@ -415,13 +419,14 @@ class Source_Extractor():
                 e = Ellipse(xy=(sources['x'][j], sources['y'][j]),
                             width=2.5*sources['KronRad'][j]*sources['a'][j],
                             height=2.5*sources['KronRad'][j]*sources['b'][j],
-                            angle=sources['theta'][j] * 180. / np.pi)
+                            angle=sources['theta'][j] * 180. / np.pi,
+                            linewidth=2)
                 e.set_facecolor('none')
                 e.set_edgecolor(color)
                 ax.add_artist(e)
         if show_sources:
             sources = self.sources[source_mask]
-            ax.scatter(sources['x'], sources['y'], color=color)
+            ax.scatter(sources['x'], sources['y'], color=color, **kwargs)
         if fpath is not None:
             plt.savefig(fpath)
 

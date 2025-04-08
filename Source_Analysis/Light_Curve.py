@@ -13,7 +13,7 @@ from astroquery.ipac.irsa import Irsa
 from astropy.coordinates import SkyCoord
 from concurrent.futures import ThreadPoolExecutor
 
-from Extracting.utils import get_pstarr_lc_from_coord, get_pstarr_lc_from_id, img_flux_to_ab_mag
+from Extracting.utils import get_pstarr_lc_from_coord, get_pstarr_lc_from_id, img_flux_to_ab_mag, get_data_path
 
 ALL_LC_COLNAMES = ['ptf_id', 'wise_id', 'ztf_id', 'ra', 'dec', 'mjd', 'g_mag', 'g_magerr', 'r_mag', 'r_magerr', 'i_mag',
                    'i_magerr', 'w1_mag', 'w1_magerr', 'w2_mag', 'w2_magerr', 'w3_mag', 'w3_magerr', 'w4_mag',
@@ -23,7 +23,8 @@ LC_MARKER_INFO = {
     'ztf': '<',
     'sdss': 'd',
     'panstarrs': '3',
-    'gaia': 'X'
+    'gaia': 'X',
+    'custom': '*',
 }
 LC_COLOR_INFO = {
     'u': 'black',
@@ -55,10 +56,15 @@ ALL_BAND_DF = pd.DataFrame(
         'gaia_g_mag': ['g', 'gaia'],
         'gaia_rp_mag': ['r', 'gaia'],
         'gaia_bp_mag': ['b', 'gaia'],
+        'custom_g_mag': ['g', 'custom'],
+        'custom_r_mag': ['r', 'custom'],
+        'custom_i_mag': ['i', 'custom'],
+        'custom_z_mag': ['z', 'custom'],
     },
     index=['band', 'survey'],
 )
 GAIA_ZERO_PTS = {'g': 25.8010, 'bp': 25.3540, 'rp': 25.1040}  # from Table 5.4 in https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu5pho/cu5pho_sec_photProc/cu5pho_ssec_photCal.html#SSS3.P2
+CUSTOM_PHOT_DIR = os.path.join(get_data_path(), 'custom_photometry')
 
 
 class Light_Curve:
@@ -66,7 +72,7 @@ class Light_Curve:
             self,
             ra: float,
             dec: float,
-            catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs', 'gaia'],
+            catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs', 'gaia', 'custom'],
             query_rad_arcsec: float = 1.5,
             query_in_parallel: bool = True,
             pstarr_coord: Optional[Tuple[float]] = None,
@@ -166,6 +172,16 @@ class Light_Curve:
 
             # Rename columns
             column_rename_map = [('source_id', 'gaia_id')]
+        
+        elif catalog == 'custom':
+            # Desired columns
+            desired_colnames = ['custom_id', 'mjd'] + [item for sublist in zip(
+                [f'custom_{band}_mag' for band in 'griz'],
+                [f'custom_{band}_magerr' for band in 'griz'],
+            ) for item in sublist]
+
+            # Rename columns
+            column_rename_map = []
 
         # Query the catalog
         print(f"Querying {catalog} catalog for light curve...")
@@ -197,6 +213,34 @@ class Light_Curve:
                         SkyCoord(self.ra, self.dec, unit='deg'),
                         photoobj_fields=desired_colnames,
                     )
+                elif catalog == 'custom':
+                    # Get the filename -> coordinate mapping
+                    custom_phot_fnames = [fname.split('.')[0] for fname in os.listdir(CUSTOM_PHOT_DIR)] # dropping file extensions
+                    fname_coords = [(
+                        float(fname.split('_')[1].replace("p", ".").replace("n", "-")),
+                        float(fname.split('_')[2].replace("p", ".").replace("n", "-"))
+                    ) for fname in custom_phot_fnames]
+
+                    # Get the lightcurve table
+                    fname_skycoords = SkyCoord(
+                        [c[0] for c in fname_coords],
+                        [c[1] for c in fname_coords],
+                        unit='deg',
+                        )
+                    seps = self.skycoord.separation(fname_skycoords)
+                    if np.min(seps.arcsecond > self.query_rad_arcsec):
+                        lightcurve_tab = None
+                    else:
+                        # Read the custom file format into a pandas DataFrame
+                        custom_phot_fname = custom_phot_fnames[np.argmin(seps.arcsec)]
+                        lightcurve_tab = pd.read_csv(
+                            os.path.join(CUSTOM_PHOT_DIR, f'{custom_phot_fname}.txt'),
+                            sep=r'\s+',  # delim_whitespace=True
+                            comment='#',
+                            names=['mjd', 'custom_mag', 'custom_magerr', 'filter', 'ul', 'telescope', 'instrument']
+                        )
+                        lightcurve_tab['custom_id'] = custom_phot_fname
+                        lightcurve_tab = Table.from_pandas(lightcurve_tab)
                 else:
                     lightcurve_tab: Table = Irsa.query_region(
                         coordinates=self.skycoord,
@@ -278,6 +322,17 @@ class Light_Curve:
 
             # Drop flux and flux error columns
             lightcurve_tab.remove_columns(flux_cols + [f'{col}_error' for col in flux_cols])
+        elif catalog == 'custom' and lightcurve_tab is not None:
+            # Add magnitude columns by band
+            for band in 'griz':
+                band_mask = lightcurve_tab['filter'] == band
+                lightcurve_tab[f'custom_{band}_mag'] = np.ones(len(lightcurve_tab)) * np.nan
+                lightcurve_tab[f'custom_{band}_magerr'] = np.ones(len(lightcurve_tab)) * np.nan
+                lightcurve_tab[f'custom_{band}_mag'][band_mask] = lightcurve_tab['custom_mag'][band_mask]
+                lightcurve_tab[f'custom_{band}_magerr'][band_mask] = lightcurve_tab['custom_magerr'][band_mask]
+
+            # Drop unnecessary columns
+            lightcurve_tab = lightcurve_tab[desired_colnames]
 
         if lightcurve_tab is None:
             return Table()

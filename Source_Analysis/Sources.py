@@ -334,7 +334,7 @@ class Source():
             gaia_max_arcsec: float = 5.0,
             verbose: int = 1,
             catch_plotting_exceptions: bool = True,
-            lc_catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs', 'gaia'],
+            lc_catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs', 'gaia', 'custom'],
         ):
         self.ra = ra
         self.dec = dec
@@ -362,6 +362,7 @@ class Source():
         self._ztf_lightcurve = None
         self._paddedfield = None
         self._GAIA_info = None
+        self._in_bands = None
         self.filter_info = {}
         self._image_metadata = None
         self._spectrum = None
@@ -562,6 +563,14 @@ class Source():
         self._data = self._data[ordered_cols]
 
         return self._data
+
+    @property
+    def in_bands(self) -> List[str]:
+        """The bands that the source was extracted/found in."""
+        if self._in_bands is None:
+            self._in_bands = [band for band in self.bands if ~np.isnan(self.data[f'ZTF_{band}_ra'])]
+
+        return self._in_bands
 
     @property
     def postage_stamps(self) -> Dict[str, Postage_Stamp]:
@@ -847,7 +856,9 @@ class Source():
             fig: Optional[Axes] = None,
             time_as_str: bool = True,
             xlab_kwags: dict = {'rotation': 45, 'ha': 'right'},
+            include_legend: bool = True,
             include_wise: bool = True,
+            time_since_peak: bool = False,
             **kwargs,
         ) -> Axes:
         """Plot lightcurve for all bands specified in 'bands', or all bands if bands is None."""
@@ -881,12 +892,20 @@ class Source():
         for key, value in default_params.items():
             kwargs.setdefault(key, value)
 
+        # Handle the time offset
+        time = time.mjd
+        if time_since_peak:
+            all_mags = np.array(self.light_curve.lc[bands])
+            all_mags = all_mags.view(np.float64).reshape(all_mags.shape[0], -1)
+            peak_time = time[np.nanargmin(np.nanmin(all_mags, axis=1))]
+            time = time - peak_time
+
         # Iterate through bands and plot
         for band in bands:
             if not np.all(self.light_curve.lc[band].mask):  # make sure everything is not nan
                 pos_err_mask = self.light_curve.lc[f'{band}err'].filled(fill_value=np.nan) > 0
                 ax.errorbar(
-                    x=time.mjd[pos_err_mask],
+                    x=time[pos_err_mask],
                     y=self.light_curve.lc[band].filled(fill_value=np.nan)[pos_err_mask],
                     yerr=self.light_curve.lc[f'{band}err'].filled(fill_value=np.nan)[pos_err_mask],
                     marker=LC_MARKER_INFO[ALL_BAND_DF.loc['survey', band]],
@@ -898,8 +917,8 @@ class Source():
 
         # Format
         ax.invert_yaxis()
-        ax.set_ylabel('Mag')
-        ax.set_xlabel('Time [mjd]')
+        ax.set_ylabel(r'\textbf{Mag}')
+        ax.set_xlabel(r'\textbf{Time [mjd]}')
 
         # Add WISE mags if requested
         if include_wise:
@@ -911,7 +930,7 @@ class Source():
             # Plot W1 and W2
             if 'w1_mag' in self.light_curve.lc.columns:
                 wise_ax.errorbar(
-                    x=time.mjd,
+                    x=time,
                     y=self.light_curve.lc['w1_mag'].filled(fill_value=np.nan),
                     yerr=self.light_curve.lc[f'w1_magerr'].filled(fill_value=np.nan),
                     marker='*',
@@ -921,7 +940,7 @@ class Source():
                 )
             if 'w2_mag' in self.light_curve.lc.columns:
                 wise_ax.errorbar(
-                    x=time.mjd,
+                    x=time,
                     y=self.light_curve.lc['w2_mag'].filled(fill_value=np.nan),
                     yerr=self.light_curve.lc['w2_magerr'].filled(fill_value=np.nan),
                     marker='*',
@@ -963,15 +982,16 @@ class Source():
         legend_ax = wise_ax if include_wise else ax
 
         # Create the first legend for markers and add it to the axis
-        legend_markers = legend_ax.legend(
-            handles=marker_handles,
-            loc='upper right',
-            framealpha=0.8,
-            handletextpad=0.3,
-            columnspacing=0.85,
-            ncols=3,
-        )
-        legend_ax.add_artist(legend_markers).set_zorder(10)
+        if include_legend:
+            legend_markers = legend_ax.legend(
+                handles=marker_handles,
+                loc='upper right',
+                framealpha=0.8,
+                handletextpad=0.3,
+                columnspacing=0.85,
+                ncols=3,
+            )
+            legend_ax.add_artist(legend_markers).set_zorder(10)
 
         # Create legend handles for colors
         color_handles = []
@@ -981,16 +1001,17 @@ class Source():
             color_handles.append(handle)
 
         # Create the second legend for colors and add it to the axis
-        legend_colors = legend_ax.legend(
-            handles=color_handles,
-            ncols=4,
-            loc='upper left',
-            framealpha=0.8,
-            columnspacing=0.85,
-            handlelength=0.8,
-            handletextpad=0.3,
-        )
-        legend_ax.add_artist(legend_colors).set_zorder(10)
+        if include_legend:
+            legend_colors = legend_ax.legend(
+                handles=color_handles,
+                ncols=4,
+                loc='upper left',
+                framealpha=0.8,
+                columnspacing=0.85,
+                handlelength=0.8,
+                handletextpad=0.3,
+            )
+            legend_ax.add_artist(legend_colors).set_zorder(10)
 
         # If requested, make time into date strings
         if time_as_str:
@@ -1003,21 +1024,23 @@ class Source():
     
         # Add wise legend and adjust y bounds a little
         if include_wise:
-            # Get x anchor
-            renderer = fig.canvas.get_renderer()
-            bbox_disp = legend_colors.get_window_extent(renderer=renderer)
-            bbox_axes = legend_ax.transAxes.inverted().transform(bbox_disp)
-            x_anchor = bbox_axes[1, 0]  # the right edge (x1) of the first legend in axes coordinates
 
-            # Make the legend and add it to the axes
-            wise_legend = legend_ax.legend(
-                handles=[w1_handle, w2_handle],
-                loc='upper left',
-                bbox_to_anchor=(x_anchor, 1),
-                framealpha=0.8,
-                handletextpad=0.3,
-            )
-            legend_ax.add_artist(wise_legend).set_zorder(10)
+            if include_legend:
+                # Get x anchor
+                renderer = fig.canvas.get_renderer()
+                bbox_disp = legend_colors.get_window_extent(renderer=renderer)
+                bbox_axes = legend_ax.transAxes.inverted().transform(bbox_disp)
+                x_anchor = bbox_axes[1, 0]  # the right edge (x1) of the first legend in axes coordinates
+
+                # Make the legend and add it to the axes
+                wise_legend = legend_ax.legend(
+                    handles=[w1_handle, w2_handle],
+                    loc='upper left',
+                    bbox_to_anchor=(x_anchor, 1),
+                    framealpha=0.8,
+                    handletextpad=0.3,
+                )
+                legend_ax.add_artist(wise_legend).set_zorder(10)
 
             # Increase ylim a little for the wise legend
             wise_ylim = wise_ax.get_ylim()
@@ -1026,12 +1049,13 @@ class Source():
                 wise_ylim[0] - 1.1 * (wise_ylim[0] - wise_ylim[1]),
             ))
 
-        # Increase ylim a little for the legends
-        ylim = ax.get_ylim()
-        ax.set_ylim((
-            ylim[0],
-            ylim[0] - 1.1 * (ylim[0] - ylim[1]),
-        ))
+        if include_legend:
+            # Increase ylim a little for the legends
+            ylim = ax.get_ylim()
+            ax.set_ylim((
+                ylim[0],
+                ylim[0] - 1.1 * (ylim[0] - ylim[1]),
+            ))
 
         if include_wise:
             return ax, wise_ax
@@ -1124,6 +1148,55 @@ class Source():
             return None
         return tns_df.iloc[[idx]]
 
+    def get_filtered_out_info(self) -> Dict[str, str]:
+        """Get the information about the source being filtered out."""
+        # Get the bands that have been filtered out
+        reason_dict = {}
+        filtered_out_bands = [band for band in self.bands if band not in self.in_bands]
+        if len(filtered_out_bands) == 0:
+            return reason_dict
+        
+        # Get the info for each band
+        for band in filtered_out_bands:
+
+            # Load the filtered out info file
+            for cat in range(3):  # iterate over the three catalogs
+
+                # Get the coordinates of all filtered sources
+                filtered_out_info_path = os.path.join(
+                    get_data_path(),
+                    'filter_results', 
+                    str(self.image_metadata['fieldid']).zfill(6) if isinstance(self.image_metadata['fieldid'], int) \
+                        else self.image_metadata['fieldid'],
+                    f'{cat}_{band}_filtered_out.ecsv'
+                )
+                if not os.path.exists(filtered_out_info_path):
+                    print(f'Warning: Filtered out info file not found at {filtered_out_info_path}')
+                    continue
+                filtered_out_info = load_cached_table(filtered_out_info_path)
+                if len(filtered_out_info) == 0:  # no sources were filtered out, may be result of no extraction
+                    continue
+                filtered_coords = SkyCoord(filtered_out_info['ra'], filtered_out_info['dec'], unit='deg')
+
+                # Find closest match within max_arcsec
+                seps = self.coord.separation(filtered_coords)
+                if np.min(seps.arcsec) <= self.max_arcsec:
+                    reason_dict[band] = filtered_out_info[np.argmin(seps.arcsec)]['filter']
+                    break
+
+            # If no match was found, it was because the source was not extracted at all
+            if band not in reason_dict:
+                reason_dict[band] = 'no_extraction'
+
+        return reason_dict
+
+    @property
+    def filtered_out_info(self) -> Dict[str, str]:
+        """Get the information about the source being filtered out."""
+        if not hasattr(self, '_filtered_out_info'):
+            self._filtered_out_info = self.get_filtered_out_info()
+        return self._filtered_out_info
+
     def _get_GAIA_info(self, max_arcsec: float):
         return Gaia.query_object_async(
             coordinate=self.coord,
@@ -1140,6 +1213,7 @@ class Source():
     def get_info_string(self, wise_snr_thresh: float = 3.0) -> str:
         """Get string with all the necessary source information."""
         info_string = r'\textbf{Source Information:}' f'\nCoordinates: ({self.ra:.5f}, {self.dec:.5f})'
+        info_string += f'\nFiltering: {self.filtered_out_info}'
         tns_info = self.get_TNS_info()
         if tns_info is None:
             info_string += '\nSource not in TNS.'
@@ -1274,11 +1348,16 @@ class Sources:
     def data(self) -> Table:
         if self._data is None:
             if len(self.sources) == 0:
-                return Table()
+                return Table(data={k: [] for k in MANDATORY_SOURCE_COLUMNS}, masked=False)
             self._data = vstack([src.data for src in self.sources])
             self._data = Table(self._data, masked=False)
 
         return self._data
+
+    @property
+    def in_bands(self) -> List[List[str]]:
+        """The bands that each source was extracted/found in."""
+        return [src.in_bands for src in self.sources]
 
     def save(self, fname: str, overwrite: bool = True):
         to_save = self.data.copy()
