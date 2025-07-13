@@ -1,9 +1,12 @@
 """Objects that get the information from astrophysical catalogs."""
+import subprocess
 from PIL import Image
 import atexit
+import time
 import random
 import os
 import tempfile
+import traceback
 from io import StringIO, BytesIO
 from typing import Dict, Iterable, Optional, Tuple, List, Union
 from functools import lru_cache
@@ -101,9 +104,8 @@ class PSTARR_Catalog(Catalog):
         # Get the keys for the bands we want
         band_mags_str = (
         f'\tm.{band}KronMag, m.{band}KronMagErr,\n'
-        # f'\tm.{band}ApMag, m.{band}ApMagErr,\n'
         f'\tm.{band}PSFMag, m.{band}PSFMagErr,\n'
-        f'\ta.{band}psfLikelihood, m.{band}infoFlag2,\n'
+        f'\ta.{band}psfLikelihood, m.{band}infoFlag, m.{band}infoFlag2,\n'
         )
         query = f"""
 WITH ranked AS (
@@ -159,8 +161,13 @@ WHERE rn = 1 into mydb.{tab_name}
         # Submit the query and monitor it
         band_query = self._get_band_query(band, tab_name=table_name)
         jobid = MASTCASJOBS.submit(band_query, task_name=f"{band}_PanSTARRS_DR2_TILE_QUERY")
-        MASTCASJOBS.monitor(jobid)
         print(f'Submitted query for {table_name} with id={jobid}')
+        for attempt in range(3):
+            try:
+                MASTCASJOBS.monitor(jobid)
+            except Exception as e:
+                if attempt == 2:
+                    raise e
 
         return jobid
 
@@ -205,12 +212,16 @@ WHERE rn = 1 into mydb.{tab_name}
                     band_tables.append(MASTCASJOBS.get_table(table_name))
                     break
 
-                except Exception:
-                    print(f'Exception retrieving {table_name} from MyDB. Trying again.')
+                except Exception as e:
+                    print(f'Exception retrieving {table_name} from MyDB printed below. Trying again.')
+                    print(f'Exception type: {type(e).__name__}')
+                    print(f'Exception message: {str(e)}')
+                    print('Traceback:')
+                    traceback.print_exc()
 
                     mydb_table_list = MASTCASJOBS.list_tables()
                     if len(mydb_table_list) > 50:
-                        delete_prop = 0.25
+                        delete_prop = 0.5
                         print(f'WARNING: mydb appears to be pretty cluttered. Deleting some ({delete_prop * 100}% of '
                               'mydb) first...')
                         tabs_to_delete = random.sample(mydb_table_list, k=int(len(mydb_table_list) * delete_prop))
@@ -227,7 +238,7 @@ WHERE rn = 1 into mydb.{tab_name}
         final_table = Table(final_table, masked=True)
         for col in final_table.colnames:
             column = final_table[col]
-            if np.issubdtype(column.dtype, np.number):
+            if np.issubdtype(column.dtype, np.number) and col not in ('PanSTARR_ID', 'objID'):
                 # Convert column to float if numeric to allow np.nan
                 final_table[col] = column.astype(float)
                 final_table[col][column.mask] = np.nan
@@ -346,9 +357,24 @@ class ZTF_Catalog(Catalog):
 
         # File path where the image will be saved
         file_path = os.path.join(self.data_dirpath, f'ztf_{paddedfield}_{filtercode}_c{paddedccdid}_q{qid}_refimg.fits')
+
+        # Check if the image already exists and is valid
         if os.path.exists(file_path):
-            print(f"Image already downloaded and saved at {file_path}")
-            return file_path
+            print(f"Checking if image already downloaded and valid: {file_path.split('/')[-1]}")
+
+            # Make sure that the image is not truncated
+            result = subprocess.run(
+                ["fitscheck", "--ignore-missing", "--compliance", file_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            if "truncated" in result.stdout.lower() or "truncated" in result.stderr.lower():
+                print(f"{file_path.split('/')[-1]} is not valid. Deleting and re-downloading...")
+                os.remove(file_path)
+            else:
+                print(f"Image is valid at {file_path}")
+                return file_path
 
         # Try downloading 3 times
         for _ in range(3):
@@ -609,6 +635,7 @@ def get_pstarr_cutout(ra, dec, size=240, output_size=None, filter="g", format="f
         try:
             # Get the data
             fh = fits.open(url)
+            fh[0].header.rename_keyword('RADECSYS', 'RADESYS')  # rename deprecated keyword
             flux = fh[0].data
 
             # Scale back to flux

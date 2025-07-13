@@ -32,3 +32,15 @@ It is important to realize that sources may have non-detections in Pan-STARRS or
 
 ### 3. Filter sources
 This step takes the sources and passes them through filtration pipelines. You'll just need to look at the `filter_fields.py` file.
+
+### 4. Make (and sort) analysis pages
+Make analysis pages for each source by running `store_src_plots.py` which does something like:
+```
+import matplotlib.pyplot as plt
+from Source_Analysis.Sources import Sources
+
+coords = Sources.from_file('path/to/file.ecsv')
+for c in coords:
+    c.plot_everything()
+    plt.show()
+```

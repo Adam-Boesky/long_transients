@@ -28,6 +28,7 @@ def save_src_plot(src: Source, out_fname: str, overwrite: bool, n_attempts: int 
         try:
             if os.path.exists(out_fname) and not overwrite:
                 print(f'Skipping source... Already plotted and saved at {out_fname}')
+                break
             else:
                 print(f'Plotting source {out_fname.split('/')[-1].split('.')[0]} at ({src.ra}, {src.dec})!')
                 src.plot_everything()
@@ -42,48 +43,23 @@ def save_src_plot(src: Source, out_fname: str, overwrite: bool, n_attempts: int 
 
 def store_source_plots():
     """Store the plots for each candidate resulting from filtering."""
-    if not os.path.exists('/Volumes/T7/long_transients/candidates'):
-        os.mkdir('/Volumes/T7/long_transients/candidates')
+    if os.path.exists('/Volumes/T7/long_transients/'):
+        path_to_data = '/Volumes/T7/long_transients/'
+    else:
+        path_to_data = '/Users/adamboesky/Research/long_transients/Data'
+    # candidate_dir = 'candidates'
+    candidate_dir = 'analysis_pages_debugging'
+    if not os.path.exists(os.path.join(path_to_data, candidate_dir)):
+        os.mkdir(os.path.join(path_to_data, candidate_dir))
 
-    # Load the stored files
-    combined_g_tabs = {}
-    combined_r_tabs = {}
-    combined_i_tabs = {}
-    combined_coords = {}
-    combined_g_wide_tabs = {}
-    combined_r_wide_tabs = {}
-    combined_i_wide_tabs = {}
-    combined_wide_coords = {}
-    for cat_num in range(2):  # TODO make this range(3) and add pstarr only
-        combined_g_tabs[cat_num] = Table.read(os.path.join(get_data_path(), f'filter_results/combined/{cat_num}_g.ecsv'), format='ascii.ecsv')
-        combined_r_tabs[cat_num] = Table.read(os.path.join(get_data_path(), f'filter_results/combined/{cat_num}_r.ecsv'), format='ascii.ecsv')
-        combined_i_tabs[cat_num] = Table.read(os.path.join(get_data_path(), f'filter_results/combined/{cat_num}_i.ecsv'), format='ascii.ecsv')
-        combined_coords[cat_num] = Table.read(os.path.join(get_data_path(), f'filter_results/combined/{cat_num}_coords.ecsv'), format='ascii.ecsv')
 
-        combined_g_wide_tabs[cat_num] = Table.read(os.path.join(get_data_path(), f'filter_results/combined/{cat_num}_wide_g.ecsv'), format='ascii.ecsv')
-        combined_r_wide_tabs[cat_num] = Table.read(os.path.join(get_data_path(), f'filter_results/combined/{cat_num}_wide_r.ecsv'), format='ascii.ecsv')
-        combined_i_wide_tabs[cat_num] = Table.read(os.path.join(get_data_path(), f'filter_results/combined/{cat_num}_wide_i.ecsv'), format='ascii.ecsv')
-        combined_wide_coords[cat_num] = Table.read(os.path.join(get_data_path(), f'filter_results/combined/{cat_num}_wide_coords.ecsv'), format='ascii.ecsv')
 
-    ### IN BOTH ###
-    # plot_dir = os.path.join(get_data_path(), 'filter_results/candidates/in_both')
-    plot_dir = '/Volumes/T7/long_transients/candidates/in_both'
-    if os.path.exists(plot_dir) and OVERWRITE:
-        shutil.rmtree(plot_dir)
+    ### IN BOTH CATALOGS ###
+    # TODO: will change from 000791 to combined when extraction is done and combined for all fields
+    plot_dir = os.path.join(path_to_data, candidate_dir, 'in_both')
     if not os.path.exists(plot_dir):
         os.mkdir(plot_dir)
-
-    srcs = Sources(
-        ras=combined_coords[0]['ra'],
-        decs=combined_coords[0]['dec'],
-        field_catalogs={
-            'g': combined_g_tabs[0],
-            'r': combined_r_tabs[0],
-            'i': combined_i_tabs[0],
-        },
-        max_arcsec=3,
-        ztf_data_dir='/Users/adamboesky/Research/long_transients/Data/ztf_data',
-    )
+    srcs = Sources.from_file(os.path.join(path_to_data, 'filter_results/000791/0.ecsv'))
     with Pool(processes=3) as pool:
         # Construct the source name
         ra_strs = [f'{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}' for src in srcs]
@@ -102,24 +78,11 @@ def store_source_plots():
 
 
     ### IN JUST ZTF ###
-    # plot_dir = os.path.join(get_data_path(), 'filter_results/candidates/in_ztf')
-    plot_dir = '/Volumes/T7/long_transients/candidates/in_ztf'
-    if os.path.exists(plot_dir) and OVERWRITE:
-        shutil.rmtree(plot_dir)
+    srcs_ztf = Sources.from_file(os.path.join(path_to_data, 'filter_results/000791/1.ecsv'))
+    plot_dir = os.path.join(path_to_data, candidate_dir, 'in_ztf')
     if not os.path.exists(plot_dir):
         os.mkdir(plot_dir)
 
-    srcs_ztf = Sources(
-        ras=combined_coords[1]['ra'],
-        decs=combined_coords[1]['dec'],
-        field_catalogs={
-            'g': combined_g_tabs[1],
-            'r': combined_r_tabs[1],
-            'i': combined_i_tabs[1],
-        },
-        max_arcsec=3,
-        ztf_data_dir='/Users/adamboesky/Research/long_transients/Data/ztf_data',
-    )
     with Pool(processes=3) as pool:
         # Construct the source name
         ra_strs = [f'{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}' for src in srcs_ztf]
@@ -137,17 +100,7 @@ def store_source_plots():
         pool.starmap(save_src_plot, args)
 
     # Wide associations in ZTF
-    srcs_ztf_wide = Sources(
-        ras=combined_wide_coords[1]['ra'],
-        decs=combined_wide_coords[1]['dec'],
-        field_catalogs={
-            'g': combined_g_wide_tabs[1],
-            'r': combined_r_wide_tabs[1],
-            'i': combined_i_wide_tabs[1],
-        },
-        max_arcsec=3,
-        ztf_data_dir='/Users/adamboesky/Research/long_transients/Data/ztf_data',
-    )
+    srcs_ztf_wide = Sources.from_file(os.path.join(path_to_data, 'filter_results/000791/1_wide_association.ecsv'))
     with Pool(processes=3) as pool:
         # Construct the source name
         ra_strs = [f'{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}' for src in srcs_ztf_wide]

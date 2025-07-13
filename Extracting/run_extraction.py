@@ -2,6 +2,7 @@ import os
 import sys
 import ztffields
 import numpy as np
+import traceback
 
 from typing import Iterable
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -20,7 +21,14 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
 
     # Check if we have already extracted the quadrant before doing anything
     data_path = get_data_path()
-    if os.path.exists(os.path.join(data_path, 'catalog_results', f'{str(fieldid).zfill(6)}_{str(ccdid).zfill(2)}_{qid}')):
+    if os.path.exists(
+        os.path.join(
+            data_path,
+            'catalog_results',
+            f'{str(fieldid).zfill(6)}_{str(ccdid).zfill(2)}_{qid}',
+            f'{str(fieldid).zfill(6)}_{str(ccdid).zfill(2)}_{qid}.fits'
+        )
+    ):
         print(f'{str(fieldid).zfill(6)}_{str(ccdid).zfill(2)}_{qid} already exists. Skipping!')
         return
 
@@ -64,7 +72,12 @@ def process_field(field_id: int):
                 # Call result() to propagate any exceptions that occurred
                 future.result()
             except Exception as exc:
-                print(f'WARNING: Field processing generated an exception: {exc}')
+                print(f'WARNING: Field processing generated an exception: {exc.__class__.__name__}: {exc}')
+                print(f'Exception type: {type(exc).__name__}')
+                print(f'Exception message: {str(exc)}')
+                print('Traceback:')
+                traceback.print_exc()
+
                 if raise_exceptions:
                     raise exc
 
@@ -78,7 +91,12 @@ def extract_sources():
 
     # Load the field geometries
     print('Loading fields!')
-    imaged_fields = np.load(os.path.join(data_path, 'i_imaged_fields.npy'))  # NOTE: if imaged in i, imaged in all bands
+    # Load array
+    bands_imaged = {}
+    for band in ('g', 'r', 'i'):
+        bands_imaged[band] = np.load(os.path.join(data_path, f'{band}_imaged_fields.npy'))
+    fields_imaged_all_bands = np.intersect1d(ar1=bands_imaged['g'], ar2=bands_imaged['r'])
+    fields_imaged_all_bands = np.intersect1d(ar1=fields_imaged_all_bands, ar2=bands_imaged['i'])
 
     # Extract field
     # for fid in imaged_fields:
@@ -87,8 +105,13 @@ def extract_sources():
     #     process_field(fid)
     # for fid in imaged_fields[200:]:  # start at 200 for parallel processing
     #     process_field(fid)
-    for fid in [245, 294]:  # redoing fields that cross the 360 degree ra
-        process_field(fid)
+
+    # THIS IS THE FINAL RUN!!!
+    # for fid in fields_imaged_all_bands:  # redoing fields that cross the 360 degree ra
+        # process_field(fid)
+    
+    # Testing on one field
+    process_field(791)
 
 if __name__=='__main__':
     extract_sources()

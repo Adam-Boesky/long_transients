@@ -33,10 +33,15 @@ def img_flux_to_ab_mag(flux: np.ndarray, zero_point: float, fluxerr: Optional[np
         1. The AB magnitudes corresponding to the input fluxes.
         2. If `fluxerr` is provided, the AB magnitude error.
     """
-    mag = -2.5 * np.log10(flux) + zero_point
+    mag = np.full_like(flux, np.nan, dtype=np.float64)
+    positive_flux = flux > 0
+    mag[positive_flux] = -2.5 * np.log10(flux[positive_flux]) + zero_point
+
     if fluxerr is not None:
-        magerr = 2.5 * fluxerr / (np.log(10) * flux)
+        magerr = np.full_like(flux, np.nan, dtype=np.float64)
+        magerr[positive_flux] = 2.5 * fluxerr[positive_flux] / (np.log(10) * flux[positive_flux])
         return mag, magerr
+
     return mag
 
 
@@ -67,6 +72,13 @@ def get_data_path() -> str:
 
 
 def true_nearby(row: int, column: int, radius: int, mask: np.ndarray) -> bool:
+
+    # Adjust for negative indexing issues
+    if radius > row:
+        row = radius
+    if radius > column:
+        column = radius
+
     return np.any(
         mask[int(row - radius):int(row + radius + 1), int(column - radius):int(column + radius + 1)]
     )
@@ -124,7 +136,10 @@ def metadata_from_field_dirname(field_dirname: str) -> Dict[str, str]:
     return {'fieldid': field, 'ccdid': ccdid, 'qid': qid}
 
 
-def load_ecsv(fpath: str) -> Table:
+def load_ecsv(fpath: str, careful_load: bool = True) -> Table:
+    """Load a ecsv file as an astropy table. If you want speed and are okay with roundoff, careful_load can be False."""
+    if careful_load:
+        return Table.read(fpath, format='ascii.ecsv')
     return Table.from_pandas(pd.read_csv(fpath, comment='#', delimiter=' '))
 
 
@@ -155,7 +170,7 @@ def get_pstarr_lc_from_id(objid: int) -> Table:
 
     # Construct the query
     query = f"""
-SELECT d.objID, d.obsTime, d.filterID, d.psfFlux, d.psfFluxErr, d.infoFlag, d.infoFlag2, d.zp FROM Detection d WHERE d.objID = {objid}
+SELECT d.objID, d.ra, d.dec, d.obsTime, d.filterID, d.psfFlux, d.psfFluxErr, d.infoFlag, d.infoFlag2, d.zp FROM Detection d WHERE d.objID = {objid}
 """
 
     # Get table and add mag cols

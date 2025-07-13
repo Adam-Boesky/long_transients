@@ -77,9 +77,11 @@ def associate_tables(table1: Table, table2: Table, ztf_nan_mask: np.ndarray, wcs
 
     # Add columns from table2 to unmatched_table1 with NaN values, cast cols to correct types, and stack the tables
     for col in table2.colnames:
-        unmatched_table1[col] = float('nan')
+        if 'PanSTARR_ID' not in col:
+            unmatched_table1[col] = float('nan')
     for col in table1.colnames:
-        unmatched_table2[col] = float('nan')
+        if 'PanSTARR_ID' not in col:
+            unmatched_table2[col] = float('nan')
     associated_table['Catalog'] = 'Both'
     unmatched_table1['Catalog'] = prefix1
     unmatched_table2['Catalog'] = prefix2
@@ -204,7 +206,10 @@ def collapse_nonunique_srcs(tab: Table) -> Table:
     for col in tab.colnames:
         col_data = np.array(tab[col])  # Extract column as NumPy array
         grouped_col_data = [col_data[indices[i]:indices[i+1]] for i in range(len(indices)-1)]
-        collapsed_data[col] = np.array([first_not_nan(group) for group in grouped_col_data])
+        if 'PanSTARR_ID' not in col:
+            collapsed_data[col] = np.array([first_not_nan(group) for group in grouped_col_data])
+        else:
+            collapsed_data[col] = np.array([c[0] for c in grouped_col_data])
 
     collapsed_by_coords = Table(collapsed_data)
 
@@ -235,7 +240,7 @@ def cross_match_quadrant(quadrant_dirpath: str):
             return
 
     print(f'Cross matching quadrant {quadrant_dirpath.split("/")[-1]}')
-    pstar_tab = load_ecsv(os.path.join(quadrant_dirpath, 'PSTARR.ecsv'))
+    pstar_tab = load_ecsv(os.path.join(quadrant_dirpath, 'PSTARR.ecsv'), careful_load=True)
 
     # Collapse the non-unique Pan-STARRS sources
     pstar_tab.remove_column('primaryDetection')  # we can remove primaryDetection cuz it's a nuissance and always true
@@ -255,10 +260,12 @@ def cross_match_quadrant(quadrant_dirpath: str):
 
             # Save the associated table
             associated_tab = associate_tables(ztf_tab, pstar_tab, ztf_nan_mask, wcs)
+            associated_tab['PSTARR_PanSTARR_ID'] = associated_tab['PSTARR_PanSTARR_ID'].astype(object)
+            associated_tab['PSTARR_PanSTARR_ID'][associated_tab['PSTARR_PanSTARR_ID'].mask] = np.nan 
             associated_tab.write(
                 os.path.join(quadrant_dirpath, f'{band}_associated.ecsv'),
                 format='ascii.ecsv',
-                overwrite=True
+                overwrite=True,
             )
 
 
@@ -286,7 +293,7 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
         while getting_first_tab and len(field_quad_dirs) > 0:
             first_tab_path = os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv')
             if os.path.exists(first_tab_path):
-                tab = load_ecsv(os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv'))
+                tab = load_ecsv(os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv'), careful_load=True)
                 getting_first_tab = False
 
                 # Add on the field info for each source
@@ -305,7 +312,7 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
         for fqdir in field_quad_dirs[1:]:
             fqpath = os.path.join(CATALOG_DIR, fqdir, f'{band}_associated.ecsv')
             if os.path.exists(fqpath):
-                tab_to_stack = load_ecsv(fqpath)
+                tab_to_stack = load_ecsv(fqpath, careful_load=True)
 
                 # Add on the field info for each source
                 field_quadrant_metadata = metadata_from_field_dirname(fqdir)

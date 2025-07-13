@@ -27,7 +27,15 @@ except ModuleNotFoundError:
 class Source_Extractor():
     def __init__(self, fits_fpath: str, band: Optional[str] = None):
         self.fits_fpath = fits_fpath
+
+        # Make header valid
         hdul = fits.open(self.fits_fpath)
+        if 'RADECSYS' in hdul[0].header:
+            if 'RADESYS' not in hdul[0].header:
+                hdul[0].header.rename_keyword('RADECSYS', 'RADESYS')
+            else:
+                del hdul[0].header['RADECSYS']
+
         self.image_data = hdul[0].data.byteswap().newbyteorder()
         self.header = hdul[0].header
         self.wcs = WCS(self.header)

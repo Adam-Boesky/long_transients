@@ -75,6 +75,7 @@ class Light_Curve:
             catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs', 'gaia', 'custom'],
             query_rad_arcsec: float = 1.5,
             query_in_parallel: bool = True,
+            pstarr_objid: Optional[int] = None,
             pstarr_coord: Optional[Tuple[float]] = None,
         ):
         self.ra = ra
@@ -83,6 +84,7 @@ class Light_Curve:
         self.catalogs = catalogs
         self.query_rad_arcsec = query_rad_arcsec  # query radius in arcseconds
         self.query_in_parallel = query_in_parallel  # whether we should query the apis in parallel or not
+        self.pstarr_objid = pstarr_objid
         self.pstarr_coord = pstarr_coord
 
         # Map class catalog names to astroquery catalog names
@@ -201,13 +203,19 @@ class Light_Curve:
                     )
                     lightcurve_tab = lightcurve_tab[desired_colnames]
                 elif catalog == 'panstarrs':
-                    # TODO: Switch to objid query
-                    if self.pstarr_coord is None:
-                        ra, dec = self.ra, self.dec
+
+                    # Check if we have an objid
+                    if self.pstarr_objid is not None:
+                        lightcurve_tab = get_pstarr_lc_from_id(self.pstarr_objid)
                     else:
-                        ra, dec = self.pstarr_coord
-                    lightcurve_tab = get_pstarr_lc_from_coord(ra, dec, rad_arcsec=0.1)
-                    # lightcurve_tab = get_pstarr_lc_from_id(pstarr_objid)
+                        print('Pan-STARRS objid not found. Falling back on coordinate query...')
+                        
+                        # Sometimes we have a more precise panstarrs coordinate
+                        if self.pstarr_coord is None:
+                            ra, dec = self.ra, self.dec
+                        else:
+                            ra, dec = self.pstarr_coord
+                        lightcurve_tab = get_pstarr_lc_from_coord(ra, dec, rad_arcsec=0.1)
                 elif catalog == 'sdss':
                     lightcurve_tab: Table = SDSS.query_crossid(
                         SkyCoord(self.ra, self.dec, unit='deg'),
@@ -215,7 +223,7 @@ class Light_Curve:
                     )
                 elif catalog == 'custom':
                     # Get the filename -> coordinate mapping
-                    custom_phot_fnames = [fname.split('.')[0] for fname in os.listdir(CUSTOM_PHOT_DIR)] # dropping file extensions
+                    custom_phot_fnames = [fname.split('.')[0] for fname in os.listdir(CUSTOM_PHOT_DIR) if fname != 'README.md'] # dropping file extensions
                     fname_coords = [(
                         float(fname.split('_')[1].replace("p", ".").replace("n", "-")),
                         float(fname.split('_')[2].replace("p", ".").replace("n", "-"))
@@ -385,6 +393,9 @@ class Light_Curve:
                     mag_tab.remove_row(0)
             lightcurve_tab = collapsed_tab
 
+        # Ensure mjd column is float dtype
+        lightcurve_tab['mjd'] = lightcurve_tab['mjd'].astype(float)
+
         return lightcurve_tab
 
     def get_lc(self) -> Table:
@@ -404,8 +415,6 @@ class Light_Curve:
                     src_coord = SkyCoord(cat_lc[0]['ra'], cat_lc[0]['dec'], unit='deg')
                     all_coords = SkyCoord(cat_lc['ra'], cat_lc['dec'], unit='deg')
                     mask = src_coord.separation(all_coords).arcsec < 0.5
-                elif catalog_name == 'panstarrs':  # TODO: PanSTARRS IDs are weird
-                    mask = np.ones(len(cat_lc)).astype(bool)
                 else:  # otherwise, we can just ensure that the IDs line up
                     mask = cat_lc[f'{catalog_name}_id'] == cat_lc[f'{catalog_name}_id'][0]
                 cat_lc = cat_lc[mask]

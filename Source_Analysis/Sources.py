@@ -1,10 +1,12 @@
 import os
 import sys
 import ast
+import warnings
 import traceback
 import numpy as np
 import pandas as pd
 import astropy.units as u
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 import matplotlib.patches as mpatches
@@ -24,7 +26,7 @@ from astroquery.sdss import SDSS
 
 sys.path.append('/Users/adamboesky/Research/long_transients')
 
-from Extracting.utils import get_data_path, load_cached_table
+from Extracting.utils import get_data_path, load_cached_table, load_ecsv
 from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata_from_coords, get_ztf_metadata_from_metadata, get_pstarr_cutout
 from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
@@ -36,10 +38,10 @@ time_support()
 
 ACCEPTABLE_PROC_STATUS = [0]
 MANDATORY_SOURCE_COLUMNS = [
-    'ra', 'dec', 'PSTARR_rPSFMag', 'PSTARR_iKronMagErr', 'PSTARR_rApMagErr', 'PSTARR_iApMag', 'PSTARR_primaryDetection',
-    'PSTARR_gApMag', 'PSTARR_rinfoFlag2', 'PSTARR_rpsfLikelihood', 'PSTARR_gApMagErr', 'PSTARR_gPSFMagErr',
-    'PSTARR_gKronMag', 'PSTARR_gKronMagErr', 'PSTARR_iinfoFlag2', 'PSTARR_dec', 'PSTARR_rKronMagErr', 'PSTARR_rApMag',
-    'PSTARR_iApMagErr', 'PSTARR_ginfoFlag2', 'PSTARR_ipsfLikelihood', 'PSTARR_rKronMag', 'PSTARR_iPSFMagErr',
+    'ra', 'dec', 'PSTARR_rPSFMag', 'PSTARR_iKronMagErr', 'PSTARR_primaryDetection',
+    'PSTARR_rinfoFlag2', 'PSTARR_rpsfLikelihood', 'PSTARR_gPSFMagErr',
+    'PSTARR_gKronMag', 'PSTARR_gKronMagErr', 'PSTARR_iinfoFlag2', 'PSTARR_dec', 'PSTARR_rKronMagErr',
+    'PSTARR_ginfoFlag2', 'PSTARR_ipsfLikelihood', 'PSTARR_rKronMag', 'PSTARR_iPSFMagErr',
     'PSTARR_ra', 'PSTARR_gpsfLikelihood', 'PSTARR_iPSFMag', 'PSTARR_PanSTARR_ID', 'PSTARR_gPSFMag', 'PSTARR_rPSFMagErr',
     'PSTARR_iKronMag', 'ZTF_g_b', 'ZTF_r_cpeak', 'ZTF_r_errx2', 'ZTF_i_xmin', 'ZTF_i_xmax', 'ZTF_rKronCircleFlag',
     'ZTF_r_a', 'ZTF_i_xpeak', 'ZTF_i_theta', 'ZTF_i_cxy', 'ZTF_g_thresh', 'ZTF_iPSFMag', 'ZTF_i_mag_limit',
@@ -64,6 +66,15 @@ MANDATORY_SOURCE_COLUMNS = [
     'ZTF_r_qid', 'ZTF_i_field', 'ZTF_i_ccdid', 'ZTF_i_qid',
 ]
 Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
+
+
+def set_mpl_params(font_size: int = 12):
+    """Set the matplotlib parameters."""
+    plt.rc('text', usetex=True)
+    mpl.rcParams['font.family'] = 'serif'
+    mpl.rcParams['font.serif'] = 'cmr10'
+    mpl.rcParams['font.size'] = font_size
+    mpl.rcParams['axes.formatter.use_mathtext'] = True
 
 
 def closest_within_radius(coord: SkyCoord, coords: SkyCoord, max_arcsec: float = 1.0) -> Tuple[int, SkyCoord]:
@@ -294,6 +305,10 @@ class ZTF_Postage_Stamp(Postage_Stamp):
                 # Rotate and flip the image to align with PanSTARRS orientation
                 self._images[band] = np.flipud(np.fliplr(self._images[band]))
 
+            # Set empty cutouts to None
+            if self._images[band].size == 0:
+                self._images[band] = None
+
         return self._images, self._WCSs
 
 
@@ -378,6 +393,7 @@ class Source():
                 self.dec,
                 query_rad_arcsec=self.max_arcsec,
                 catalogs=self.lc_catalogs,
+                pstarr_objid=self.data['PSTARR_PanSTARR_ID'][0],
                 pstarr_coord=(
                     self.data['PSTARR_ra'][0],
                     self.data['PSTARR_dec'][0],
@@ -412,13 +428,27 @@ class Source():
 
             # Iterate through bands and get the first metadata that works
             metadata = {}
-            field_vals = np.array([self.data[k][0] for k in self.data.columns if 'field' in k])
-            ccd_vals = np.array([self.data[k][0] for k in self.data.columns if 'ccd' in k])
-            qid_vals = np.array([self.data[k][0] for k in self.data.columns if 'qid' in k])
+            field_vals = np.array([self.data[k][0] for k in self.data.columns if 'field' in k], dtype=float)
+            ccd_vals = np.array([self.data[k][0] for k in self.data.columns if 'ccd' in k], dtype=float)
+            qid_vals = np.array([self.data[k][0] for k in self.data.columns if 'qid' in k], dtype=float)
+
+            # Drop nans
+            field_vals = field_vals[~np.isnan(field_vals)]
+            ccd_vals = ccd_vals[~np.isnan(ccd_vals)]
+            qid_vals = qid_vals[~np.isnan(qid_vals)]
+
+            # If there are more than one, just grab the first
             if np.sum(~np.isnan(field_vals)) > 0:
-                metadata['fieldid'] = int(field_vals[~np.isnan(field_vals)][0])
-                metadata['ccdid'] = int(ccd_vals[~np.isnan(ccd_vals)][0])
-                metadata['qid'] = int(qid_vals[~np.isnan(qid_vals)][0])
+                metadata['fieldid'] = field_vals[0]
+            if np.sum(~np.isnan(ccd_vals)) > 0:
+                metadata['ccdid'] = ccd_vals[0]
+            if np.sum(~np.isnan(qid_vals)) > 0:
+                metadata['qid'] = qid_vals[0]
+
+            # Cast to ints
+            metadata['fieldid'] = int(metadata['fieldid'])
+            metadata['ccdid'] = int(metadata['ccdid'])
+            metadata['qid'] = int(metadata['qid'])
 
             if len(metadata) >= 3:
                 self._image_metadata = metadata
@@ -446,7 +476,7 @@ class Source():
             # Filter for fields that we have actually extracted and stored
             inds_extracted = []
             test_paths = []
-            for ind, field in self._image_metadata['field'].items():
+            for ind, field in self._image_metadata['fieldid'].items():
                 field_id = str(field).zfill(6)
                 if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv')):
                     inds_extracted.append(ind)
@@ -467,6 +497,11 @@ class Source():
             # Take metadata out of list form
             for k, v in self._image_metadata.items():
                 self._image_metadata[k] = v
+
+            # Rename field to fieldid
+            if 'field' in self._image_metadata:
+                self._image_metadata['fieldid'] = self._image_metadata['field']
+                del self._image_metadata['field']
 
         return self._image_metadata
 
@@ -564,6 +599,21 @@ class Source():
 
         return self._data
 
+    @data.setter 
+    def data(self, data_tab: Table) -> None:
+        """Set the data table for this source."""
+        if not isinstance(data_tab, Table):
+            raise TypeError("data must be an astropy Table")
+        if len(data_tab) != 1:
+            raise ValueError("data must have exactly one row")
+        if len(np.intersect1d(data_tab.colnames, MANDATORY_SOURCE_COLUMNS)) < len(MANDATORY_SOURCE_COLUMNS):
+            # Add the mandatory columns if they're not in the table
+            warnings.warn("data table does not have all the mandatory columns, adding them with nans.")
+            for col in [c for c in MANDATORY_SOURCE_COLUMNS if c not in data_tab.columns]:
+                data_tab[col] = [np.nan]
+
+        self._data = data_tab
+
     @property
     def in_bands(self) -> List[str]:
         """The bands that the source was extracted/found in."""
@@ -571,6 +621,24 @@ class Source():
             self._in_bands = [band for band in self.bands if ~np.isnan(self.data[f'ZTF_{band}_ra'])]
 
         return self._in_bands
+
+    @property
+    def in_g(self) -> bool:
+        if not hasattr(self, '_in_g'):
+            self._in_g = ~np.isnan(self.data['ZTF_g_ra'])[0]
+        return self._in_g
+
+    @property
+    def in_r(self) -> bool:
+        if not hasattr(self, '_in_r'):
+            self._in_r = ~np.isnan(self.data['ZTF_r_ra'])[0]
+        return self._in_r
+
+    @property
+    def in_i(self) -> bool:
+        if not hasattr(self, '_in_i'):
+            self._in_i = ~np.isnan(self.data['ZTF_i_ra'])[0]
+        return self._in_i
 
     @property
     def postage_stamps(self) -> Dict[str, Postage_Stamp]:
@@ -1127,8 +1195,23 @@ class Source():
             return ax
 
         # Plot
-        ax.plot(self.spectrum[0][1].data['loglam'], self.spectrum[0][1].data['flux'], color='gray', label='Data')
-        ax.plot(self.spectrum[0][1].data['loglam'], self.spectrum[0][1].data['model'], color='k', label='Model')
+        ax.plot(
+            self.spectrum[0][1].data['loglam'],
+            self.spectrum[0][1].data['model'],
+            color='k',
+            label='Model',
+            zorder=10,
+        )
+        ylims = ax.get_ylim()
+        ax.plot(
+            self.spectrum[0][1].data['loglam'],
+            self.spectrum[0][1].data['flux'],
+            color='gray',
+            label='Data',
+            zorder=-1,
+            alpha=0.75,
+        )
+        ax.set_ylim(ylims)
 
         # Add legend
         ax.legend(loc='upper right')
@@ -1155,7 +1238,7 @@ class Source():
         filtered_out_bands = [band for band in self.bands if band not in self.in_bands]
         if len(filtered_out_bands) == 0:
             return reason_dict
-        
+
         # Get the info for each band
         for band in filtered_out_bands:
 
@@ -1213,7 +1296,7 @@ class Source():
     def get_info_string(self, wise_snr_thresh: float = 3.0) -> str:
         """Get string with all the necessary source information."""
         info_string = r'\textbf{Source Information:}' f'\nCoordinates: ({self.ra:.5f}, {self.dec:.5f})'
-        info_string += f'\nFiltering: {self.filtered_out_info}'
+        info_string += f'\nFiltering: {self.filtered_out_info if len(self.filtered_out_info) > 0 else "No bands filtered out."}'
         tns_info = self.get_TNS_info()
         if tns_info is None:
             info_string += '\nSource not in TNS.'
@@ -1249,6 +1332,7 @@ class Source():
     def plot_everything(self) -> Axes:
         """Function that plots everything on one page!"""
         # Set up the layout
+        set_mpl_params()
         fig = plt.figure(figsize=(12, 18))
         ax0 = plt.subplot2grid((5, 3), (0, 0))
         ax1 = plt.subplot2grid((5, 3), (0, 1))
@@ -1306,9 +1390,37 @@ class Sources:
         self._data = None
         self._coords = None
 
+    @classmethod
+    def from_file(cls, fname: str, **kwargs) -> 'Sources':
+        """Load Sources from a file that was saved using Sources.save().
+
+        Args:
+            fname: Path to the file to load from
+            
+        Returns:
+            A new Sources instance loaded from the file
+        """
+        # Read the table from file
+        table = load_ecsv(fname)
+
+        # Add the mandatory columns if they're not in the table
+        if len(np.intersect1d(table.colnames, MANDATORY_SOURCE_COLUMNS)) < len(MANDATORY_SOURCE_COLUMNS):
+            warnings.warn("data table does not have all the mandatory columns, adding them with nans.")
+            for col in [c for c in MANDATORY_SOURCE_COLUMNS if c not in table.columns]:
+                table[col] = [np.nan] * len(table)
+
+        # Create Source objects for each row
+        sources = [Source(row['ra'], row['dec'], **kwargs) for row in table]
+        for i, row in enumerate(table):
+            sources[i].data = Table(row)
+
+        return cls(sources=sources, **kwargs)
+
     @property
     def coords(self) -> SkyCoord:
         if self._coords is None or len(self._coords) != self.__len__():
+            if len(self.sources) == 0:
+                return []
             self._coords = SkyCoord([s.coord for s in self.sources])
         return self._coords
 
@@ -1354,10 +1466,43 @@ class Sources:
 
         return self._data
 
+    @data.setter
+    def data(self, data_tab: Table) -> None:
+        """Set the data table for this Sources object."""
+        if not isinstance(data_tab, Table):
+            raise TypeError("data must be an astropy Table")
+        if len(data_tab) != len(self.sources):
+            raise ValueError(f"data must have exactly {len(self.sources)} rows")
+        if len(np.intersect1d(data_tab.colnames, MANDATORY_SOURCE_COLUMNS)) < len(MANDATORY_SOURCE_COLUMNS):
+            # Add the mandatory columns if they're not in the table
+            warnings.warn("data table does not have all the mandatory columns, adding them with nans.")
+            for col in [c for c in MANDATORY_SOURCE_COLUMNS if c not in data_tab.columns]:
+                data_tab[col] = [np.nan] * len(data_tab)
+
+        self._data = data_tab
+
     @property
     def in_bands(self) -> List[List[str]]:
         """The bands that each source was extracted/found in."""
         return [src.in_bands for src in self.sources]
+
+    @property
+    def in_g(self) -> np.ndarray:
+        if not hasattr(self, '_in_g'):
+            self._in_g = np.array([s.in_g for s in self.sources], dtype=bool)
+        return self._in_g
+
+    @property
+    def in_r(self) -> np.ndarray:
+        if not hasattr(self, '_in_r'):
+            self._in_r = np.array([s.in_r for s in self.sources], dtype=bool)
+        return self._in_r
+
+    @property
+    def in_i(self) -> np.ndarray:
+        if not hasattr(self, '_in_i'):
+            self._in_i = np.array([s.in_i for s in self.sources], dtype=bool)
+        return self._in_i
 
     def save(self, fname: str, overwrite: bool = True):
         to_save = self.data.copy()
