@@ -322,10 +322,28 @@ class PSTARR_Postage_Stamp(Postage_Stamp):
         # Get the images from the ZTF cutouts
         images = {}
         wcss = {}
+        def get_cutout_with_retries(band, max_attempts=3):
+            for attempt in range(max_attempts):
+                try:
+                    return band, get_pstarr_cutout(
+                        self.ra,
+                        self.dec,
+                        size=self.stamp_width_arcsec / self.arcsec_per_pixel,
+                        filter=band
+                    )
+                except Exception as e:
+                    print(f"Attempt {attempt+1} failed for band {band} in get_cutout_with_retries:")
+                    traceback.print_exc()
+                    if attempt == max_attempts - 1:
+                        print(f"All {max_attempts} attempts failed for band {band}. Raising exception.")
+                        raise
+                    else:
+                        continue
+
         with futures.ThreadPoolExecutor() as executor:
             results = list(executor.map(
-            lambda band: (band, get_pstarr_cutout(self.ra, self.dec, size=self.stamp_width_arcsec / self.arcsec_per_pixel, filter=band)),
-            self.bands
+                get_cutout_with_retries,
+                self.bands
             ))
 
         for band, (image, wcs) in results:

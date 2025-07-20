@@ -1,5 +1,6 @@
 import os
 import sys
+import traceback
 import numpy as np
 import pandas as pd
 import astropy.units as u
@@ -91,6 +92,7 @@ class Light_Curve:
         self.catalog_astroquery_map = {
             'ztf': 'ztf_objects_dr23',
             'wise': 'allwise_p3as_mep',
+            'neowise': 'neowiser_p1bs_psd',
             'ptf': 'ptf_lightcurves',
             'gaia': 'gaia_dr3_source',
         }
@@ -128,6 +130,22 @@ class Light_Curve:
             # Rename columns
             column_rename_map = [('source_id_mf', 'wise_id')] + [(f'w{band_num}mpro_ep', f'w{band_num}_mag') for band_num in range(1, 5)] + \
                 [(f'w{band_num}sigmpro_ep', f'w{band_num}_magerr') for band_num in range(1, 5)]
+
+        elif catalog == 'neowise':
+            # Desired column names
+            mag_colnames = [f'w{band_num}mpro' for band_num in range(1, 3)]
+            magerr_colnames = [f'w{band_num}sigmpro' for band_num in range(1, 3)]
+            snr_colnames = [f'w{band_num}snr' for band_num in range(1, 3)]
+            desired_colnames = ['source_id', 'ra', 'dec', 'mjd'] + [
+                item for sublist in list(zip(
+                    mag_colnames, magerr_colnames, snr_colnames
+                )) for item in sublist
+            ]
+
+            # Rename columns
+            column_rename_map = [('source_id', 'neowise_id')] + [(f'w{band_num}mpro', f'w{band_num}_mag') for band_num in range(1, 3)] + \
+                [(f'w{band_num}sigmpro', f'w{band_num}_magerr') for band_num in range(1, 3)] + \
+                [(f'w{band_num}snr', f'w{band_num}_snr') for band_num in range(1, 3)]
 
         elif catalog == 'ptf':
             # Desired column names
@@ -258,12 +276,14 @@ class Light_Curve:
                         columns=','.join(desired_colnames),
                     )
 
+                # Escape the loop if no error was raised
                 break
             except:
                 if i_attempt >= max_attempts - 1:
                     raise
                 else:
                     print(f'Attempt {i_attempt + 1} / {max_attempts} to query for light curves failed. Trying again...')
+                    traceback.print_exc()
 
         # Add the wise SNRs and drop the flux columns
         if catalog == 'wise':

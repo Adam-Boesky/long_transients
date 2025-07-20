@@ -2,6 +2,7 @@
 import os
 import sys
 import shutil
+import traceback
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
@@ -30,15 +31,21 @@ def save_src_plot(src: Source, out_fname: str, overwrite: bool, n_attempts: int 
                 print(f'Skipping source... Already plotted and saved at {out_fname}')
                 break
             else:
-                print(f'Plotting source {out_fname.split('/')[-1].split('.')[0]} at ({src.ra}, {src.dec})!')
+                print(f"Plotting source {out_fname.split('/')[-1].split('.')[0]} at ({src.ra}, {src.dec})!")
                 src.plot_everything()
                 plt.savefig(out_fname, bbox_inches='tight')
-        except:
+                break  # Success - exit the loop
+        except Exception as e:
             if i_attempt >= n_attempts - 1:
+                print(f'Final attempt failed for {out_fname.split("/")[-1].split(".")[0]}: {str(e)}')
+                print(f'Full traceback:')
+                traceback.print_exc()
                 raise
             else:
-                print(f'Attempt {i_attempt + 1} / {n_attempts} to save {out_fname.split("/")[-1].split(".")[0]} failed.'
-                      'Trying again...')
+                print(f'Attempt {i_attempt + 1} / {n_attempts} to save {out_fname.split("/")[-1].split(".")[0]} failed: {str(e)}')
+                print(f'Full traceback:')
+                traceback.print_exc()
+                print('Trying again...')
 
 
 def store_source_plots():
@@ -52,6 +59,11 @@ def store_source_plots():
     if not os.path.exists(os.path.join(path_to_data, candidate_dir)):
         os.mkdir(os.path.join(path_to_data, candidate_dir))
 
+    # Kwargs for Sources in all three catalogs
+    src_kwargs = {
+        'ztf_data_dir': os.path.join(path_to_data, 'ztf_data'),
+        'lc_catalogs': ['wise', 'ptf', 'sdss', 'panstarrs', 'gaia', 'custom'],  # TODO: Add ZTF back
+    }
 
 
     ### IN BOTH CATALOGS ###
@@ -59,12 +71,15 @@ def store_source_plots():
     plot_dir = os.path.join(path_to_data, candidate_dir, 'in_both')
     if not os.path.exists(plot_dir):
         os.mkdir(plot_dir)
-    srcs = Sources.from_file(os.path.join(path_to_data, 'filter_results/000791/0.ecsv'))
+    srcs = Sources.from_file(
+        os.path.join(path_to_data, 'filter_results/000791/0.ecsv'),
+        **src_kwargs,
+    )
     with Pool(processes=3) as pool:
         # Construct the source name
-        ra_strs = [f'{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}' for src in srcs]
-        dec_strs = [f'{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}' for src in srcs]
-        candidate_names = [f'{i}_candidate_{ra_str}_{dec_str}.pdf' for i, (ra_str, dec_str) in enumerate(zip(ra_strs, dec_strs))]
+        ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs]
+        dec_strs = [f"{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs]
+        candidate_names = [f"{i}_candidate_{ra_str}_{dec_str}.pdf" for i, (ra_str, dec_str) in enumerate(zip(ra_strs, dec_strs))]
 
         args = [
             (src, os.path.join(plot_dir, cand_name), OVERWRITE, 3)
@@ -74,20 +89,24 @@ def store_source_plots():
                 srcs,
             )
         ]
-        pool.starmap(save_src_plot, args)
+        results = pool.starmap_async(save_src_plot, args)
+        results.get()  # This will raise any exceptions that occurred
 
 
     ### IN JUST ZTF ###
-    srcs_ztf = Sources.from_file(os.path.join(path_to_data, 'filter_results/000791/1.ecsv'))
+    srcs_ztf = Sources.from_file(
+        os.path.join(path_to_data, 'filter_results/000791/1.ecsv'),
+        **src_kwargs,
+    )
     plot_dir = os.path.join(path_to_data, candidate_dir, 'in_ztf')
     if not os.path.exists(plot_dir):
         os.mkdir(plot_dir)
 
     with Pool(processes=3) as pool:
         # Construct the source name
-        ra_strs = [f'{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}' for src in srcs_ztf]
-        dec_strs = [f'{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}' for src in srcs_ztf]
-        candidate_names = [f'{i}_candidate_{ra_str}_{dec_str}.pdf' for i, (ra_str, dec_str) in enumerate(zip(ra_strs, dec_strs))]
+        ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf]
+        dec_strs = [f"{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf]
+        candidate_names = [f"{i}_candidate_{ra_str}_{dec_str}.pdf" for i, (ra_str, dec_str) in enumerate(zip(ra_strs, dec_strs))]
 
         args = [
             (src, os.path.join(plot_dir, cand_name), OVERWRITE, 3)
@@ -97,25 +116,27 @@ def store_source_plots():
                 srcs_ztf,
             )
         ]
-        pool.starmap(save_src_plot, args)
+        results = pool.starmap_async(save_src_plot, args)
+        results.get()  # This will raise any exceptions that occurred
 
     # Wide associations in ZTF
     srcs_ztf_wide = Sources.from_file(os.path.join(path_to_data, 'filter_results/000791/1_wide_association.ecsv'))
     with Pool(processes=3) as pool:
         # Construct the source name
-        ra_strs = [f'{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}' for src in srcs_ztf_wide]
-        dec_strs = [f'{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}' for src in srcs_ztf_wide]
-        candidate_names = [f'{i}_candidate_wide_{ra_str}_{dec_str}.pdf' for i, (ra_str, dec_str) in enumerate(zip(ra_strs, dec_strs))]
+        ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf_wide]
+        dec_strs = [f"{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf_wide]
+        candidate_names = [f"{i}_candidate_wide_{ra_str}_{dec_str}.pdf" for i, (ra_str, dec_str) in enumerate(zip(ra_strs, dec_strs))]
 
         args = [
-            (src, os.path.join(plot_dir, cand_name), OVERWRITE, 3)
+            (src, os.path.join(plot_dir, cand_name), OVERWRITE, 1)
             for cand_name, src in
             zip(
                 candidate_names,
                 srcs_ztf_wide,
             )
         ]
-        pool.starmap(save_src_plot, args)
+        results = pool.starmap_async(save_src_plot, args)
+        results.get()  # This will raise any exceptions that occurred
 
     # ### IN JUST PanSTARRS ###
     # plot_dir = '/Users/adamboesky/Research/long_transients/Data/filter_results/candidates/in_pstarr'

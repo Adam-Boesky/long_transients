@@ -129,6 +129,7 @@ class Filters():
             'pstarr_mag_less_than': self.pstarr_mag_less_than,
             'dec_greater_than': self.dec_greater_than,
             'pstarr_not_saturated': self.pstarr_not_saturated,
+            'pstarr_quality_filter': self.pstarr_quality_filter,
         }
         self.reset_filter_stats()
         self.filter_stat_fname = filter_stat_fname
@@ -699,6 +700,26 @@ class Filters():
 
         return good_tabs, bad_tabs
 
+    def pstarr_quality_filter(self, tabs: Dict[str, Table], *args, **kwargs) -> Tuple[Dict[str, Table], Dict[str, Table]]:
+        """Filter out Pan-STARRS sources with bad quality flags or object info flags.
+        Flags defined here: https://outerspace.stsci.edu/display/PANSTARRS/PS1+Object+Flags#PS1ObjectFlags-ColumnXinfoFlag(Xoneofg,r,i,z,y)inStackObjectThin
+        """
+        good_tabs = {}
+        bad_tabs = {}
+        for band in tabs.keys():
+
+            # Make the mask - keep sources that do NOT have the bad flags
+            mask = ~np.logical_or(
+                _is_flag(tabs[band][f'PSTARR_qualityFlag'], [1, 2, 128]),
+                _is_flag(tabs[band][f'PSTARR_objInfoFlag'], [8388608, 16777216, 1073741824]),
+            )
+
+            # Filter tabs
+            good_tabs[band] = tabs[band][mask]
+            bad_tabs[band] = tabs[band][~mask]
+
+        return good_tabs, bad_tabs
+
 
 def associate_in_btwn_distance(table1: Table, table2: Table, min_sep: float = 1.0, max_sep: float = 3.0) -> Table:
     """Associate tables using a min and max angular separation requirement.
@@ -1007,6 +1028,7 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
                 'parallax_filter': 'Parallax ' + r'$\frac{\rm{value}}{\sigma} < 5$',
                 'pstarr_mag_less_than': 'Pan-STARRS ' + r'$\rm{mag} < 22.5$',
                 'dec_greater_than': r'$\rm{Dec} > -29.5$',
+                'pstarr_quality_filter': 'Pan-STARRS quality flags',
             }
 
             if filter_name in filter_map:
@@ -1059,9 +1081,11 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     os.makedirs(filter_result_dirpath, exist_ok=True)
 
 
-    #################################################################
-    ############ Filtering for sources detected in both! ############
-    #################################################################
+    ################################################################################
+    ################################################################################
+    ############### FILTERING FOR SOURCES DETECTED IN BOTH CATALOGS ###############
+    ################################################################################
+    ################################################################################
     filters = Filters(filter_stat_fname=os.path.join(filter_result_dirpath, '0_filter_stats.csv'))
     print(f'Building flowchart for {CATALOG_KEY[0]} graph...')
     tabs = {band: tab.copy()[tab['Catalog_Flag'] == 0] for band, tab in tables.items()}
@@ -1078,6 +1102,9 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 
     # Axis ratio filter
     tabs = filters.filter(tabs, 'shape_filter')
+
+    # Pan-STARRS not saturated
+    tabs = filters.filter(tabs, 'pstarr_not_saturated')
 
     # Drop bad PSF fits
     tabs = filters.filter(tabs, 'psf_fit_filter')
@@ -1116,9 +1143,11 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Save the filtered out tables
     filters.save_filtered_out(filter_result_dirpath, 0)
 
-    #################################################################
-    ########## Filtering for sources detected in just ZTF! ##########
-    #################################################################
+    ################################################################################
+    ################################################################################
+    ############### FILTERING FOR SOURCES DETECTED IN ZTF ONLY ###############
+    ################################################################################
+    ################################################################################
     filters = Filters(filter_stat_fname=os.path.join(filter_result_dirpath, '1_filter_stats.csv'))
     print(f'Building flowchart for {CATALOG_KEY[1]} graph...')
     in_ztf_tabs = {band: tab.copy()[tab['Catalog_Flag'] == 1] for band, tab in tables.items()}
@@ -1220,9 +1249,11 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Save the filtered out tables
     filters.save_filtered_out(filter_result_dirpath, 1)
 
-    #######################################################################
-    ########## Filtering for sources detected in just PanSTARRS! ##########
-    #######################################################################
+    ################################################################################
+    ################################################################################
+    ############### FILTERING FOR SOURCES DETECTED IN PAN-STARRS ONLY ###############
+    ################################################################################
+    ################################################################################
     filters = Filters(filter_stat_fname=os.path.join(filter_result_dirpath, '2_filter_stats.csv'))
     print(f'Building flowchart for {CATALOG_KEY[2]} graph...')
     in_ztf_tabs = {band: tab.copy()[tab['Catalog_Flag'] == 1] for band, tab in tables.items()}
@@ -1239,6 +1270,12 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Make sure that the Pan-STARRS magnitude is less than max_mag
     max_mag = 22.5
     in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'pstarr_mag_less_than', max_mag=max_mag)
+
+    # Pan-STARRS not saturated
+    in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'pstarr_not_saturated')
+
+    # Pan-STARRS quality filter
+    in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'pstarr_quality_filter')
 
     # Drop all sources with snr < 5
     in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'snr_filter', snr_min=5)

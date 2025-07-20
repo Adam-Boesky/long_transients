@@ -54,7 +54,7 @@ class Source_Extractor():
             self.r_fwhm = self.header['SEEING']
         self.zero_pt_mag = self.header['MAGZP']
         self.maglimit = dict(self.header).get('MAGLIM')
-        self.deblend_cont = 0.00075
+        self.deblend_cont = 0.00001  # 0.00075 TODO: change back... testing for in-pstarr fix
         self.minarea = 5
         self.deblend_nthresh = 32
         self.thresh = 1.0

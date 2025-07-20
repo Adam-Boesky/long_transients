@@ -110,7 +110,7 @@ class PSTARR_Catalog(Catalog):
         query = f"""
 WITH ranked AS (
     SELECT
-    o.objID, o.raMean, o.decMean,
+    o.objID, o.raMean, o.decMean, o.qualityFlag, o.objInfoFlag,
     {band_mags_str}\tm.primaryDetection,
     ROW_NUMBER() OVER (PARTITION BY o.objID ORDER BY m.primaryDetection DESC) as rn
     FROM ObjectThin o
@@ -238,10 +238,13 @@ WHERE rn = 1 into mydb.{tab_name}
         final_table = Table(final_table, masked=True)
         for col in final_table.colnames:
             column = final_table[col]
-            if np.issubdtype(column.dtype, np.number) and col not in ('PanSTARR_ID', 'objID'):
+            if (np.issubdtype(column.dtype, np.number) and col not in ('PanSTARR_ID', 'objID')) or ('flag' in column.name):
+                # Take care of mask first
+                final_table[col] = column.astype(object)
+                final_table[col][column.mask] = np.nan
+
                 # Convert column to float if numeric to allow np.nan
                 final_table[col] = column.astype(float)
-                final_table[col][column.mask] = np.nan
             else:
                 # Convert to object dtype for non-numeric columns
                 final_table[col] = column.astype(object)
@@ -635,7 +638,8 @@ def get_pstarr_cutout(ra, dec, size=240, output_size=None, filter="g", format="f
         try:
             # Get the data
             fh = fits.open(url)
-            fh[0].header.rename_keyword('RADECSYS', 'RADESYS')  # rename deprecated keyword
+            if 'RADESYS' not in fh[0].header:
+                fh[0].header.rename_keyword('RADECSYS', 'RADESYS')
             flux = fh[0].data
 
             # Scale back to flux

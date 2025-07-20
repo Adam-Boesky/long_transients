@@ -242,6 +242,11 @@ def cross_match_quadrant(quadrant_dirpath: str):
     print(f'Cross matching quadrant {quadrant_dirpath.split("/")[-1]}')
     pstar_tab = load_ecsv(os.path.join(quadrant_dirpath, 'PSTARR.ecsv'), careful_load=True)
 
+    # Cast flags to floats TODO: delete after running extraction again
+    for col in pstar_tab.colnames:
+        if 'flag' in col.lower():
+            pstar_tab[col] = pstar_tab[col].astype(float)
+
     # Collapse the non-unique Pan-STARRS sources
     pstar_tab.remove_column('primaryDetection')  # we can remove primaryDetection cuz it's a nuissance and always true
     pstar_tab = collapse_nonunique_srcs(pstar_tab)
