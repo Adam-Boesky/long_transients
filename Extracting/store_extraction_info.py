@@ -14,7 +14,7 @@ def store_extraction_info():
 
     # Store n_quadrants_merged in the JSON file
     with open(output_file, 'w') as f:
-        json.dump(n_quadrants_merged, f)
+        json.dump(n_quadrants_merged, f, indent=4)
 
 
 if __name__ == '__main__':
