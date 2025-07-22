@@ -311,7 +311,7 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
                     f'Skipping merging for {band} band for {field_name} because it already exists and overwrite is ' +
                     'set to False.'
                 )
-                return
+                continue
 
         # Start with first available quadrant
         getting_first_tab = True
