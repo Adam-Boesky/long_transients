@@ -266,7 +266,7 @@ def cross_match_quadrant(quadrant_dirpath: str):
     for band, fname in zip(BANDS, [f'ZTF_{band}.ecsv' for band in BANDS]):
 
         # Check if already associated
-        if os.path.exists(os.path.join(quadrant_dirpath, f'{band}_associated.ecsv')):
+        if os.path.exists(os.path.join(quadrant_dirpath, f'{band}_associated.ecsv')) and OVERWRITE is False:
             print(
                 f'Skipping {band} association for {quadrant_dirpath.split("/")[-1]} because it is already associated ' +
                 'and overwrite is set to False.'
@@ -301,16 +301,14 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
     if len(field_quad_dirs) == 0:
         return
 
-    # Check if the merged file already exists
-    if OVERWRITE is False:
-        if os.path.exists(os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_g.ecsv')) or \
-            os.path.exists(os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_r.ecsv')) or \
-            os.path.exists(os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_i.ecsv')):
-            print(f'Skipping {field_name} because it already exists and overwrite is set to False.')
-            return
-
     print(f'Merging quadrant results for field {field_name}')
     for band in BANDS:
+
+        # Check if the merged file already exists
+        if OVERWRITE is False:
+            if os.path.exists(os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_{band}.ecsv')):
+                print(f'Skipping {field_name} because it already exists and overwrite is set to False.')
+                return
 
         # Start with first available quadrant
         getting_first_tab = True
