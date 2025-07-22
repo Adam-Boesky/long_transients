@@ -233,10 +233,21 @@ def collapse_nonunique_srcs(tab: Table) -> Table:
 def cross_match_quadrant(quadrant_dirpath: str):
     """Cross match the g, r, i catalogs with the panstarrs catalog for a single quadrant."""
     if OVERWRITE is False:
-        if os.path.exists(os.path.join(quadrant_dirpath, 'g_associated.ecsv')) or \
-           os.path.exists(os.path.join(quadrant_dirpath, 'r_associated.ecsv')) or \
-           os.path.exists(os.path.join(quadrant_dirpath, 'i_associated.ecsv')):
-            print(f'Skipping {quadrant_dirpath} because it is already associated and overwrite is set to False.')
+        if (
+            (
+                os.path.exists(os.path.join(quadrant_dirpath, 'g_associated.ecsv')) or not
+                os.path.exists(os.path.join(quadrant_dirpath, 'ZTF_g.ecsv'))
+            )
+            and (
+                os.path.exists(os.path.join(quadrant_dirpath, 'r_associated.ecsv')) or not
+                os.path.exists(os.path.join(quadrant_dirpath, 'ZTF_r.ecsv'))
+            )
+            and (
+                os.path.exists(os.path.join(quadrant_dirpath, 'i_associated.ecsv')) or not
+                os.path.exists(os.path.join(quadrant_dirpath, 'ZTF_i.ecsv'))
+            )
+        ):
+            print(f'Skipping {quadrant_dirpath.split('/')[-1]} because all bands are associated and overwrite is set to False.')
             return
 
     print(f'Cross matching quadrant {quadrant_dirpath.split("/")[-1]}')
@@ -253,6 +264,14 @@ def cross_match_quadrant(quadrant_dirpath: str):
 
     # Iterate through the ZTF band catalogs
     for band, fname in zip(BANDS, [f'ZTF_{band}.ecsv' for band in BANDS]):
+
+        # Check if already associated
+        if os.path.exists(os.path.join(quadrant_dirpath, f'{band}_associated.ecsv')):
+            print(
+                f'Skipping {band} association for {quadrant_dirpath.split("/")[-1]} because it is already associated ' +
+                'and overwrite is set to False.'
+            )
+            continue
 
         full_fpath = os.path.join(quadrant_dirpath, fname)
         if os.path.exists(full_fpath):
