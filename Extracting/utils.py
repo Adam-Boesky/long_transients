@@ -10,7 +10,7 @@ from typing import Optional, Tuple, Union, Dict
 import numpy as np
 import pandas as pd
 
-MAST_CREDENTIAL_FNAME = 'mast_login_harvard.txt'
+MAST_CREDENTIAL_FNAME = 'mast_login.txt'
 print(f'CasJobs will use the credentials from {MAST_CREDENTIAL_FNAME}')
 
 
@@ -165,7 +165,7 @@ def _drop_bad_pstarr_flags(tab: Table) -> Table:
 
 
 def get_pstarr_lc_from_id(objid: int) -> Table:
-    if not isinstance(objid, int):
+    if not isinstance(objid, int) and not np.isnan(objid):
         objid = int(objid)
 
     # Construct the query

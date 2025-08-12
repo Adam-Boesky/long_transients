@@ -305,9 +305,9 @@ class ZTF_Postage_Stamp(Postage_Stamp):
                 # Rotate and flip the image to align with PanSTARRS orientation
                 self._images[band] = np.flipud(np.fliplr(self._images[band]))
 
-            # Set empty cutouts to None
-            if self._images[band].size == 0:
-                self._images[band] = None
+                # Set empty cutouts to None
+                if self._images[band].size == 0:
+                    self._images[band] = None
 
         return self._images, self._WCSs
 
@@ -367,7 +367,7 @@ class Source():
             gaia_max_arcsec: float = 5.0,
             verbose: int = 1,
             catch_plotting_exceptions: bool = True,
-            lc_catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs', 'gaia', 'custom'],
+            lc_catalogs: List[str] = ['ztf', 'wise', 'neowise', 'ptf', 'sdss', 'panstarrs', 'gaia', 'custom'],
         ):
         self.ra = ra
         self.dec = dec
@@ -442,7 +442,7 @@ class Source():
 
     @property
     def image_metadata(self) -> Dict[str, Dict]:
-        if self._image_metadata is None:
+        if self._image_metadata is None and self._data is not None:
 
             # Iterate through bands and get the first metadata that works
             metadata = {}

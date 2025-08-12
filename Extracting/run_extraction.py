@@ -110,8 +110,8 @@ def extract_sources():
     # for fid in fields_imaged_all_bands:  # redoing fields that cross the 360 degree ra
         # process_field(fid)
     
-    # Testing on one field
-    process_field(791)
+    # # Testing on one field
+    # process_field(791)
 
 if __name__=='__main__':
     extract_sources()

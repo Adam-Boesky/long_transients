@@ -1,6 +1,6 @@
 """Script for wiping the panstarrs database. I use this when I edit the Pan-STARRS SQL extraction query. Make sure the 
 user in Extracting/utils.py is the right one before running."""
-from Extracting.utils import MASTCASJOBS
+from utils import MASTCASJOBS
 
 
 def wipe_db():

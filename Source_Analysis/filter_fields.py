@@ -17,6 +17,7 @@ sys.path.append('/Users/adamboesky/Research/long_transients')
 
 from Source_Analysis.Sources import Sources, MANDATORY_SOURCE_COLUMNS
 from Extracting.utils import get_snr_from_mag, get_data_path, load_ecsv
+from concurrent.futures import ProcessPoolExecutor
 
 BANDS = ['g', 'r', 'i']
 CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Coverage'}
@@ -205,6 +206,8 @@ class Filters():
             if self.filter_stat_fname is not None:
                 self.save_filter_stats()
 
+            if filt_name == 'only_big_dmag':
+                return {}, {}, {}
             return tabs
 
         # Make into a dict if merged
@@ -484,7 +487,10 @@ class Filters():
         """Filter out sources with a delta mag > `mag_thresh`"""
         if upper_lim is not None and upper_lim not in ('ZTF', 'PSTARR'):
             raise ValueError('Upper limit must be None or `PSTARR` or `ZTF`.')
-        
+
+        if len(tabs) == 0:
+            return {}, {}, {}, {}
+
         good_tabs = {}
         bad_tabs = {}
 
@@ -659,7 +665,13 @@ class Filters():
         good_tabs = {}
         bad_tabs = {}
         for band in tabs.keys():
-            mask = tabs[band][f'PSTARR_{band}PSFMag'] < max_mag
+
+            # In all three bands, the mag is less than max_mag
+            mask = (
+                (tabs[band][['PSTARR_gPSFMag', 'PSTARR_rPSFMag', 'PSTARR_iPSFMag']].to_pandas().values < max_mag)
+                & (tabs[band][['PSTARR_gPSFMag', 'PSTARR_rPSFMag', 'PSTARR_iPSFMag']].to_pandas().values > 0)
+            ).sum(axis=1) == 3
+
             good_tabs[band] = tabs[band][mask]
             bad_tabs[band] = tabs[band][~mask]
 
@@ -897,12 +909,22 @@ def combine_stats(stats_dfs: Iterable[pd.DataFrame]) -> pd.DataFrame:
     combined_df = stats_dfs[0]
 
     # Ensure that the filters and branches of each df are the same
-    if not np.all([
-        np.all(combined_df['filter'].to_numpy() == df['filter'].to_numpy()) and
-        np.all(combined_df['branch'].to_numpy() == df['branch'].to_numpy())
-        for df in stats_dfs[1:]
-    ]):
-        raise ValueError('All given dataframes must have the same filters and branches.')
+    for idx, df in enumerate(stats_dfs[1:], start=1):
+        filter_equal = np.all(combined_df['filter'].to_numpy() == df['filter'].to_numpy())
+        branch_equal = np.all(combined_df['branch'].to_numpy() == df['branch'].to_numpy())
+        if not (filter_equal and branch_equal):
+            # Find where the mismatch is
+            filter_mismatch = combined_df['filter'].to_numpy() != df['filter'].to_numpy()
+            branch_mismatch = combined_df['branch'].to_numpy() != df['branch'].to_numpy()
+            mismatch_indices = np.where(~(filter_equal & branch_equal))[0] if (not filter_equal or not branch_equal) else []
+            msg = f"DataFrame at index {idx} does not match the first DataFrame in filters and/or branches.\n"
+            if not filter_equal:
+                mismatched_filters = list(zip(combined_df['filter'][filter_mismatch], df['filter'][filter_mismatch]))
+                msg += f"Filter mismatch at indices {np.where(filter_mismatch)[0].tolist()}: {mismatched_filters}\n"
+            if not branch_equal:
+                mismatched_branches = list(zip(combined_df['branch'][branch_mismatch], df['branch'][branch_mismatch]))
+                msg += f"Branch mismatch at indices {np.where(branch_mismatch)[0].tolist()}: {mismatched_branches}\n"
+            raise ValueError(msg)
 
     # Combine the stats
     for stats_df in stats_dfs[1:]:
@@ -917,7 +939,8 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
     You can easily save a flowchart by doing create_filter_flowchart(...).save('path/to/chart.pdf')
     """
     # Set nan branch to empty string
-    stats_df['branch'] = stats_df['branch'].fillna('')
+    if 'branch' in stats_df.columns:
+        stats_df['branch'] = stats_df['branch'].fillna('')
 
     # If not already, group by filters and branch
     if set(stats_df.index.names) != {'branch', 'filter'}:
@@ -1055,8 +1078,14 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         except FileNotFoundError:
             print(f'Warning: Band {band} not available for field {field_name}...')
 
-    # Set values <=0 to the upper limit for ZTF
+    # Set values <=0 to the upper limit for ZTF and add mag cols for Pan-STARRS
     for band in tables.keys():
+
+        # Make sure mag cols are in the table
+        for b in ('g', 'r', 'i'):
+            if f'PSTARR_{b}PSFMag' not in tables[band].colnames:
+                tables[band][f'PSTARR_{b}PSFMag'] = -999 * np.ones(len(tables[band]))
+
         tab: Table = tables[band]
         upper_lim_mask = tab[f'ZTF_{band}PSFFlags'] == 4
         tab[f'ZTF_{band}PSFMag'][upper_lim_mask] = tab[f'ZTF_{band}_mag_limit'][upper_lim_mask]   # 4 means flux was negative
@@ -1372,37 +1401,24 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     filters.save_filtered_out(filter_result_dirpath, 2)
 
 
+def _filter_field_wrapper(field):
+    print(f'Filtering field {field}...')
+    filter_field(
+        field,
+        overwrite=True,
+        store_pre_gaia=False,
+    )
+
 def filter_fields():
     """Filter fields!"""
-    for field in [
-        # '000245',
-        # '000294',
-        # '000292',
-        # '000581',
-        # '000445',
-        # '000578',
-        # '000276',
-        # '000446',
-        # '000582',
-        # '000294',
-        # '000444',
-        # '000293',
-        # '000246',
-        # '000245',
-        # '000228',
-        # '000447',
-        # '000579',
-        # '000295',
-        # '000580',
-        '000791',
-        # '000581',
-    ]:
-        print(f'Filtering field {field}...')
-        filter_field(
-            field,
-            overwrite=True,
-            store_pre_gaia=False,
-        )
+    # fields = os.listdir('/Users/adamboesky/Research/long_transients/Data/catalog_results/field_results')
+    # fields = [f.split('_')[0] for f in fields]
+    # fields = np.unique(fields)
+
+    # with ProcessPoolExecutor(max_workers=3) as executor:
+    #     executor.map(_filter_field_wrapper, fields)
+
+    _filter_field_wrapper('000293')
 
 
 if __name__ == '__main__':

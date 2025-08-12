@@ -55,24 +55,22 @@ def store_source_plots():
     else:
         path_to_data = '/Users/adamboesky/Research/long_transients/Data'
     # candidate_dir = 'candidates'
-    candidate_dir = 'analysis_pages_debugging'
+    candidate_dir = 'analysis_pages'
     if not os.path.exists(os.path.join(path_to_data, candidate_dir)):
         os.mkdir(os.path.join(path_to_data, candidate_dir))
 
     # Kwargs for Sources in all three catalogs
     src_kwargs = {
         'ztf_data_dir': os.path.join(path_to_data, 'ztf_data'),
-        'lc_catalogs': ['wise', 'ptf', 'sdss', 'panstarrs', 'gaia', 'custom'],  # TODO: Add ZTF back
     }
 
 
     ### IN BOTH CATALOGS ###
-    # TODO: will change from 000791 to combined when extraction is done and combined for all fields
     plot_dir = os.path.join(path_to_data, candidate_dir, 'in_both')
     if not os.path.exists(plot_dir):
         os.mkdir(plot_dir)
     srcs = Sources.from_file(
-        os.path.join(path_to_data, 'filter_results/000791/0.ecsv'),
+        os.path.join(path_to_data, 'filter_results/combined/0.ecsv'),
         **src_kwargs,
     )
     with Pool(processes=3) as pool:
@@ -95,7 +93,7 @@ def store_source_plots():
 
     ### IN JUST ZTF ###
     srcs_ztf = Sources.from_file(
-        os.path.join(path_to_data, 'filter_results/000791/1.ecsv'),
+        os.path.join(path_to_data, 'filter_results/combined/1.ecsv'),
         **src_kwargs,
     )
     plot_dir = os.path.join(path_to_data, candidate_dir, 'in_ztf')
@@ -120,7 +118,7 @@ def store_source_plots():
         results.get()  # This will raise any exceptions that occurred
 
     # Wide associations in ZTF
-    srcs_ztf_wide = Sources.from_file(os.path.join(path_to_data, 'filter_results/000791/1_wide_association.ecsv'))
+    srcs_ztf_wide = Sources.from_file(os.path.join(path_to_data, 'filter_results/combined/1_wide_association.ecsv'))
     with Pool(processes=3) as pool:
         # Construct the source name
         ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf_wide]

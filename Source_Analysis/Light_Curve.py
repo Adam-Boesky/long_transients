@@ -65,7 +65,7 @@ ALL_BAND_DF = pd.DataFrame(
     index=['band', 'survey'],
 )
 GAIA_ZERO_PTS = {'g': 25.8010, 'bp': 25.3540, 'rp': 25.1040}  # from Table 5.4 in https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu5pho/cu5pho_sec_photProc/cu5pho_ssec_photCal.html#SSS3.P2
-CUSTOM_PHOT_DIR = os.path.join(get_data_path(), 'custom_photometry')
+CUSTOM_PHOT_DIR = os.path.join(get_data_path(), 'followup', 'photometry')
 
 
 class Light_Curve:
@@ -73,7 +73,7 @@ class Light_Curve:
             self,
             ra: float,
             dec: float,
-            catalogs: List[str] = ['ztf', 'wise', 'ptf', 'sdss', 'panstarrs', 'gaia', 'custom'],
+            catalogs: List[str] = ['ztf', 'wise', 'neowise', 'ptf', 'sdss', 'panstarrs', 'gaia', 'custom'],
             query_rad_arcsec: float = 1.5,
             query_in_parallel: bool = True,
             pstarr_objid: Optional[int] = None,
@@ -223,7 +223,7 @@ class Light_Curve:
                 elif catalog == 'panstarrs':
 
                     # Check if we have an objid
-                    if self.pstarr_objid is not None:
+                    if self.pstarr_objid is not None and not np.isnan(self.pstarr_objid):
                         lightcurve_tab = get_pstarr_lc_from_id(self.pstarr_objid)
                     else:
                         print('Pan-STARRS objid not found. Falling back on coordinate query...')
@@ -415,6 +415,39 @@ class Light_Curve:
 
         # Ensure mjd column is float dtype
         lightcurve_tab['mjd'] = lightcurve_tab['mjd'].astype(float)
+
+        # For WISE, take the mean of mags for 3-day windows
+        if catalog == 'wise' and len(lightcurve_tab) > 0:
+            # Sort by MJD to ensure time order
+            lightcurve_tab.sort('mjd')
+            new_tab = Table(names=lightcurve_tab.colnames, dtype=lightcurve_tab.dtype)
+            mjds = np.array(lightcurve_tab['mjd'])
+            used = np.zeros(len(lightcurve_tab), dtype=bool)
+            i = 0
+            while i < len(lightcurve_tab):
+                # Start window at current unprocessed row
+                window_start = mjds[i]
+                in_window_mask = (mjds >= window_start) & (mjds < window_start + 3) & (~used)
+                if not np.any(in_window_mask):
+                    i += 1
+                    continue
+                # Compute the mean for each column manually and create a new row
+                mean_row = []
+                for col in lightcurve_tab.colnames:
+                    col_data = np.array(lightcurve_tab[col][in_window_mask], copy=True)
+                    if np.issubdtype(col_data.dtype, np.number):
+                        mean_val = np.nanmean(col_data)
+                    else:
+                        mean_val = col_data[0] if len(col_data) > 0 else None
+                    mean_row.append(mean_val)
+                new_tab.add_row(mean_row)
+                used[in_window_mask] = True
+                # Move to next unused row
+                next_indices = np.where(~used)[0]
+                if len(next_indices) == 0:
+                    break
+                i = next_indices[0]
+            lightcurve_tab = new_tab
 
         return lightcurve_tab
 
