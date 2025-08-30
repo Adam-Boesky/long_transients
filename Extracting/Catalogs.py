@@ -18,6 +18,7 @@ from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from astropy.table import Table, join, vstack
 from astropy.io import ascii, fits
+from astropy.utils.data import clear_download_cache
 
 try:
     from Source_Extractor import Source_Extractor
@@ -219,6 +220,12 @@ WHERE rn = 1 into mydb.{tab_name}
                     print('Traceback:')
                     traceback.print_exc()
 
+                    # Check for Astropy's "not enough free space" error
+                    if isinstance(e, OSError) and "Not enough free space" in str(e):
+                       print('WARNING: Not enough free space in cache. Clearing Astropy download cache to free up space...')
+                       clear_download_cache()
+
+                    # Delete some tables if the local database is too full
                     mydb_table_list = MASTCASJOBS.list_tables()
                     if len(mydb_table_list) > 50:
                         delete_prop = 0.5

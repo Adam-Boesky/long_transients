@@ -19,36 +19,62 @@ except ModuleNotFoundError:
 
 def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
 
-    # Check if we have already extracted the quadrant before doing anything
-    data_path = get_data_path()
-    if os.path.exists(
-        os.path.join(
-            data_path,
-            'catalog_results',
-            f'{str(fieldid).zfill(6)}_{str(ccdid).zfill(2)}_{qid}',
-            f'{str(fieldid).zfill(6)}_{str(ccdid).zfill(2)}_{qid}.fits'
+    try:
+        # Get the quadrant directory name (ffff_cc_qq)
+        quad_dirname = f'{str(fieldid).zfill(6)}_{str(ccdid).zfill(2)}_{qid}'
+
+        # quads with no pts
+        bad_quads_fpath = os.path.join(get_data_path(), 'bad_quads.npy')
+        if os.path.exists(bad_quads_fpath):
+            bad_quads = np.load(bad_quads_fpath)
+            if quad_dirname in bad_quads:
+                print(f'{quad_dirname} is in bad_quads. Skipping!')
+                return
+
+        # Check if we have already extracted the quadrant before doing anything
+        data_path = get_data_path()
+        if os.path.exists(
+            os.path.join(
+                data_path,
+                'catalog_results',
+                quad_dirname,
+                f'{quad_dirname}.fits'
+            )
+        ):
+            print(f'{quad_dirname} already exists. Skipping!')
+            return
+
+        print(f'Extracting sources from quadrant with field_id={fieldid}, ccdid={ccdid}, qid={qid}...')
+
+        # Get data
+        ztf_metadata={
+            'fieldid': fieldid,
+            'ccdid': ccdid,
+            'qid': qid,
+        }
+
+        # Run extraction and store
+        tile = Tile(
+            ztf_metadata=ztf_metadata,
+            bands=bands,
+            data_dir=os.path.join(data_path, 'ztf_data'),
         )
-    ):
-        print(f'{str(fieldid).zfill(6)}_{str(ccdid).zfill(2)}_{qid} already exists. Skipping!')
-        return
+        tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=False)
+        print(f'Extracted sources from field with metadata {ztf_metadata}. Stored at: {tile_output_path}')
 
-    print(f'Extracting sources from quadrant with field_id={fieldid}, ccdid={ccdid}, qid={qid}...')
+    except Exception as e:
+        if isinstance(e, ValueError) and 'No points given' in str(e):
+            print('No points given. Adding to bad_quads.npy')
+            if os.path.exists(bad_quads_fpath):
+                bad_quads = np.load(bad_quads_fpath)
+                bad_quads = np.append(bad_quads, quad_dirname)
+                os.remove(bad_quads_fpath)
+            else:
+                bad_quads = np.array([quad_dirname])
+        with open(bad_quads_fpath, 'wb') as f:
+            np.save(f, bad_quads)
 
-    # Get data
-    ztf_metadata={
-        'fieldid': fieldid,
-        'ccdid': ccdid,
-        'qid': qid,
-    }
-
-    # Run extraction and store
-    tile = Tile(
-        ztf_metadata=ztf_metadata,
-        bands=bands,
-        data_dir=os.path.join(data_path, 'ztf_data'),
-    )
-    tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=False)
-    print(f'Extracted sources from field with metadata {ztf_metadata}. Stored at: {tile_output_path}')
+        raise e
 
 
 def process_field(field_id: int):
@@ -98,20 +124,9 @@ def extract_sources():
     fields_imaged_all_bands = np.intersect1d(ar1=bands_imaged['g'], ar2=bands_imaged['r'])
     fields_imaged_all_bands = np.intersect1d(ar1=fields_imaged_all_bands, ar2=bands_imaged['i'])
 
-    # Extract field
-    # for fid in imaged_fields:
-    #     process_field(fid)
-    # for fid in imaged_fields[100:]:  # start at 100 for parallel processing
-    #     process_field(fid)
-    # for fid in imaged_fields[200:]:  # start at 200 for parallel processing
-    #     process_field(fid)
-
     # THIS IS THE FINAL RUN!!!
-    # for fid in fields_imaged_all_bands:  # redoing fields that cross the 360 degree ra
-        # process_field(fid)
-    
-    # # Testing on one field
-    # process_field(791)
+    for fid in fields_imaged_all_bands[100:]:
+        process_field(fid)
 
 if __name__=='__main__':
     extract_sources()
