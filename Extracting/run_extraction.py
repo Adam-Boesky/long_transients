@@ -26,6 +26,7 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
         # quads with no pts
         bad_quads_fpath = os.path.join(get_data_path(), 'bad_quads.npy')
         if os.path.exists(bad_quads_fpath):
+            print('loading bad quads...')
             bad_quads = np.load(bad_quads_fpath)
             if quad_dirname in bad_quads:
                 print(f'{quad_dirname} is in bad_quads. Skipping!')
@@ -37,8 +38,7 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
             os.path.join(
                 data_path,
                 'catalog_results',
-                quad_dirname,
-                f'{quad_dirname}.fits'
+                quad_dirname
             )
         ):
             print(f'{quad_dirname} already exists. Skipping!')
@@ -76,6 +76,7 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
 
             # Save the bad quadrants
             with open(bad_quads_fpath, 'wb') as f:
+                print('saving bad quads, ', bad_quads)
                 np.save(f, bad_quads)
 
         raise e
