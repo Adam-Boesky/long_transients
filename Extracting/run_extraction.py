@@ -65,14 +65,18 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
     except Exception as e:
         if isinstance(e, ValueError) and 'No points given' in str(e):
             print('No points given. Adding to bad_quads.npy')
+            
+            # Get bad quadrants or make it if it doesn't exist
             if os.path.exists(bad_quads_fpath):
                 bad_quads = np.load(bad_quads_fpath)
                 bad_quads = np.append(bad_quads, quad_dirname)
                 os.remove(bad_quads_fpath)
             else:
                 bad_quads = np.array([quad_dirname])
-        with open(bad_quads_fpath, 'wb') as f:
-            np.save(f, bad_quads)
+
+            # Save the bad quadrants
+            with open(bad_quads_fpath, 'wb') as f:
+                np.save(f, bad_quads)
 
         raise e
 
