@@ -17,6 +17,22 @@ except ModuleNotFoundError:
     from .utils import get_data_path
 
 
+def add_to_bad_quads(quad_dirname: str):
+    """Add a quadrant to the bad quadrants list."""
+    bad_quads_fpath = os.path.join(get_data_path(), 'bad_quads.npy')
+    if os.path.exists(bad_quads_fpath):
+        bad_quads = np.load(bad_quads_fpath)
+        bad_quads = np.append(bad_quads, quad_dirname)
+        os.remove(bad_quads_fpath)
+    else:
+        bad_quads = np.array([quad_dirname])
+    
+    # Save the bad quadrants
+    with open(bad_quads_fpath, 'wb') as f:
+        print('saving bad quads, ', bad_quads)
+        np.save(f, bad_quads)
+
+
 def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
 
     try:
@@ -65,19 +81,15 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
     except Exception as e:
         if isinstance(e, ValueError) and 'No points given' in str(e):
             print('No points given. Adding to bad_quads.npy')
-            
-            # Get bad quadrants or make it if it doesn't exist
-            if os.path.exists(bad_quads_fpath):
-                bad_quads = np.load(bad_quads_fpath)
-                bad_quads = np.append(bad_quads, quad_dirname)
-                os.remove(bad_quads_fpath)
-            else:
-                bad_quads = np.array([quad_dirname])
+            add_to_bad_quads(quad_dirname)
 
-            # Save the bad quadrants
-            with open(bad_quads_fpath, 'wb') as f:
-                print('saving bad quads, ', bad_quads)
-                np.save(f, bad_quads)
+        elif isinstance(e, ValueError) and 'The truth value of an array with more than one element is ambiguous' in str(e):
+            print('The truth value of an array with more than one element is ambiguous. Adding to bad_quads.npy')
+            add_to_bad_quads(quad_dirname)
+
+        elif isinstance(e, Exception) and 'The limit of 300000 active object pixels over the detection threshold' in str(e):
+            print('The limit of 300000 active object pixels over the detection threshold was reached. Adding to bad_quads.npy')
+            add_to_bad_quads(quad_dirname)
 
         raise e
 
