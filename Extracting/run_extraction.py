@@ -19,6 +19,7 @@ except ModuleNotFoundError:
 
 def add_to_bad_quads(quad_dirname: str):
     """Add a quadrant to the bad quadrants list."""
+    print(f'Adding {quad_dirname} to bad_quads.npy')
     bad_quads_fpath = os.path.join(get_data_path(), 'bad_quads.npy')
     if os.path.exists(bad_quads_fpath):
         bad_quads = np.load(bad_quads_fpath)
@@ -42,7 +43,6 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
         # quads with no pts
         bad_quads_fpath = os.path.join(get_data_path(), 'bad_quads.npy')
         if os.path.exists(bad_quads_fpath):
-            print('loading bad quads...')
             bad_quads = np.load(bad_quads_fpath)
             if quad_dirname in bad_quads:
                 print(f'{quad_dirname} is in bad_quads. Skipping!')
@@ -80,15 +80,15 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
 
     except Exception as e:
         if isinstance(e, ValueError) and 'No points given' in str(e):
-            print('No points given. Adding to bad_quads.npy')
+            print('No points given.')
             add_to_bad_quads(quad_dirname)
 
         elif isinstance(e, ValueError) and 'The truth value of an array with more than one element is ambiguous' in str(e):
-            print('The truth value of an array with more than one element is ambiguous. Adding to bad_quads.npy')
+            print('The truth value of an array with more than one element is ambiguous.')
             add_to_bad_quads(quad_dirname)
 
         elif isinstance(e, Exception) and 'The limit of 300000 active object pixels over the detection threshold' in str(e):
-            print('The limit of 300000 active object pixels over the detection threshold was reached. Adding to bad_quads.npy')
+            print('The limit of 300000 active object pixels over the detection threshold was reached.')
             add_to_bad_quads(quad_dirname)
 
         raise e
