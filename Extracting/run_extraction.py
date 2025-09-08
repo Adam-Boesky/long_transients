@@ -79,18 +79,23 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
         print(f'Extracted sources from field with metadata {ztf_metadata}. Stored at: {tile_output_path}')
 
     except Exception as e:
-        if isinstance(e, ValueError) and 'No points given' in str(e):
+        error_msg = str(e)
+        print(f"DEBUG: Caught exception: {type(e).__name__}: {error_msg}")
+        
+        if 'No points given' in error_msg:
             print('No points given.')
             add_to_bad_quads(quad_dirname)
 
-        elif isinstance(e, ValueError) and 'The truth value of an array with more than one element is ambiguous' in str(e):
+        elif 'The truth value of an array with more than one element is ambiguous' in error_msg:
             print('The truth value of an array with more than one element is ambiguous.')
             add_to_bad_quads(quad_dirname)
 
-        elif isinstance(e, Exception) and 'The limit of 300000 active object pixels over the detection threshold' in str(e):
+        elif 'The limit of 300000 active object pixels over the detection threshold' in error_msg:
             print('The limit of 300000 active object pixels over the detection threshold was reached.')
             add_to_bad_quads(quad_dirname)
 
+        # For any other exceptions, re-raise them
+        print(f"DEBUG: Re-raising unhandled exception: {type(e).__name__}: {error_msg}")
         raise e
 
 
