@@ -146,8 +146,14 @@ def extract_sources():
     fields_imaged_all_bands = np.intersect1d(ar1=bands_imaged['g'], ar2=bands_imaged['r'])
     fields_imaged_all_bands = np.intersect1d(ar1=fields_imaged_all_bands, ar2=bands_imaged['i'])
 
+    # Gemini logic
+    north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
+    south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
+    gemini_fields = np.concatenate([north_fields, south_fields])
+    fields_imaged_all_bands = np.intersect1d(ar1=gemini_fields, ar2=fields_imaged_all_bands)
+
     # THIS IS THE FINAL RUN!!!
-    for fid in fields_imaged_all_bands[100:]:
+    for fid in fields_imaged_all_bands:
         process_field(fid)
 
 if __name__=='__main__':
