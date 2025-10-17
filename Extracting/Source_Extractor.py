@@ -18,10 +18,11 @@ from matplotlib.patches import Ellipse
 from photutils.psf import PSFPhotometry, EPSFBuilder, EPSFFitter, EPSFStars, extract_stars
 from scipy.interpolate import NearestNDInterpolator
 
-try:
-    from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
-except ModuleNotFoundError:
-    from .utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
+from Extracting.utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
+# try:
+#     from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
+# except ModuleNotFoundError:
+#     from .utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
 
 
 class Source_Extractor():
@@ -157,10 +158,17 @@ class Source_Extractor():
         not_nan = np.zeros(len(pstarr_table))
         for i, (x, y) in enumerate(zip(xs, ys)):
             x, y = int(x), int(y)
+
+            # Skip sources that are too close to the edges of the image
+            if x < half_cutout_size or x > self.image_data.shape[1] - half_cutout_size or y < half_cutout_size or y > self.image_data.shape[0] - half_cutout_size:
+                not_nan[i] = 0
+                continue
             cutout = self.nan_mask[
                 y - half_cutout_size : y + half_cutout_size,
                 x - half_cutout_size : x + half_cutout_size
             ]
+
+            # Check if the cutout has too many nans
             if np.sum(cutout) / (self.psf_cutout_size * self.psf_cutout_size) < 0.05 and \
                 len(cutout) != 0:  
                 # <5% of the pixels in the cutout are NaN, and the cutout isn't empty, which would happen for sources
