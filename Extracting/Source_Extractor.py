@@ -24,6 +24,9 @@ from Extracting.utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_fro
 # except ModuleNotFoundError:
 #     from .utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
 
+# Up the SEP pixstack size to 1M --- default isn't enough
+sep.set_extract_pixstack(1_000_000)
+
 
 class Source_Extractor():
     def __init__(self, fits_fpath: str, band: Optional[str] = None):
