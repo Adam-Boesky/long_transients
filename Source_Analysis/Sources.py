@@ -531,7 +531,7 @@ class Source():
             self._field_catalogs = {}
 
             def load_catalog(band):
-                padded_field = self.image_metadata[band]["field"].zfill(6)
+                padded_field = str(int(self.image_metadata["fieldid"])).zfill(6)
                 print(f'Loading {band} catalog from locally stored catalog {padded_field}_{band}...')
                 return band, load_cached_table(os.path.join(self.merged_field_basedir, f'{padded_field}_{band}.ecsv')).copy()
 
@@ -575,6 +575,9 @@ class Source():
             for col in str_cols:
                 data_dict[col] = [str(data_dict[col][0])]
             self._data = Table(data_dict)
+
+            # Cast id to string
+            self._data['PSTARR_PanSTARR_ID'] = self._data['PSTARR_PanSTARR_ID'].astype(object)
 
             # Make sure the catalog column is a long enough string
             if 'Catalog' in self._data.colnames:
@@ -1409,17 +1412,16 @@ class Sources:
         self._coords = None
 
     @classmethod
-    def from_file(cls, fname: str, **kwargs) -> 'Sources':
-        """Load Sources from a file that was saved using Sources.save().
+    def from_table(cls, table: Table, **kwargs) -> 'Sources':
+        """Load Sources from a table.
 
         Args:
-            fname: Path to the file to load from
-            
+            table: Table to load from
+            **kwargs: Keyword arguments to pass to the Source constructor
+
         Returns:
-            A new Sources instance loaded from the file
+            A new Sources instance loaded from the table
         """
-        # Read the table from file
-        table = load_ecsv(fname)
 
         # Add the mandatory columns if they're not in the table
         if len(np.intersect1d(table.colnames, MANDATORY_SOURCE_COLUMNS)) < len(MANDATORY_SOURCE_COLUMNS):
@@ -1433,6 +1435,21 @@ class Sources:
             sources[i].data = Table(row)
 
         return cls(sources=sources, **kwargs)
+
+    @classmethod
+    def from_file(cls, fname: str, **kwargs) -> 'Sources':
+        """Load Sources from a file that was saved using Sources.save().
+
+        Args:
+            fname: Path to the file to load from
+            
+        Returns:
+            A new Sources instance loaded from the file
+        """
+        # Read the table from file
+        table = load_ecsv(fname)
+
+        return cls.from_table(table, **kwargs)
 
     @property
     def coords(self) -> SkyCoord:
