@@ -5,6 +5,8 @@ import pickle
 import numpy as np
 import schemdraw
 import pandas as pd
+import ztffields
+import matplotlib.pyplot as plt
 
 from typing import Dict, List, Iterable, Tuple, Union, Optional
 from astropy.table import Table, vstack
@@ -14,6 +16,8 @@ from schemdraw.elements import Element
 from decimal import Decimal, ROUND_HALF_UP
 
 sys.path.append('/Users/adamboesky/Research/long_transients')
+sys.path.append('/n/home04/aboesky/berger/long_transients')
+
 
 from Source_Analysis.Sources import Sources, MANDATORY_SOURCE_COLUMNS
 from Extracting.utils import get_snr_from_mag, get_data_path, load_ecsv
@@ -155,10 +159,11 @@ class Filters():
             'n_ri_after': [],
         })
 
+        filtered_out_coltypes = [float, float, float, float, float, str]
         self.filtered_out: Dict[str, Table] = {
-            'g': Table(data={'ra': [], 'dec': [], 'filter': []}, dtype=[float, float, str]),
-            'r': Table(data={'ra': [], 'dec': [], 'filter': []}, dtype=[float, float, str]),
-            'i': Table(data={'ra': [], 'dec': [], 'filter': []}, dtype=[float, float, str]),
+            'g': Table(data={'ra': [], 'dec': [], 'fieldid': [], 'ccdid': [], 'qid': [], 'filter': []}, dtype=filtered_out_coltypes),
+            'r': Table(data={'ra': [], 'dec': [], 'fieldid': [], 'ccdid': [], 'qid': [], 'filter': []}, dtype=filtered_out_coltypes),
+            'i': Table(data={'ra': [], 'dec': [], 'fieldid': [], 'ccdid': [], 'qid': [], 'filter': []}, dtype=filtered_out_coltypes),
         }
 
     def save_filter_stats(self):
@@ -237,17 +242,34 @@ class Filters():
         good_tabs, bad_tabs, *other_returns = self.filters[filt_name](tabs, *args, **kwargs)
 
         # Add bad_tabs to filtered out
+        filtered_out_tab_cols = ['ra', 'dec', 'fieldid', 'ccdid', 'qid']
         for band, tab in bad_tabs.items():
             if band == 'merged':
                 if len(tab.data) > 0:
-                    tab_shortened = tab.data[['ra', 'dec']]
+                    # Get available columns from the table
+                    tab_shortened = tab.data[filtered_out_tab_cols]
                     tab_shortened['filter'] = filt_name
+                    tab_shortened = tab_shortened.filled(np.nan)
+
+                    # Cast integer `fieldid`, `ccdid`, and `qid` columns to float for compatibility
+                    for col in ['fieldid', 'ccdid', 'qid']:
+                        if col in tab_shortened.colnames:
+                            tab_shortened[col] = tab_shortened[col].astype(np.float64)
+
                     self.filtered_out['g'] = vstack((self.filtered_out['g'], tab_shortened[tab.in_g]))
                     self.filtered_out['r'] = vstack((self.filtered_out['r'], tab_shortened[tab.in_r]))
                     self.filtered_out['i'] = vstack((self.filtered_out['i'], tab_shortened[tab.in_i]))
             elif len(tab) > 0:
-                tab = tab[['ra', 'dec']]
+                # Get available columns from the table
+                tab = tab[filtered_out_tab_cols]
                 tab['filter'] = filt_name
+                tab = tab.filled(np.nan)
+
+                # Cast integer `fieldid`, `ccdid`, and `qid` columns to float for compatibility
+                for col in ['fieldid', 'ccdid', 'qid']:
+                    if col in tab.colnames:
+                        tab[col] = tab[col].astype(np.float64)
+
                 self.filtered_out[band] = vstack((self.filtered_out[band], tab))
 
         # Get the counts after filtration
@@ -541,6 +563,69 @@ class Filters():
             bad_tabs[band] = tab[outside_mask]
 
         return good_tabs, bad_tabs, bin_means, bin_stds
+
+    def kde_filter(
+            self,
+            tabs: Dict[str, Table],
+            level: float = 0.0005,
+            upper_lim: Optional[str] = None,
+            *args,
+            **kwargs,
+        ) -> Tuple[Table, Dict[str, List[float]], Dict[str, List[float]]]:
+        """Filter out sources with a delta mag outside of the KDE boundary"""
+        if len(tabs) == 0:
+            return {}, {}
+
+        good_tabs = {}
+        bad_tabs = {}
+
+        # Set up figure for getting contours
+        _, axes = plt.subplots(1, 3, figsize=(13.6, 4), sharey=True)
+        with open('X.npy', 'rb') as f:
+            X = np.load(f)
+        with open('Y.npy', 'rb') as f:
+            Y = np.load(f)
+
+        # Iterate over bands and get sources outside the contour
+        for band in tabs.keys():
+            tab = tabs[band]
+            ax = axes[band]
+
+            # Get the contour
+            with open(f'Z_{band}.npy', 'rb') as f:
+                Z = np.load(f)
+            contour = ax.contour(X, Y, Z, colors='red', levels=[level])
+            path = contour.get_paths()[0]
+
+            # Get the mags that we are going to use based on the string
+            if upper_lim == 'PSTARR':
+                pstarr_mags = np.ones(len(tab[f'PSTARR_{band}PSFMag'])) * PSTARR_UPPER_LIM[band]
+                ztf_mags = np.array(tab[f'ZTF_{band}PSFMag'])
+            elif upper_lim == 'ZTF':
+                ztf_mags = np.array(tab[f'ZTF_{band}_mag_limit'])
+                pstarr_mags = np.array(tab[f'PSTARR_{band}PSFMag'])
+            else:
+                pstarr_mags = np.array(tab[f'PSTARR_{band}PSFMag'])
+                ztf_mags = np.array(tab[f'ZTF_{band}PSFMag'])
+
+            # Fill in the panstarrs upper limit values  # TODO: THINK ABOUT THIS
+            upper_lims = pstarr_mags == -999
+            # pstarr_mags[upper_lims] = PSTARR_UPPER_LIM[band]
+
+            # Get the n-sigma boundaries on delta mag
+            outside_mask = path.contains_points(
+                np.vstack((
+                    pstarr_mags,
+                    ztf_mags - pstarr_mags,
+                )).T,
+            )
+            outside_mask &= (~upper_lims)
+
+            # Filter tabs
+            good_tabs[band] = tab[outside_mask]
+            bad_tabs[band] = tab[outside_mask]
+
+        return good_tabs, bad_tabs
 
     def at_least_n_bands(
             self,
@@ -1074,9 +1159,11 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     bands = ('g', 'r', 'i')
     for band in bands:
         try:
+            print(f'catalog_results/field_results/{field_name}_{band}.ecsv')
             tables[band] = load_ecsv(os.path.join(get_data_path(), f'catalog_results/field_results/{field_name}_{band}.ecsv'))
         except FileNotFoundError:
             print(f'Warning: Band {band} not available for field {field_name}...')
+    print('Finished loading tables...')
 
     # Set values <=0 to the upper limit for ZTF and add mag cols for Pan-STARRS
     for band in tables.keys():
@@ -1099,7 +1186,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     bin_means, bin_stds = delta_mag_5sigma['means'], delta_mag_5sigma['stds']
 
     # Delete and recreate field filter directory
-    filter_result_dirpath = os.path.join(get_data_path(), f'filter_results/{field_name}')
+    filter_result_dirpath = os.path.join(get_data_path(), f'filter_results_gemini/{field_name}')
     if os.path.exists(filter_result_dirpath):
         if overwrite:
             print(f'Overwriting {filter_result_dirpath}/')
@@ -1405,20 +1492,36 @@ def _filter_field_wrapper(field):
     print(f'Filtering field {field}...')
     filter_field(
         field,
-        overwrite=True,
+        overwrite=False,
         store_pre_gaia=False,
     )
 
 def filter_fields():
     """Filter fields!"""
-    # fields = os.listdir('/Users/adamboesky/Research/long_transients/Data/catalog_results/field_results')
-    # fields = [f.split('_')[0] for f in fields]
-    # fields = np.unique(fields)
+    fields = os.listdir('/Users/adamboesky/Research/long_transients/Data/catalog_results/field_results')
+    fields = [f.split('_')[0] for f in fields]
+    fields = np.unique(fields)
 
-    # with ProcessPoolExecutor(max_workers=3) as executor:
+    # Gemini fields
+    north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
+    south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
+    gemini_fields = np.concatenate([north_fields, south_fields])
+    gemini_fields = [str(f).zfill(6) for f in gemini_fields]
+    fields = np.intersect1d(ar1=fields, ar2=gemini_fields)
+
+    fields = [f for f in fields if f not in os.listdir(os.path.join(get_data_path(), 'filter_results_gemini'))]
+    # print(fields)
+    # fields = [f for f in fields if f not in ('000522', '000318')]
+
+    # with ProcessPoolExecutor(max_workers=1) as executor:
     #     executor.map(_filter_field_wrapper, fields)
+    for f in fields:
+        _filter_field_wrapper(f)
 
-    _filter_field_wrapper('000293')
+    # _filter_field_wrapper('000293')
+
+    # for f in ('000276', '000294'):
+    #     _filter_field_wrapper(f)
 
 
 if __name__ == '__main__':
