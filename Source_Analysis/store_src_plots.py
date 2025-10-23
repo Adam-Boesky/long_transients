@@ -22,6 +22,8 @@ mpl.rcParams['font.size'] = 12  # Adjust the font size as needed
 mpl.rcParams['axes.formatter.use_mathtext'] = True
 
 OVERWRITE = False
+CANDIDATE_DIR = 'gemini_analysis_pages'
+FILTER_RESULTS_DIRNAME = 'filter_results_gemini'
 
 
 def save_src_plot(src: Source, out_fname: str, overwrite: bool, n_attempts: int = 3):
@@ -54,10 +56,8 @@ def store_source_plots():
         path_to_data = '/Volumes/T7/long_transients/'
     else:
         path_to_data = '/Users/adamboesky/Research/long_transients/Data'
-    # candidate_dir = 'candidates'
-    candidate_dir = 'analysis_pages'
-    if not os.path.exists(os.path.join(path_to_data, candidate_dir)):
-        os.mkdir(os.path.join(path_to_data, candidate_dir))
+    if not os.path.exists(os.path.join(path_to_data, CANDIDATE_DIR)):
+        os.mkdir(os.path.join(path_to_data, CANDIDATE_DIR))
 
     # Kwargs for Sources in all three catalogs
     src_kwargs = {
@@ -66,11 +66,11 @@ def store_source_plots():
 
 
     ### IN BOTH CATALOGS ###
-    plot_dir = os.path.join(path_to_data, candidate_dir, 'in_both')
+    plot_dir = os.path.join(path_to_data, CANDIDATE_DIR, 'in_both')
     if not os.path.exists(plot_dir):
         os.mkdir(plot_dir)
     srcs = Sources.from_file(
-        os.path.join(path_to_data, 'filter_results/combined/0.ecsv'),
+        os.path.join(path_to_data, f'{FILTER_RESULTS_DIRNAME}/combined/0.ecsv'),
         **src_kwargs,
     )
     with Pool(processes=3) as pool:
@@ -93,10 +93,10 @@ def store_source_plots():
 
     ### IN JUST ZTF ###
     srcs_ztf = Sources.from_file(
-        os.path.join(path_to_data, 'filter_results/combined/1.ecsv'),
+        os.path.join(path_to_data, f'{FILTER_RESULTS_DIRNAME}/combined/1.ecsv'),
         **src_kwargs,
     )
-    plot_dir = os.path.join(path_to_data, candidate_dir, 'in_ztf')
+    plot_dir = os.path.join(path_to_data, CANDIDATE_DIR, 'in_ztf')
     if not os.path.exists(plot_dir):
         os.mkdir(plot_dir)
 
@@ -118,7 +118,7 @@ def store_source_plots():
         results.get()  # This will raise any exceptions that occurred
 
     # Wide associations in ZTF
-    srcs_ztf_wide = Sources.from_file(os.path.join(path_to_data, 'filter_results/combined/1_wide_association.ecsv'))
+    srcs_ztf_wide = Sources.from_file(os.path.join(path_to_data, f'{FILTER_RESULTS_DIRNAME}/combined/1_wide_association.ecsv'))
     with Pool(processes=3) as pool:
         # Construct the source name
         ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf_wide]
