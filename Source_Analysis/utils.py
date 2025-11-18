@@ -1,12 +1,16 @@
 import os
 import sys
+import numpy as np
 
 from typing import Literal, List
+from matplotlib.colors import LogNorm
+from scipy.stats import gaussian_kde
 from astropy.table import Table, vstack, join
 
 sys.path.append('/Users/adamboesky/Research/long_transients')
 
-from Extracting.utils import load_ecsv
+from Extracting.utils import load_ecsv, get_data_path
+from Source_Analysis.filter_fields import Filters
 
 
 def get_sources_filtered_by(
@@ -52,3 +56,60 @@ def get_sources_filtered_by(
     if len(catalogs) == 1:
         return srcs[catalogs[0]]
     return srcs
+
+
+def get_kde(fields: List[int], band: str, return_data: bool = False) -> gaussian_kde:
+    """Get the fitted kde object for given band and list of given fields."""
+    fields = [str(int(f)).zfill(6) for f in fields]
+
+    # Set up filters and data stuff
+    filters = Filters()
+    data_path = get_data_path()
+    # Collect arrays in lists to avoid O(n²) concatenation operations
+    x_arrays, y_arrays = [], []
+
+    print('Loading and filtering data...')
+    for i, field in enumerate(fields):
+
+        print(f'Loading field {i+1} / {len(fields)}...')
+        field_tab = load_ecsv(
+            os.path.join(
+                data_path,
+                'catalog_results',
+                'field_results',
+                f'{field}_{band}.ecsv'
+            )
+        )
+
+        # Only use sources in both catalogs
+        field_tab = field_tab[field_tab['Catalog_Flag'] == 0]
+
+        # Drop nan rows
+        mag_data = field_tab[[f'PSTARR_{band}PSFMag', f'ZTF_{band}PSFMag']].as_array().view(np.float64).reshape(len(field_tab), -1)
+        nan_mask = ~np.any(np.isnan(mag_data), axis=1)
+        field_tab = field_tab[nan_mask]
+
+        # Apply filters
+        temp_dict = {band: field_tab}  # dict needed for filter sytax
+        filt_names = ['sep_extraction_filter', 'snr_filter', 'shape_filter', 'psf_fit_filter', 'pstarr_not_saturated']
+        for filt_name in filt_names:
+            temp_dict = filters.filter(temp_dict, filt_name)
+        field_tab = temp_dict[band]
+
+        # Extract columns and store arrays (much more memory efficient than concatenation)
+        pstarr_mag = np.asarray(field_tab[f'PSTARR_{band}PSFMag'], dtype=np.float64)
+        ztf_mag = np.asarray(field_tab[f'ZTF_{band}PSFMag'], dtype=np.float64)
+
+        # Store arrays in lists (will concatenate once at the end)
+        x_arrays.append(pstarr_mag)
+        y_arrays.append(ztf_mag - pstarr_mag)
+
+    print('Calculating the KDE...')
+    # Concatenate all arrays only once at the end (O(n) instead of O(n²))
+    x = np.concatenate(x_arrays) if x_arrays else np.array([], dtype=np.float64)
+    y = np.concatenate(y_arrays) if y_arrays else np.array([], dtype=np.float64)
+    kde = gaussian_kde(np.vstack([x, y]))
+
+    if return_data:
+        return kde, x, y
+    return kde
