@@ -78,7 +78,7 @@ def store_source_plots():
         # Construct the source name
         ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs]
         dec_strs = [f"{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs]
-        candidate_names = [f"{i}_candidate_{ra_str}_{dec_str}.pdf" for i, (ra_str, dec_str) in enumerate(zip(ra_strs, dec_strs))]
+        candidate_names = [f"{ra_str}_{dec_str}.pdf" for ra_str, dec_str in zip(ra_strs, dec_strs)]
 
         args = [
             (src, os.path.join(plot_dir, cand_name), OVERWRITE, 3)
@@ -105,7 +105,7 @@ def store_source_plots():
         # Construct the source name
         ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf]
         dec_strs = [f"{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf]
-        candidate_names = [f"{i}_candidate_{ra_str}_{dec_str}.pdf" for i, (ra_str, dec_str) in enumerate(zip(ra_strs, dec_strs))]
+        candidate_names = [f"{ra_str}_{dec_str}.pdf" for ra_str, dec_str in zip(ra_strs, dec_strs)]
 
         args = [
             (src, os.path.join(plot_dir, cand_name), OVERWRITE, 3)
@@ -124,7 +124,7 @@ def store_source_plots():
         # Construct the source name
         ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf_wide]
         dec_strs = [f"{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf_wide]
-        candidate_names = [f"{i}_candidate_wide_{ra_str}_{dec_str}.pdf" for i, (ra_str, dec_str) in enumerate(zip(ra_strs, dec_strs))]
+        candidate_names = [f"wide_{ra_str}_{dec_str}.pdf" for ra_str, dec_str in zip(ra_strs, dec_strs)]
 
         args = [
             (src, os.path.join(plot_dir, cand_name), OVERWRITE, 1)
