@@ -242,31 +242,35 @@ class Light_Curve:
                 elif catalog == 'custom':
                     # Get the filename -> coordinate mapping
                     custom_phot_fnames = [fname.split('.')[0] for fname in os.listdir(CUSTOM_PHOT_DIR) if fname != 'README.md'] # dropping file extensions
-                    fname_coords = [(
-                        float(fname.split('_')[1].replace("p", ".").replace("n", "-")),
-                        float(fname.split('_')[2].replace("p", ".").replace("n", "-"))
-                    ) for fname in custom_phot_fnames]
-
-                    # Get the lightcurve table
-                    fname_skycoords = SkyCoord(
-                        [c[0] for c in fname_coords],
-                        [c[1] for c in fname_coords],
-                        unit='deg',
-                        )
-                    seps = self.skycoord.separation(fname_skycoords)
-                    if np.min(seps.arcsecond > self.query_rad_arcsec):
+                    if len(custom_phot_fnames) == 0:
+                        print('No custom photometry files found. Returning None...')
                         lightcurve_tab = None
                     else:
-                        # Read the custom file format into a pandas DataFrame
-                        custom_phot_fname = custom_phot_fnames[np.argmin(seps.arcsec)]
-                        lightcurve_tab = pd.read_csv(
-                            os.path.join(CUSTOM_PHOT_DIR, f'{custom_phot_fname}.txt'),
-                            sep=r'\s+',  # delim_whitespace=True
-                            comment='#',
-                            names=['mjd', 'custom_mag', 'custom_magerr', 'filter', 'ul', 'telescope', 'instrument']
-                        )
-                        lightcurve_tab['custom_id'] = custom_phot_fname
-                        lightcurve_tab = Table.from_pandas(lightcurve_tab)
+                        fname_coords = [(
+                            float(fname.split('_')[1].replace("p", ".").replace("n", "-")),
+                            float(fname.split('_')[2].replace("p", ".").replace("n", "-"))
+                        ) for fname in custom_phot_fnames]
+
+                        # Get the lightcurve table
+                        fname_skycoords = SkyCoord(
+                            [c[0] for c in fname_coords],
+                            [c[1] for c in fname_coords],
+                            unit='deg',
+                            )
+                        seps = self.skycoord.separation(fname_skycoords)
+                        if np.min(seps.arcsecond > self.query_rad_arcsec):
+                            lightcurve_tab = None
+                        else:
+                            # Read the custom file format into a pandas DataFrame
+                            custom_phot_fname = custom_phot_fnames[np.argmin(seps.arcsec)]
+                            lightcurve_tab = pd.read_csv(
+                                os.path.join(CUSTOM_PHOT_DIR, f'{custom_phot_fname}.txt'),
+                                sep=r'\s+',  # delim_whitespace=True
+                                comment='#',
+                                names=['mjd', 'custom_mag', 'custom_magerr', 'filter', 'ul', 'telescope', 'instrument']
+                            )
+                            lightcurve_tab['custom_id'] = custom_phot_fname
+                            lightcurve_tab = Table.from_pandas(lightcurve_tab)
                 else:
                     lightcurve_tab: Table = Irsa.query_region(
                         coordinates=self.skycoord,

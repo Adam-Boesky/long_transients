@@ -3,6 +3,7 @@ import sys
 import ast
 import warnings
 import traceback
+import time
 import numpy as np
 import pandas as pd
 import astropy.units as u
@@ -1302,10 +1303,16 @@ class Source():
         return self._filtered_out_info
 
     def _get_GAIA_info(self, max_arcsec: float):
-        return Gaia.query_object_async(
-            coordinate=self.coord,
-            radius=max_arcsec * u.arcsec,
-        )
+        for i in range(3):
+            try:
+                return Gaia.query_object_async(
+                    coordinate=self.coord,
+                    radius=max_arcsec * u.arcsec,
+                )
+            except Exception as e:
+                print(f'Error getting GAIA info on attempt {i}: {e}')
+                time.sleep(1)
+        return Table()
 
     @property
     def GAIA_info(self) -> Table:

@@ -58,7 +58,7 @@ def get_sources_filtered_by(
     return srcs
 
 
-def get_kde(fields: List[int], band: str, return_data: bool = False) -> gaussian_kde:
+def get_kde(fields: List[int], band: str, return_data: bool = False, allow_missing: bool = False) -> gaussian_kde:
     """Get the fitted kde object for given band and list of given fields."""
     fields = [str(int(f)).zfill(6) for f in fields]
 
@@ -72,14 +72,15 @@ def get_kde(fields: List[int], band: str, return_data: bool = False) -> gaussian
     for i, field in enumerate(fields):
 
         print(f'Loading field {i+1} / {len(fields)}...')
-        field_tab = load_ecsv(
-            os.path.join(
-                data_path,
-                'catalog_results',
-                'field_results',
-                f'{field}_{band}.ecsv'
-            )
-        )
+        field_tab_path = os.path.join(data_path, 'catalog_results', 'field_results', f'{field}_{band}.ecsv')
+        if os.path.exists(field_tab_path):
+            field_tab = load_ecsv(field_tab_path)
+        else:
+            if allow_missing:
+                print(f'WARNING: Field {field} not found at {field_tab_path}. Skipping...')
+                continue
+            else:
+                raise FileNotFoundError(f'Field {field} not found in {field_tab_path}')
 
         # Only use sources in both catalogs
         field_tab = field_tab[field_tab['Catalog_Flag'] == 0]
