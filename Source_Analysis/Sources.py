@@ -750,11 +750,19 @@ class Source():
         else:
             self.postage_stamps['ZTF'].plot_cutout(band=band, ax=axes[1], **kwargs)
 
+        # Get the mag strings based on catalog flag
+        pstarr_mag_str = rf'${self.data[f"PSTARR_{band}PSFMag"][0]:.2f} \pm {self.data[f"PSTARR_{band}PSFMagErr"][0]:.2f}$'
+        ztf_mag_str = rf'${self.data[f"ZTF_{band}PSFMag"][0]:.2f} \pm {self.data[f"ZTF_{band}PSFMagErr"][0]:.2f}$'
+        if self.data['Catalog_Flag'][0] == 1:
+            pstarr_mag_str = 'ND'
+        elif self.data['Catalog_Flag'][0] == 2:
+            ztf_mag_str = 'ND'
+
         # Annotate with the mags
         axes[0].text(
             0.01,
             0.99,
-            rf'{band} mag = {self.data[f"PSTARR_{band}PSFMag"][0]:.2f}',
+            pstarr_mag_str,
             transform=axes[0].transAxes,
             ha='left',
             va='top',
@@ -764,13 +772,24 @@ class Source():
         axes[1].text(
             0.01,
             0.99,
-            rf'{band} mag = {self.data[f"ZTF_{band}PSFMag"][0]:.2f}',
+            ztf_mag_str,
             transform=axes[1].transAxes,
             ha='left',
             va='top',
             fontsize=15,
             color='red'
         )
+        for ax in axes:
+            ax.text(
+                0.02,
+                0.02,
+                rf'\textbf{{{band}}}',
+                transform=ax.transAxes,
+                ha='left',
+                va='bottom',
+                fontsize=15,
+                color='red'
+            )
 
         # Formatting
         if add_labels:
