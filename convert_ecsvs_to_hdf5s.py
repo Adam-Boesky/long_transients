@@ -13,20 +13,21 @@ def convert_directory(directory: str, depth: int = 1, regex: str = ''):
     # Recursively convert subdirectories
     for subdir in os.listdir(directory):
         if os.path.isdir(os.path.join(directory, subdir)):
-            convert_directory(os.path.join(directory, subdir), depth - 1)
+            convert_directory(os.path.join(directory, subdir), depth - 1, regex=regex)
 
     # Convert files
     for file in os.listdir(directory):
         if file.endswith('.ecsv') and re.match(regex, file):
 
+            ecsv_path = os.path.join(directory, file)
             hdf5_path = os.path.join(directory, file.replace('.ecsv', '.hdf5'))
 
             if os.path.exists(hdf5_path):
                 print(f'{hdf5_path} already exists. Skipping...')
                 continue
 
-            print(f'Converting {file}...')
-            table = load_ecsv(os.path.join(directory, file))
+            print(f'Converting {ecsv_path}...')
+            table = load_ecsv(ecsv_path)
 
             for col in table.colnames:
                 if col == 'PSTARR_PanSTARR_ID':
@@ -41,4 +42,4 @@ def convert_directory(directory: str, depth: int = 1, regex: str = ''):
 
 if __name__ == '__main__':
     # convert_directory('/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/catalog_results/field_results')
-    convert_directory('/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/catalog_results', depth=2, regex=r'.*associated.*')
+    convert_directory('/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/catalog_results', depth=2)
