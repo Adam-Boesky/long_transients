@@ -20,4 +20,4 @@
 module load python/3.12.5-fasrc01
 source activate long_transients2
 
-python3 /n/home04/aboesky/berger/long_transients/convert_ecsvs_to_hdf5s.py
+python3 -u /n/home04/aboesky/berger/long_transients/convert_ecsvs_to_hdf5s.py

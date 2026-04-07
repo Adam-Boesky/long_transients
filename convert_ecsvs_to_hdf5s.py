@@ -1,11 +1,12 @@
 import os
+import re
 import numpy as np
 
 from astropy.table import MaskedColumn
 from Extracting.utils import load_ecsv
 
 
-def convert_directory(directory: str, depth: int = 1):
+def convert_directory(directory: str, depth: int = 1, regex: str = ''):
     if depth == 0:
         return
 
@@ -16,7 +17,7 @@ def convert_directory(directory: str, depth: int = 1):
 
     # Convert files
     for file in os.listdir(directory):
-        if file.endswith('.ecsv'):
+        if file.endswith('.ecsv') and re.match(regex, file):
 
             hdf5_path = os.path.join(directory, file.replace('.ecsv', '.hdf5'))
 
@@ -39,4 +40,5 @@ def convert_directory(directory: str, depth: int = 1):
             table.write(hdf5_path, path='data', serialize_meta=True, overwrite=True)
 
 if __name__ == '__main__':
-    convert_directory('/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/catalog_results/field_results')
+    # convert_directory('/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/catalog_results/field_results')
+    convert_directory('/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/catalog_results', depth=2, regex=r'.*associated.*')
