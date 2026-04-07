@@ -27,7 +27,7 @@ from astroquery.sdss import SDSS
 
 sys.path.append('/Users/adamboesky/Research/long_transients')
 
-from Extracting.utils import get_data_path, load_cached_table, load_ecsv
+from Extracting.utils import get_data_path, load_cached_table, load_ecsv, get_snr_from_mag
 from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata_from_coords, get_ztf_metadata_from_metadata, get_pstarr_cutout
 from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
@@ -62,8 +62,12 @@ MANDATORY_SOURCE_COLUMNS = [
     'ZTF_r_theta', 'ZTF_g_x2', 'ZTF_i_errx2', 'ZTF_i_dec', 'ZTF_gKronMagErr', 'ZTF_r_erry2', 'ZTF_i_cxx',
     'ZTF_rPSFFlags', 'ZTF_iKronMagErr', 'ZTF_g_cflux', 'ZTF_r_y', 'ZTF_r_zero_pt_mag', 'ZTF_i_flux', 'ZTF_r_x',
     'ZTF_r_ymax', 'ZTF_g_cxx', 'ZTF_i_npix', 'ZTF_r_xmax', 'ZTF_g_cfit', 'ZTF_g_theta', 'ZTF_rPSFMagErr', 'ZTF_g_ypeak',
-    'ZTF_g_xcpeak', 'ZTF_g_ymax', 'ZTF_i_tnpix', 'ZTF_gKronFlag', 'x', 'y', 'association_separation_arcsec',
-    'Catalog_Flag', 'Catalog', 'filter_info', 'ZTF_g_field', 'ZTF_g_ccdid', 'ZTF_g_qid', 'ZTF_r_field', 'ZTF_r_ccdid',
+    'ZTF_g_xcpeak', 'ZTF_g_ymax', 'ZTF_i_tnpix', 'ZTF_gKronFlag',
+    'g_x', 'g_y', 'r_x', 'r_y', 'i_x', 'i_y',
+    'g_association_separation_arcsec', 'r_association_separation_arcsec', 'i_association_separation_arcsec',
+    'g_Catalog_Flag', 'r_Catalog_Flag', 'i_Catalog_Flag',
+    'g_Catalog', 'r_Catalog', 'i_Catalog',
+    'filter_info', 'ZTF_g_field', 'ZTF_g_ccdid', 'ZTF_g_qid', 'ZTF_r_field', 'ZTF_r_ccdid',
     'ZTF_r_qid', 'ZTF_i_field', 'ZTF_i_ccdid', 'ZTF_i_qid',
 ]
 Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
@@ -369,6 +373,7 @@ class Source():
             verbose: int = 1,
             catch_plotting_exceptions: bool = True,
             lc_catalogs: List[str] = ['ztf', 'wise', 'neowise', 'ptf', 'sdss', 'panstarrs', 'gaia', 'custom'],
+            detected_bands: Optional[tuple] = None,
         ):
         self.ra = ra
         self.dec = dec
@@ -396,12 +401,21 @@ class Source():
         self._ztf_lightcurve = None
         self._paddedfield = None
         self._GAIA_info = None
-        self._in_bands = None
         self.filter_info = {}
         self._image_metadata = None
         self._spectrum = None
         self._has_spectrum = True
         self._light_curve = None
+
+        # If detected_bands is provided at construction time, pre-populate the in_* cache
+        # so the lazy data lookup is bypassed entirely.
+        if detected_bands is not None:
+            self._in_bands = list(detected_bands)
+            self._in_g = 'g' in detected_bands
+            self._in_r = 'r' in detected_bands
+            self._in_i = 'i' in detected_bands
+        else:
+            self._in_bands = None
 
     @property
     def light_curve(self) -> Light_Curve:
@@ -497,9 +511,9 @@ class Source():
             test_paths = []
             for ind, field in self._image_metadata['fieldid'].items():
                 field_id = str(field).zfill(6)
-                if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv')):
+                if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.hdf5')):
                     inds_extracted.append(ind)
-                    test_paths.append(os.path.join(self.merged_field_basedir, f'{field_id}_g.ecsv'))
+                    test_paths.append(os.path.join(self.merged_field_basedir, f'{field_id}_g.hdf5'))
             if len(inds_extracted) > 0:
                 self._image_metadata = self._image_metadata.iloc[inds_extracted].copy().reset_index(drop=True)
             else:
@@ -534,7 +548,7 @@ class Source():
             def load_catalog(band):
                 padded_field = str(int(self.image_metadata["fieldid"])).zfill(6)
                 print(f'Loading {band} catalog from locally stored catalog {padded_field}_{band}...')
-                return band, load_cached_table(os.path.join(self.merged_field_basedir, f'{padded_field}_{band}.ecsv')).copy()
+                return band, load_cached_table(os.path.join(self.merged_field_basedir, f'{padded_field}_{band}.hdf5')).copy()
 
             with futures.ThreadPoolExecutor() as executor:
                 future_to_band = {executor.submit(load_catalog, band): band for band in self.bands}
@@ -563,6 +577,12 @@ class Source():
                         new_cname = f'ZTF_{band}_{cname[4:]}'
                         self.field_catalogs[band].rename_column(cname, new_cname)
                         unique_colnames.append(new_cname)
+                    elif cname in ('Catalog_Flag', 'Catalog', 'association_separation_arcsec', 'x', 'y') \
+                            and not cname.startswith(f'{band}_'):
+                        # Per-band columns that need a band prefix to avoid collision across bands
+                        new_cname = f'{band}_{cname}'
+                        self.field_catalogs[band].rename_column(cname, new_cname)
+                        unique_colnames.append(new_cname)
                     else:
                         unique_colnames.append(cname)
 
@@ -572,7 +592,7 @@ class Source():
 
             # Make the empty table to fill in
             data_dict = {k: [np.nan] for k in unique_colnames}
-            str_cols = ['Catalog']  # need to have types align
+            str_cols = ['g_Catalog', 'r_Catalog', 'i_Catalog']  # need to have types align
             for col in str_cols:
                 data_dict[col] = [str(data_dict[col][0])]
             self._data = Table(data_dict)
@@ -580,9 +600,10 @@ class Source():
             # Cast id to string
             self._data['PSTARR_PanSTARR_ID'] = self._data['PSTARR_PanSTARR_ID'].astype(object)
 
-            # Make sure the catalog column is a long enough string
-            if 'Catalog' in self._data.colnames:
-                self._data['Catalog'] = self._data['Catalog'].astype('S10')
+            # Make sure the per-band catalog columns are long enough strings
+            for _cat_col in ('g_Catalog', 'r_Catalog', 'i_Catalog'):
+                if _cat_col in self._data.colnames:
+                    self._data[_cat_col] = self._data[_cat_col].astype('S10')
 
             if self.verbose > 0: print('Searching for source in the catalogs!')
             for band, cat in self.field_catalogs.items():
@@ -751,12 +772,62 @@ class Source():
             self.postage_stamps['ZTF'].plot_cutout(band=band, ax=axes[1], **kwargs)
 
         # Get the mag strings based on catalog flag
-        pstarr_mag_str = rf'${self.data[f"PSTARR_{band}PSFMag"][0]:.2f} \pm {self.data[f"PSTARR_{band}PSFMagErr"][0]:.2f}$'
-        ztf_mag_str = rf'${self.data[f"ZTF_{band}PSFMag"][0]:.2f} \pm {self.data[f"ZTF_{band}PSFMagErr"][0]:.2f}$'
-        if self.data['Catalog_Flag'][0] == 1:
+        if np.isnan(self.data[f'PSTARR_{band}PSFMag'][0]):
             pstarr_mag_str = 'ND'
-        elif self.data['Catalog_Flag'][0] == 2:
+            pstarr_kron_mag_str = ''
+        else:
+            pstarr_mag_str = rf'PSF: ${self.data[f"PSTARR_{band}PSFMag"][0]:.2f} \pm {self.data[f"PSTARR_{band}PSFMagErr"][0]:.2f}$'
+            pstarr_snr = get_snr_from_mag(self.data[f'PSTARR_{band}PSFMag'][0], self.data[f'PSTARR_{band}PSFMagErr'][0], zp=25)
+            axes[0].text(
+                0.99,
+                0.10,
+                f'PSF SNR$={pstarr_snr:.2f}$',
+                transform=axes[0].transAxes,
+                ha='right',
+                va='bottom',
+                fontsize=15,
+                color='red'
+            )
+            pstarr_kron_mag_str = rf'Kron: ${self.data[f"PSTARR_{band}KronMag"][0]:.2f} \pm {self.data[f"PSTARR_{band}KronMagErr"][0]:.2f}$'
+            pstarr_kron_snr = get_snr_from_mag(self.data[f'PSTARR_{band}KronMag'][0], self.data[f'PSTARR_{band}KronMagErr'][0], zp=25)
+            axes[0].text(
+                0.99,
+                0.01,
+                f'Kron SNR$={pstarr_kron_snr:.2f}$',
+                transform=axes[0].transAxes,
+                ha='right',
+                va='bottom',
+                fontsize=15,
+                color='red'
+            )
+        if np.isnan(self.data[f'ZTF_{band}PSFMag'][0]):
             ztf_mag_str = 'ND'
+            ztf_kron_mag_str = ''
+        else:
+            ztf_mag_str = rf'PSF: ${self.data[f"ZTF_{band}PSFMag"][0]:.2f} \pm {self.data[f"ZTF_{band}PSFMagErr"][0]:.2f}$'
+            ztf_snr = get_snr_from_mag(self.data[f'ZTF_{band}PSFMag'][0], self.data[f'ZTF_{band}PSFMagErr'][0], zp=np.nan_to_num(self.data[f'ZTF_{band}_zero_pt_mag'][0], nan=25))
+            axes[1].text(
+                0.99,
+                0.01,
+                f'PSF SNR$={ztf_snr:.2f}$',
+                transform=axes[1].transAxes,
+                ha='right',
+                va='bottom',
+                fontsize=15,
+                color='red'
+            )
+            ztf_kron_mag_str = rf'Kron: ${self.data[f"ZTF_{band}KronMag"][0]:.2f} \pm {self.data[f"ZTF_{band}KronMagErr"][0]:.2f}$'
+            ztf_kron_snr = get_snr_from_mag(self.data[f'ZTF_{band}KronMag'][0], self.data[f'ZTF_{band}KronMagErr'][0], zp=np.nan_to_num(self.data[f'ZTF_{band}_zero_pt_mag'][0], nan=25))
+            axes[1].text(
+                0.99,
+                0.10,
+                f'Kron SNR$={ztf_kron_snr:.2f}$',
+                transform=axes[1].transAxes,
+                ha='right',
+                va='bottom',
+                fontsize=15,
+                color='red'
+            )
 
         # Annotate with the mags
         axes[0].text(
@@ -769,10 +840,30 @@ class Source():
             fontsize=15,
             color='red'
         )
+        axes[0].text(
+            0.01,
+            0.90,
+            pstarr_kron_mag_str,
+            transform=axes[0].transAxes,
+            ha='left',
+            va='top',
+            fontsize=15,
+            color='red'
+        )
         axes[1].text(
             0.01,
             0.99,
             ztf_mag_str,
+            transform=axes[1].transAxes,
+            ha='left',
+            va='top',
+            fontsize=15,
+            color='red'
+        )
+        axes[1].text(
+            0.01,
+            0.90,
+            ztf_kron_mag_str,
             transform=axes[1].transAxes,
             ha='left',
             va='top',
@@ -1272,7 +1363,7 @@ class Source():
             return None
         return tns_df.iloc[[idx]]
 
-    def get_filtered_out_info(self) -> Dict[str, str]:
+    def get_filtered_out_info(self, filtered_out_dirpath: Optional[str] = None) -> Dict[str, str]:
         """Get the information about the source being filtered out."""
         # Get the bands that have been filtered out
         reason_dict = {}
@@ -1287,13 +1378,21 @@ class Source():
             for cat in range(3):  # iterate over the three catalogs
 
                 # Get the coordinates of all filtered sources
-                filtered_out_info_path = os.path.join(
-                    get_data_path(),
-                    'filter_results', 
-                    str(self.image_metadata['fieldid']).zfill(6) if isinstance(self.image_metadata['fieldid'], int) \
-                        else self.image_metadata['fieldid'],
-                    f'{cat}_{band}_filtered_out.ecsv'
-                )
+                if filtered_out_dirpath is None:
+                    filtered_out_info_path = os.path.join(
+                        get_data_path(),
+                        'filter_results', 
+                        str(self.image_metadata['fieldid']).zfill(6) if isinstance(self.image_metadata['fieldid'], int) \
+                            else self.image_metadata['fieldid'],
+                        f'{cat}_{band}_filtered_out.ecsv'
+                    )
+                else:
+                    filtered_out_info_path = os.path.join(
+                        filtered_out_dirpath, 
+                        str(self.image_metadata['fieldid']).zfill(6) if isinstance(self.image_metadata['fieldid'], int) \
+                            else self.image_metadata['fieldid'],
+                        f'{cat}_{band}_filtered_out.ecsv'
+                    )
                 if not os.path.exists(filtered_out_info_path):
                     print(f'Warning: Filtered out info file not found at {filtered_out_info_path}')
                     continue
@@ -1419,6 +1518,7 @@ class Sources:
             decs: Optional[Iterable[float]] = None,
             sources: Optional[List[Source]] = None,
             catch_plotting_exceptions: bool = True,
+            bands_per_source: Optional[Iterable[tuple]] = None,
             **kwargs,
         ):
         if sources is not None:
@@ -1430,8 +1530,11 @@ class Sources:
             # Initialize from ras and decs
             self.ras = np.array(ras, dtype=float)
             self.decs = np.array(decs, dtype=float)
+            if bands_per_source is None:
+                bands_per_source = [None] * len(self.ras)
             self.sources = [
-                Source(ra, dec, **kwargs) for ra, dec in zip(self.ras, self.decs)
+                Source(ra, dec, detected_bands=db, **kwargs)
+                for ra, dec, db in zip(self.ras, self.decs, bands_per_source)
             ]
 
         self._data = None
@@ -1566,12 +1669,20 @@ class Sources:
         return self._in_i
 
     def save(self, fname: str, overwrite: bool = True):
+        """Save the Sources data to a hdf5 file."""
+        if not fname.endswith('.hdf5'):
+            raise ValueError(f'{fname} must end with .hdf5')
         to_save = self.data.copy()
         to_save['filter_info'] = [str(src.filter_info) for src in self.sources]
         if len(to_save) == 0:
             to_save['ra'] = []
             to_save['dec'] = []
-        to_save.write(fname, format='ascii.ecsv', overwrite=overwrite)
+        to_save.write(
+            fname,
+            path='data',
+            serialize_meta=True,
+            overwrite=overwrite,
+        )
 
     def submit_forced_photometry_batch(self) -> int:
         # Load important objects
