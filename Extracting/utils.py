@@ -10,7 +10,7 @@ from typing import Optional, Tuple, Union, Dict
 import numpy as np
 import pandas as pd
 
-MAST_CREDENTIAL_FNAME = 'mast_login.txt'
+MAST_CREDENTIAL_FNAME = 'mast_dino_login.txt'
 print(f'CasJobs will use the credentials from {MAST_CREDENTIAL_FNAME}')
 
 
@@ -138,6 +138,17 @@ def metadata_from_field_dirname(field_dirname: str) -> Dict[str, str]:
 
 def load_ecsv(fpath: str, careful_load: bool = True) -> Table:
     """Load a ecsv file as an astropy table. If you want speed and are okay with roundoff, careful_load can be False."""
+    # If the file is a hdf5 file, load it directly
+    if fpath.endswith('.hdf5'):
+        return Table.read(fpath, path='data')
+
+    # Try getting the hdf5 version if it exists
+    if fpath.endswith('.ecsv'):
+        hdf5_version_fpath = f'{fpath[:-5]}.hdf5'
+        if os.path.exists(hdf5_version_fpath):
+            print(f'hdf5 version of {fpath.split("/")[-1]} found, loading instead of ecsv...')
+            return Table.read(hdf5_version_fpath, path='data')
+
     if careful_load:
         return Table.read(fpath, format='ascii.ecsv')
     return Table.from_pandas(pd.read_csv(fpath, comment='#', delimiter=' '))
