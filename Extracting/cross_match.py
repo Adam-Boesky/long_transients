@@ -4,6 +4,7 @@ import re
 import sys
 import pickle
 import argparse
+import ztffields
 import numpy as np
 
 from typing import List, Callable
@@ -235,23 +236,23 @@ def cross_match_quadrant(quadrant_dirpath: str):
     if OVERWRITE is False:
         if (
             (
-                os.path.exists(os.path.join(quadrant_dirpath, 'g_associated.ecsv')) or not
-                os.path.exists(os.path.join(quadrant_dirpath, 'ZTF_g.ecsv'))
+                os.path.exists(os.path.join(quadrant_dirpath, 'g_associated.hdf5')) or not
+                os.path.exists(os.path.join(quadrant_dirpath, 'ZTF_g.hdf5'))
             )
             and (
-                os.path.exists(os.path.join(quadrant_dirpath, 'r_associated.ecsv')) or not
-                os.path.exists(os.path.join(quadrant_dirpath, 'ZTF_r.ecsv'))
+                os.path.exists(os.path.join(quadrant_dirpath, 'r_associated.hdf5')) or not
+                os.path.exists(os.path.join(quadrant_dirpath, 'ZTF_r.hdf5'))
             )
             and (
-                os.path.exists(os.path.join(quadrant_dirpath, 'i_associated.ecsv')) or not
-                os.path.exists(os.path.join(quadrant_dirpath, 'ZTF_i.ecsv'))
+                os.path.exists(os.path.join(quadrant_dirpath, 'i_associated.hdf5')) or not
+                os.path.exists(os.path.join(quadrant_dirpath, 'ZTF_i.hdf5'))
             )
         ):
-            print(f'Skipping {quadrant_dirpath.split('/')[-1]} because all bands are associated and overwrite is set to False.')
+            print(f'Skipping {quadrant_dirpath.split("/")[-1]} because all bands are associated and overwrite is set to False.')
             return
 
     print(f'Cross matching quadrant {quadrant_dirpath.split("/")[-1]}')
-    pstar_tab = load_ecsv(os.path.join(quadrant_dirpath, 'PSTARR.ecsv'), careful_load=True)
+    pstar_tab = load_ecsv(os.path.join(quadrant_dirpath, 'PSTARR.hdf5'), careful_load=True)
 
     # Cast flags to floats TODO: delete after running extraction again
     for col in pstar_tab.colnames:
@@ -263,10 +264,10 @@ def cross_match_quadrant(quadrant_dirpath: str):
     pstar_tab = collapse_nonunique_srcs(pstar_tab)
 
     # Iterate through the ZTF band catalogs
-    for band, fname in zip(BANDS, [f'ZTF_{band}.ecsv' for band in BANDS]):
+    for band, fname in zip(BANDS, [f'ZTF_{band}.hdf5' for band in BANDS]):
 
         # Check if already associated
-        if os.path.exists(os.path.join(quadrant_dirpath, f'{band}_associated.ecsv')) and OVERWRITE is False:
+        if os.path.exists(os.path.join(quadrant_dirpath, f'{band}_associated.hdf5')) and OVERWRITE is False:
             print(
                 f'Skipping {band} association for {quadrant_dirpath.split("/")[-1]} because it is already associated ' +
                 'and overwrite is set to False.'
@@ -287,14 +288,17 @@ def cross_match_quadrant(quadrant_dirpath: str):
             associated_tab['PSTARR_PanSTARR_ID'] = associated_tab['PSTARR_PanSTARR_ID'].astype(object)
             associated_tab['PSTARR_PanSTARR_ID'][associated_tab['PSTARR_PanSTARR_ID'].mask] = np.nan 
             associated_tab.write(
-                os.path.join(quadrant_dirpath, f'{band}_associated.ecsv'),
-                format='ascii.ecsv',
+                os.path.join(quadrant_dirpath, f'{band}_associated.hdf5'),
+                path='data',
+                serialize_meta=True,
                 overwrite=True,
             )
 
 
 def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'field_results'):
     """Merge all quadrants from a field into one table."""
+
+    print(f'Merging field {field_name}')
 
     # Get the quadrant directories
     field_quad_dirs = [quad_dir for quad_dir in quad_dirs if quad_dir.startswith(field_name) and (re.match(r'[0-9]{6}_[0-9]{2}_[0-9]', quad_dir) is not None)]
@@ -306,7 +310,7 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
 
         # Check if the merged file already exists
         if OVERWRITE is False:
-            if os.path.exists(os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_{band}.ecsv')):
+            if os.path.exists(os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_{band}.hdf5')):
                 print(
                     f'Skipping merging for {band} band for {field_name} because it already exists and overwrite is ' +
                     'set to False.'
@@ -316,9 +320,9 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
         # Start with first available quadrant
         getting_first_tab = True
         while getting_first_tab and len(field_quad_dirs) > 0:
-            first_tab_path = os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv')
+            first_tab_path = os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.hdf5')
             if os.path.exists(first_tab_path):
-                tab = load_ecsv(os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.ecsv'), careful_load=True)
+                tab = load_ecsv(os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.hdf5'), careful_load=True)
                 getting_first_tab = False
 
                 # Add on the field info for each source
@@ -335,7 +339,7 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
 
         # Merge the rest of them
         for fqdir in field_quad_dirs[1:]:
-            fqpath = os.path.join(CATALOG_DIR, fqdir, f'{band}_associated.ecsv')
+            fqpath = os.path.join(CATALOG_DIR, fqdir, f'{band}_associated.hdf5')
             if os.path.exists(fqpath):
                 tab_to_stack = load_ecsv(fqpath, careful_load=True)
 
@@ -349,9 +353,10 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
             else:
                 print(f'WARNING: {fqpath} does not exist. Skipping...')
         tab.write(
-            os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_{band}.ecsv'),
-            format='ascii.ecsv',
-            overwrite=True
+            os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_{band}.hdf5'),
+            path='data',
+            serialize_meta=True,
+            overwrite=True,
         )
 
 
@@ -359,6 +364,12 @@ def associate_quadrants(initializer: Callable):
     """Cross match the g, r, i catalogs with the panstarrs catalog for each quadrant."""
     quad_dirpaths = [os.path.join(CATALOG_DIR, quad_dir) for quad_dir in os.listdir(CATALOG_DIR) \
                      if re.match(r'[0-9]{6}_[0-9]{2}_[0-9]', quad_dir)]
+
+    # # Temporary filtering for gemini-only
+    # north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
+    # south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
+    # gemini_fields = np.concatenate([north_fields, south_fields])
+    # quad_dirpaths = [qdp for qdp in quad_dirpaths if int(qdp.split('/')[-1].split('_')[0]) in gemini_fields]
 
     with multiprocessing.Pool(processes=N_THREADS, initializer=initializer, initargs=(CATALOG_DIR, BANDS, OVERWRITE, N_THREADS)) as pool:
         pool.map(cross_match_quadrant, quad_dirpaths)
@@ -373,7 +384,21 @@ def merge_fields(initializer: Callable, output_directory: str = 'field_results')
 
     # Get the directories for each quadrant and the field names
     quad_dirs = os.listdir(CATALOG_DIR)
-    field_names = list(set([quad_dir.split('_')[0] for quad_dir in quad_dirs]))
+
+    # field_names = list(set([quad_dir.split('_')[0] for quad_dir in quad_dirs]))
+    # field_names.remove('field')
+    # field_names.remove('extraction')
+
+    # # Temporary filtering for gemini-only
+    # north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
+    # south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
+    # gemini_fields = np.concatenate([north_fields, south_fields])
+    # field_names = [fname for fname in field_names if int(fname) in gemini_fields]
+
+    # # TODO: TEMP FIX
+    # field_names = ['000618', '000570', '000313', '000616', '000519', '000573', '000316', '000567', '000620', '000617', '000314']
+    # field_names = field_names
+    # field_names = ['000520']
 
     # Merge fields in parallel
     with multiprocessing.Pool(processes=N_THREADS, initializer=initializer, initargs=(CATALOG_DIR, BANDS, OVERWRITE, N_THREADS)) as pool:
