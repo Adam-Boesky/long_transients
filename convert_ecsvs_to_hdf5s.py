@@ -30,7 +30,7 @@ def convert_directory(directory: str, depth: int = 1, regex: str = ''):
             table = load_ecsv(ecsv_path)
 
             for col in table.colnames:
-                if col == 'PSTARR_PanSTARR_ID':
+                if col in ('PSTARR_PanSTARR_ID', 'PanSTARR_ID', 'qualityFlag', 'primaryDetection'):
                     data = np.array(table[col])
                     mask = np.array([v is None or (isinstance(v, float) and np.isnan(v)) for v in data])
                     fill = -1
