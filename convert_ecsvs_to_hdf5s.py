@@ -5,9 +5,24 @@ from astropy.table import MaskedColumn
 from Extracting.utils import load_ecsv
 
 
-def convert_directory(directory: str):
+def convert_directory(directory: str, depth: int = 1):
+    if depth == 0:
+        return
+
+    # Recursively convert subdirectories
+    for subdir in os.listdir(directory):
+        if os.path.isdir(os.path.join(directory, subdir)):
+            convert_directory(os.path.join(directory, subdir), depth - 1)
+
+    # Convert files
     for file in os.listdir(directory):
         if file.endswith('.ecsv'):
+
+            hdf5_path = os.path.join(directory, file.replace('.ecsv', '.hdf5'))
+
+            if os.path.exists(hdf5_path):
+                print(f'{hdf5_path} already exists. Skipping...')
+                continue
 
             print(f'Converting {file}...')
             table = load_ecsv(os.path.join(directory, file))
@@ -21,7 +36,7 @@ def convert_directory(directory: str):
                     table[col] = MaskedColumn(values, mask=mask)   
                     print(col, type(table[col][0]))
 
-            table.write(os.path.join(directory, file.replace('.ecsv', '.hdf5')), path='data', serialize_meta=True, overwrite=True)
+            table.write(hdf5_path, path='data', serialize_meta=True, overwrite=True)
 
 if __name__ == '__main__':
-    convert_directory('/Users/adamboesky/Research/long_transients/Data/debugging')
+    convert_directory('/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/catalog_results/field_results')
