@@ -90,9 +90,9 @@ def nan_nearby(row: int, column: int, radius: int, arr: np.ndarray) -> bool:
 
 
 @lru_cache(maxsize=None)
-def load_cached_table(table_path: str, format: str = 'ecsv') -> Table:
+def load_cached_table(table_path: str) -> Table:
     """Load a table from disk and cache it in memory."""
-    return ascii.read(table_path, format=format)
+    return load_ecsv(table_path)
 
 
 # Useful paths
