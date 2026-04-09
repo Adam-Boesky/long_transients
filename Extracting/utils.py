@@ -2,7 +2,7 @@ import os
 import pathlib
 
 from astropy.io import ascii
-from astropy.table import Table
+from astropy.table import Table, MaskedColumn
 from functools import lru_cache
 from mastcasjobs import MastCasJobs
 from typing import Optional, Tuple, Union, Dict
@@ -134,6 +134,41 @@ def metadata_from_field_dirname(field_dirname: str) -> Dict[str, str]:
     """Get the ZTF image metadata given the field's dirname in our saved data."""
     field, ccdid, qid = field_dirname.split('_')
     return {'fieldid': field, 'ccdid': ccdid, 'qid': qid}
+
+
+# Columns that are logically integers but may arrive as nullable floats (None/NaN fill).
+# These must be cast to masked int64 before writing to avoid float rounding of large IDs.
+_INT64_COLUMNS = frozenset({'PSTARR_PanSTARR_ID', 'PanSTARR_ID', 'qualityFlag', 'primaryDetection'})
+
+
+def prepare_table_for_write(table: Table) -> Table:
+    """Return a copy of *table* with columns cast for safe serialization.
+
+    Two fixes are applied:
+    - Byte-string columns (dtype kind 'S' or object-of-bytes) are converted to str
+      so ECSV writers don't choke on them.
+    - Columns in ``_INT64_COLUMNS`` that arrived as nullable floats (None / NaN fill)
+      are cast to masked int64, preserving integer precision for large IDs like
+      PanSTARRS objIDs that would otherwise be rounded.
+    """
+    table = table.copy()
+    for colname in table.colnames:
+        col = table[colname]
+        # Bytes -> str
+        if col.dtype.kind == 'S' or (
+            col.dtype.kind == 'O' and len(col) > 0 and isinstance(col[0], bytes)
+        ):
+            table[colname] = col.astype(str)
+        # Nullable float -> masked int64 for known integer columns
+        elif colname in _INT64_COLUMNS:
+            data = np.array(col)
+            mask = np.array([v is None or (isinstance(v, float) and np.isnan(v)) for v in data])
+            values = np.array(
+                [v if not (v is None or (isinstance(v, float) and np.isnan(v))) else -1 for v in data],
+                dtype=np.int64,
+            )
+            table[colname] = MaskedColumn(values, mask=mask)
+    return table
 
 
 def load_ecsv(fpath: str, careful_load: bool = True) -> Table:

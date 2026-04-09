@@ -9,8 +9,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 try:
     from Catalogs import (PSTARR_Catalog, ZTF_Catalog, associate_tables_by_coordinates)
+    from utils import prepare_table_for_write
 except ModuleNotFoundError:
     from .Catalogs import (PSTARR_Catalog, ZTF_Catalog, associate_tables_by_coordinates)
+    from .utils import prepare_table_for_write
 
 
 class Tile():
@@ -157,13 +159,13 @@ class Tile():
         os.makedirs(os.path.join(outdir, 'EPSFs'))
 
         # Store the PanSTARR catalog
-        self.pstar_catalog.data.write(os.path.join(outdir, 'PSTARR.hdf5'), path='data', serialize_meta=True, overwrite=True)
+        prepare_table_for_write(self.pstar_catalog.data).write(os.path.join(outdir, 'PSTARR.hdf5'), path='data', serialize_meta=True, overwrite=True)
 
         # Store the ZTF catalogs, ZTF nan masks, and WCSs
         for band in self.bands:
 
             # Save the ztf catalog
-            self.ztf_catalogs[band].data.write(os.path.join(outdir, f'ZTF_{band}.hdf5'), path='data', serialize_meta=True, overwrite=True)
+            prepare_table_for_write(self.ztf_catalogs[band].data).write(os.path.join(outdir, f'ZTF_{band}.hdf5'), path='data', serialize_meta=True, overwrite=True)
 
             # Save the ZTF catalog's nan mask, WCS, and EPSF fit
             np.save(os.path.join(outdir, 'nan_masks', f'ZTF_{band}_nan_mask.npy'), self.ztf_catalogs[band].sextractor.nan_mask)
