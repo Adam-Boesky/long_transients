@@ -20,12 +20,12 @@ ALL_LC_COLNAMES = ['ptf_id', 'wise_id', 'ztf_id', 'ra', 'dec', 'mjd', 'g_mag', '
                    'i_magerr', 'w1_mag', 'w1_magerr', 'w2_mag', 'w2_magerr', 'w3_mag', 'w3_magerr', 'w4_mag',
                    'w4_magerr', 'R_mag', 'R_magerr']
 LC_MARKER_INFO = {
-    'ptf': '.',
+    'ptf': 'P',
     'ztf': '<',
     'sdss': 'd',
     'panstarrs': '3',
     'gaia': 'X',
-    'custom': '*',
+    'custom': '.',
 }
 LC_COLOR_INFO = {
     'u': 'black',

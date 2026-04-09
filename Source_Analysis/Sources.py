@@ -18,7 +18,7 @@ from matplotlib.axes._axes import Axes
 
 from astropy.wcs import WCS
 from astropy.time import Time
-from astropy.table import Table, vstack
+from astropy.table import Table, vstack, MaskedColumn
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from astropy.visualization import simple_norm, time_support
 from astropy.io.fits import HDUList
@@ -1442,6 +1442,7 @@ class Source():
     def get_info_string(self, wise_snr_thresh: float = 3.0) -> str:
         """Get string with all the necessary source information."""
         info_string = r'\textbf{Source Information:}' f'\nCoordinates: ({self.ra:.5f}, {self.dec:.5f})'
+        info_string += f'ZTF location: {int(self.data["fieldid"])} {int(self.data["ccdid"])} {int(self.data["qid"])}'
         info_string += f'\nFiltering: {self.filtered_out_info if len(self.filtered_out_info) > 0 else "No bands filtered out."}'
         tns_info = self.get_TNS_info()
         if tns_info is None:
@@ -1670,19 +1671,32 @@ class Sources:
 
     def save(self, fname: str, overwrite: bool = True):
         """Save the Sources data to a hdf5 file."""
-        if not fname.endswith('.hdf5'):
-            raise ValueError(f'{fname} must end with .hdf5')
         to_save = self.data.copy()
         to_save['filter_info'] = [str(src.filter_info) for src in self.sources]
         if len(to_save) == 0:
             to_save['ra'] = []
             to_save['dec'] = []
-        to_save.write(
-            fname,
-            path='data',
-            serialize_meta=True,
-            overwrite=overwrite,
-        )
+        if fname.endswith('.hdf5'):
+
+            # Cast some integer columns to int64 for hdf5 compatibility
+            for col in to_save.colnames:
+                if col in ('PSTARR_PanSTARR_ID', 'PanSTARR_ID', 'qualityFlag', 'primaryDetection'):
+                    data = np.array(to_save[col])
+                    mask = np.array([v is None or (isinstance(v, float) and np.isnan(v)) for v in data])
+                    fill = -1
+                    values = np.array([v if not (v is None or (isinstance(v, float) and np.isnan(v))) else fill for v in data], dtype=np.int64)                                                                       
+                    to_save[col] = MaskedColumn(values, mask=mask)   
+
+            to_save.write(
+                fname,
+                path='data',
+                serialize_meta=True,
+                overwrite=overwrite,
+            )
+        elif fname.endswith('.ecsv'):
+            to_save.write(fname, format='ascii.ecsv', overwrite=overwrite)
+        else:
+            raise ValueError(f'{fname} must end with .hdf5 or .ecsv')
 
     def submit_forced_photometry_batch(self) -> int:
         # Load important objects
