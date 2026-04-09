@@ -1,13 +1,12 @@
 """Objects that get the information from astrophysical catalogs."""
 import subprocess
-from PIL import Image
 import atexit
-import time
 import random
 import os
+import sys
 import tempfile
 import traceback
-from io import StringIO, BytesIO
+from io import StringIO
 from typing import Dict, Iterable, Optional, Tuple, List, Union
 from functools import lru_cache
 
@@ -17,15 +16,16 @@ import requests
 from astropy.wcs import WCS
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from astropy.table import Table, join, vstack
-from astropy.io import ascii, fits
+from astropy.io import fits
 from astropy.utils.data import clear_download_cache
 
 try:
     from Source_Extractor import Source_Extractor
     from utils import get_credentials, MASTCASJOBS
 except ModuleNotFoundError:
-    from .Source_Extractor import Source_Extractor
-    from .utils import get_credentials, MASTCASJOBS
+    sys.path.append(os.path.dirname(os.getcwd()))
+    from Extracting.Source_Extractor import Source_Extractor
+    from Extracting.utils import get_credentials, MASTCASJOBS
 
 ZTF_CUTOUT_HALFWIDTH = 0.8888889 / 2
 
