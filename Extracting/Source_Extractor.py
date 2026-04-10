@@ -348,7 +348,7 @@ class Source_Extractor():
             epsf_builder = EPSFBuilder(fitter=fitter)
             self.epsf, _ = epsf_builder(self.stars) # self.epsf is an EPSFModel
         except Exception as e:
-            e.add_note(f'Band: {self.band}\nCoordinate Range: {self.get_coord_range()}')
+            e.add_note(f'Band: {self.band}\nCoordinate Range: {self.get_coord_range()}\nImage fpath: {self.fits_fpath}')
             raise e
 
         # Perform the PSF photometry with the fitted model
