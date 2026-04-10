@@ -51,7 +51,10 @@ def get_incomplete_quadrant_dirs(bands: Iterable[str] = ('g', 'r', 'i')) -> dict
     results_dir = os.path.join(get_data_path(), 'catalog_results')
     incomplete = {}
 
-    for dirname in sorted(os.listdir(results_dir)):
+    results_dirs = os.listdir(results_dir)
+    for i, dirname in enumerate(sorted(results_dirs)):
+        if i % 100 == 0:
+            print(f'Checking completeness of {i} / {len(results_dirs)} directories...')
         dirpath = os.path.join(results_dir, dirname)
         if not os.path.isdir(dirpath) or dirname == 'field_results':
             continue
@@ -143,16 +146,18 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
             print('No points given.')
             add_to_bad_quads(quad_dirname)
 
-        elif 'The truth value of an array with more than one element is ambiguous' in error_msg:
-            print('The truth value of an array with more than one element is ambiguous.')
-            add_to_bad_quads(quad_dirname)
+        # elif 'The truth value of an array with more than one element is ambiguous' in error_msg:
+        #     print('The truth value of an array with more than one element is ambiguous.')
+        #     add_to_bad_quads(quad_dirname)
 
-        elif 'The limit of 300000 active object pixels over the detection threshold' in error_msg:
-            print('The limit of 300000 active object pixels over the detection threshold was reached.')
-            add_to_bad_quads(quad_dirname)
+        # elif 'The limit of 300000 active object pixels over the detection threshold' in error_msg:
+        #     print('The limit of 300000 active object pixels over the detection threshold was reached.')
+        #     add_to_bad_quads(quad_dirname)
 
         # For any other exceptions, re-raise them
         print(f"DEBUG: Re-raising unhandled exception: {type(e).__name__}: {error_msg}")
+        traceback.print_exc()
+
         raise e
 
 
@@ -203,11 +208,13 @@ def extract_sources():
     fields_imaged_all_bands = np.intersect1d(ar1=bands_imaged['g'], ar2=bands_imaged['r'])
     fields_imaged_all_bands = np.intersect1d(ar1=fields_imaged_all_bands, ar2=bands_imaged['i'])
 
-    # Gemini logic
-    north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
-    south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
-    gemini_fields = np.concatenate([north_fields, south_fields])
-    fields_imaged_all_bands = np.intersect1d(ar1=gemini_fields, ar2=fields_imaged_all_bands)
+    # # Gemini logic
+    # north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
+    # south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
+    # gemini_fields = np.concatenate([north_fields, south_fields])
+    # fields_imaged_all_bands = np.intersect1d(ar1=gemini_fields, ar2=fields_imaged_all_bands)
+
+    # fields_imaged_all_bands = ['000315', '000316', '000573']
 
     # THIS IS THE FINAL RUN!!!
     for fid in fields_imaged_all_bands:
