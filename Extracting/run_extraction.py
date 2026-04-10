@@ -76,10 +76,16 @@ def get_incomplete_quadrant_dirs(bands: Iterable[str] = ('g', 'r', 'i')) -> dict
             missing.append('PSTARR.hdf5')
 
         bands_present = [b for b in bands if f'ZTF_{b}.hdf5' in root_files]
+        bands_missing = [b for b in bands if b not in bands_present]
 
         if not bands_present:
             missing.append('ZTF_*.hdf5 (no band files found)')
         else:
+            # Flag bands that are entirely absent
+            for band in bands_missing:
+                missing.append(f'ZTF_{band}.hdf5 (band not extracted)')
+
+            # For bands that are present, check all associated files exist
             for band in bands_present:
                 if f'ZTF_{band}_nan_mask.npy' not in nan_mask_files:
                     missing.append(os.path.join('nan_masks', f'ZTF_{band}_nan_mask.npy'))
