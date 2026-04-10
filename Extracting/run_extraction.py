@@ -34,6 +34,53 @@ def add_to_bad_quads(quad_dirname: str):
         np.save(f, bad_quads)
 
 
+def get_incomplete_quadrant_dirs(bands: Iterable[str] = ('g', 'r', 'i')) -> dict:
+    """Crawl catalog_results and return directories that are missing expected extraction files.
+
+    A complete quadrant directory contains:
+      - PSTARR.hdf5
+      - For each band present: ZTF_{band}.hdf5, nan_masks/ZTF_{band}_nan_mask.npy,
+        WCSs/ZTF_{band}_wcs.pkl, EPSFs/ZTF_{band}_EPSF.npy
+
+    'Bands present' is inferred from whichever ZTF_{band}.hdf5 files exist. If none
+    exist for any band, the whole directory is flagged as empty.
+
+    Returns:
+        Dict mapping quad_dirname -> list of missing file paths (relative to the quad dir).
+    """
+    results_dir = os.path.join(get_data_path(), 'catalog_results')
+    incomplete = {}
+
+    for dirname in sorted(os.listdir(results_dir)):
+        dirpath = os.path.join(results_dir, dirname)
+        if not os.path.isdir(dirpath) or dirname == 'field_results':
+            continue
+
+        missing = []
+
+        if not os.path.exists(os.path.join(dirpath, 'PSTARR.hdf5')):
+            missing.append('PSTARR.hdf5')
+
+        bands_present = [b for b in bands if os.path.exists(os.path.join(dirpath, f'ZTF_{b}.hdf5'))]
+
+        if not bands_present:
+            missing.append('ZTF_*.hdf5 (no band files found)')
+        else:
+            for band in bands_present:
+                for fpath in [
+                    os.path.join('nan_masks', f'ZTF_{band}_nan_mask.npy'),
+                    os.path.join('WCSs', f'ZTF_{band}_wcs.pkl'),
+                    os.path.join('EPSFs', f'ZTF_{band}_EPSF.npy'),
+                ]:
+                    if not os.path.exists(os.path.join(dirpath, fpath)):
+                        missing.append(fpath)
+
+        if missing:
+            incomplete[dirname] = missing
+
+    return incomplete
+
+
 def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
 
     try:
