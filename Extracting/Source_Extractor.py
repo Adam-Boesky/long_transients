@@ -65,8 +65,8 @@ class Source_Extractor():
         self.band = '' if band is None else band  # the band that the image is in
 
         # PSF fitting parameters (hand-tuned as function of FWHM)
-        self.psf_cutout_size = np.ceil(self.r_fwhm * 14 // 2 * 2 + 1).astype(int)  # rounding to nearest odd integer
-        self.fit_boxsize = np.ceil(self.r_fwhm * 2 // 2 * 2 + 1).astype(int)
+        self.psf_cutout_size = int(np.ceil(self.r_fwhm * 14 // 2 * 2 + 1))  # rounding to nearest odd integer
+        self.fit_boxsize = int(np.ceil(self.r_fwhm * 2 // 2 * 2 + 1))
 
         # Properties defined later
         self._sources = None
@@ -321,6 +321,7 @@ class Source_Extractor():
         nan_init_flux_mask = np.isnan(kron_mags)
         bad_src_mask = np.logical_or(np.logical_or(nan_nearby_mask, truncated_mask), nan_init_flux_mask)
         print(f'Info for {self.band} EPSF fitting in coordinate range {self.get_coord_range()}:')
+        print(f'\tImage fpath: {self.fits_fpath}')
         print(f'\tNumber of sources: {len(self.sources)}')
         print(f'\tNumber of sources with NaN nearby: {np.sum(nan_nearby_mask)}')
         print(f'\tNumber of sources with truncated: {np.sum(truncated_mask)}')
