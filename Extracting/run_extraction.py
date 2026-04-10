@@ -56,24 +56,34 @@ def get_incomplete_quadrant_dirs(bands: Iterable[str] = ('g', 'r', 'i')) -> dict
         if not os.path.isdir(dirpath) or dirname == 'field_results':
             continue
 
+        # List each subdirectory once and check membership against sets — avoids
+        # one network stat() call per file on NFS/Lustre filesystems.
+        try:
+            root_files = set(os.listdir(dirpath))
+            nan_mask_files = set(os.listdir(os.path.join(dirpath, 'nan_masks'))) if 'nan_masks' in root_files else set()
+            wcs_files = set(os.listdir(os.path.join(dirpath, 'WCSs'))) if 'WCSs' in root_files else set()
+            epsf_files = set(os.listdir(os.path.join(dirpath, 'EPSFs'))) if 'EPSFs' in root_files else set()
+        except OSError:
+            incomplete[dirname] = ['(could not list directory contents)']
+            continue
+
         missing = []
 
-        if not os.path.exists(os.path.join(dirpath, 'PSTARR.hdf5')):
+        if 'PSTARR.hdf5' not in root_files:
             missing.append('PSTARR.hdf5')
 
-        bands_present = [b for b in bands if os.path.exists(os.path.join(dirpath, f'ZTF_{b}.hdf5'))]
+        bands_present = [b for b in bands if f'ZTF_{b}.hdf5' in root_files]
 
         if not bands_present:
             missing.append('ZTF_*.hdf5 (no band files found)')
         else:
             for band in bands_present:
-                for fpath in [
-                    os.path.join('nan_masks', f'ZTF_{band}_nan_mask.npy'),
-                    os.path.join('WCSs', f'ZTF_{band}_wcs.pkl'),
-                    os.path.join('EPSFs', f'ZTF_{band}_EPSF.npy'),
-                ]:
-                    if not os.path.exists(os.path.join(dirpath, fpath)):
-                        missing.append(fpath)
+                if f'ZTF_{band}_nan_mask.npy' not in nan_mask_files:
+                    missing.append(os.path.join('nan_masks', f'ZTF_{band}_nan_mask.npy'))
+                if f'ZTF_{band}_wcs.pkl' not in wcs_files:
+                    missing.append(os.path.join('WCSs', f'ZTF_{band}_wcs.pkl'))
+                if f'ZTF_{band}_EPSF.npy' not in epsf_files:
+                    missing.append(os.path.join('EPSFs', f'ZTF_{band}_EPSF.npy'))
 
         if missing:
             incomplete[dirname] = missing
