@@ -63,9 +63,6 @@ def get_incomplete_quadrant_dirs(bands: Iterable[str] = ('g', 'r', 'i')) -> dict
         # one network stat() call per file on NFS/Lustre filesystems.
         try:
             root_files = set(os.listdir(dirpath))
-            nan_mask_files = set(os.listdir(os.path.join(dirpath, 'nan_masks'))) if 'nan_masks' in root_files else set()
-            wcs_files = set(os.listdir(os.path.join(dirpath, 'WCSs'))) if 'WCSs' in root_files else set()
-            epsf_files = set(os.listdir(os.path.join(dirpath, 'EPSFs'))) if 'EPSFs' in root_files else set()
         except OSError:
             incomplete[dirname] = ['(could not list directory contents)']
             continue
@@ -75,24 +72,9 @@ def get_incomplete_quadrant_dirs(bands: Iterable[str] = ('g', 'r', 'i')) -> dict
         if 'PSTARR.hdf5' not in root_files:
             missing.append('PSTARR.hdf5')
 
-        bands_present = [b for b in bands if f'ZTF_{b}.hdf5' in root_files]
-        bands_missing = [b for b in bands if b not in bands_present]
-
-        if not bands_present:
-            missing.append('ZTF_*.hdf5 (no band files found)')
-        else:
-            # Flag bands that are entirely absent
-            for band in bands_missing:
-                missing.append(f'ZTF_{band}.hdf5 (band not extracted)')
-
-            # For bands that are present, check all associated files exist
-            for band in bands_present:
-                if f'ZTF_{band}_nan_mask.npy' not in nan_mask_files:
-                    missing.append(os.path.join('nan_masks', f'ZTF_{band}_nan_mask.npy'))
-                if f'ZTF_{band}_wcs.pkl' not in wcs_files:
-                    missing.append(os.path.join('WCSs', f'ZTF_{band}_wcs.pkl'))
-                if f'ZTF_{band}_EPSF.npy' not in epsf_files:
-                    missing.append(os.path.join('EPSFs', f'ZTF_{band}_EPSF.npy'))
+        for band in bands:
+            if f'ZTF_{band}.hdf5' not in root_files:
+                missing.append(f'ZTF_{band}.hdf5')
 
         if missing:
             incomplete[dirname] = missing
@@ -219,6 +201,13 @@ def extract_sources():
     # south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
     # gemini_fields = np.concatenate([north_fields, south_fields])
     # fields_imaged_all_bands = np.intersect1d(ar1=gemini_fields, ar2=fields_imaged_all_bands)
+
+    # Get fields that have incomplete/partial extractions and intersect with imaged fields
+    print('Checking for incomplete quadrant directories...')
+    incomplete_quads = get_incomplete_quadrant_dirs()
+    incomplete_field_ids = np.unique([int(dirname[:6]) for dirname in incomplete_quads.keys()])
+    fields_to_reextract = np.intersect1d(incomplete_field_ids, fields_imaged_all_bands)
+    print(f'Found {len(incomplete_quads)} incomplete quadrants across {len(fields_to_reextract)} imaged fields.')
 
     # fields_imaged_all_bands = ['000315', '000316', '000573']
 
