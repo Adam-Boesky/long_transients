@@ -16,7 +16,6 @@ from astropy.nddata import NDData
 from astropy.visualization import simple_norm
 from matplotlib.patches import Ellipse
 from photutils.psf import PSFPhotometry, EPSFBuilder, EPSFFitter, EPSFStars, extract_stars
-from scipy.interpolate import NearestNDInterpolator
 
 from Extracting.utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
 # try:
@@ -27,6 +26,8 @@ from Extracting.utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_fro
 # Up the SEP pixstack size to 1M --- default isn't enough
 sep.set_extract_pixstack(1_000_000)
 
+# Up the SEP sub object limit to 4096 --- default isn't enough
+sep.set_sub_object_limit(4096)
 
 class Source_Extractor():
     def __init__(self, fits_fpath: str, band: Optional[str] = None):
