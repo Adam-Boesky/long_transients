@@ -180,6 +180,62 @@ def process_field(field_id: int):
                     raise exc
 
 
+def process_missed_quadrants(quads_to_reextract: dict):
+    """Re-extract quadrants that are missing HDF5 files.
+
+    For each incomplete quadrant, queries ZTF metadata to confirm which missing
+    bands actually have images available, then runs extraction on those bands.
+
+    Parameters:
+        quads_to_reextract: dict mapping quad_dirname -> list of missing filenames,
+                            as returned by get_incomplete_quadrant_dirs().
+    """
+    data_path = get_data_path()
+
+    # Build a list of (fieldid, ccdid, qid, bands_to_extract) for quadrants that
+    # have at least one missing band with an available ZTF image.
+    quadrants_to_run = []
+    for dirname, missing_files in quads_to_reextract.items():
+        fieldid, ccdid, qid = dirname.split('_')
+        fieldid, ccdid, qid = int(fieldid), int(ccdid), int(qid)
+
+        # Derive which bands are missing from the missing filenames
+        missing_bands = [
+            f[4]  # ZTF_{band}.hdf5 -> index 4 is the band character
+            for f in missing_files if f.startswith('ZTF_') and f.endswith('.hdf5')
+        ]
+        if not missing_bands:
+            continue
+
+        # Query ZTF metadata once per quadrant to see which bands have images
+        metadata = get_ztf_metadata_from_metadata(
+            ztf_metadata={'fieldid': fieldid, 'ccdid': ccdid, 'qid': qid},
+            verbose=0,
+        )
+        available_bands = [fc[1] for fc in metadata['filtercode'].unique()]
+        bands_to_extract = [b for b in missing_bands if b in available_bands]
+
+        if not bands_to_extract:
+            print(f'{dirname}: no ZTF images available for missing bands {missing_bands}. Skipping.')
+            continue
+
+        print(f'{dirname}: will re-extract bands {bands_to_extract}.')
+        quadrants_to_run.append((fieldid, ccdid, qid, bands_to_extract))
+
+    print(f'Re-extracting {len(quadrants_to_run)} quadrants...')
+    with ProcessPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(process_quadrant, fieldid, ccdid, qid, bands)
+            for fieldid, ccdid, qid, bands in quadrants_to_run
+        ]
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as exc:
+                print(f'WARNING: Re-extraction generated an exception: {exc.__class__.__name__}: {exc}')
+                traceback.print_exc()
+
+
 def extract_sources():
 
     # Config
@@ -202,12 +258,15 @@ def extract_sources():
     # gemini_fields = np.concatenate([north_fields, south_fields])
     # fields_imaged_all_bands = np.intersect1d(ar1=gemini_fields, ar2=fields_imaged_all_bands)
 
-    # Get fields that have incomplete/partial extractions and intersect with imaged fields
+    # Get incomplete quadrants that belong to imaged fields
     print('Checking for incomplete quadrant directories...')
     incomplete_quads = get_incomplete_quadrant_dirs()
-    incomplete_field_ids = np.unique([int(dirname[:6]) for dirname in incomplete_quads.keys()])
-    fields_to_reextract = np.intersect1d(incomplete_field_ids, fields_imaged_all_bands)
-    print(f'Found {len(incomplete_quads)} incomplete quadrants across {len(fields_to_reextract)} imaged fields.')
+    quads_to_reextract = {
+        dirname: missing_files
+        for dirname, missing_files in incomplete_quads.items()
+        if int(dirname[:6]) in fields_imaged_all_bands
+    }
+    print(f'Found {len(quads_to_reextract)} incomplete quadrants to re-extract.')
 
     # fields_imaged_all_bands = ['000315', '000316', '000573']
 
