@@ -187,27 +187,23 @@ def process_missed_quadrants(quads_to_reextract: dict):
     bands actually have images available, then runs extraction on those bands.
 
     Parameters:
-        quads_to_reextract: dict mapping quad_dirname -> list of missing filenames,
-                            as returned by get_incomplete_quadrant_dirs().
+        quads_to_reextract: dict mapping quad_dirname -> list of missing band characters
+                            (e.g. ['g', 'r']), derived from get_incomplete_quadrant_dirs().
     """
     data_path = get_data_path()
 
     # Build a list of (fieldid, ccdid, qid, bands_to_extract) for quadrants that
     # have at least one missing band with an available ZTF image.
     quadrants_to_run = []
-    for dirname, missing_files in quads_to_reextract.items():
+    for dirname, missing_bands in quads_to_reextract.items():
         fieldid, ccdid, qid = dirname.split('_')
         fieldid, ccdid, qid = int(fieldid), int(ccdid), int(qid)
 
-        # Derive which bands are missing from the missing filenames
-        missing_bands = [
-            f[4]  # ZTF_{band}.hdf5 -> index 4 is the band character
-            for f in missing_files if f.startswith('ZTF_') and f.endswith('.hdf5')
-        ]
         if not missing_bands:
             continue
 
         # Query ZTF metadata once per quadrant to see which bands have images
+        print(f'Querying metadata for {dirname} in {missing_bands}...')
         metadata = get_ztf_metadata_from_metadata(
             ztf_metadata={'fieldid': fieldid, 'ccdid': ccdid, 'qid': qid},
             verbose=0,
@@ -262,9 +258,10 @@ def extract_sources():
     print('Checking for incomplete quadrant directories...')
     incomplete_quads = get_incomplete_quadrant_dirs()
     quads_to_reextract = {
-        dirname: missing_files
+        dirname: [f[4] for f in missing_files if f.startswith('ZTF_') and f.endswith('.hdf5')]
         for dirname, missing_files in incomplete_quads.items()
         if int(dirname[:6]) in fields_imaged_all_bands
+        and any(f.startswith('ZTF_') and f.endswith('.hdf5') for f in missing_files)
     }
     print(f'Found {len(quads_to_reextract)} incomplete quadrants to re-extract.')
 
