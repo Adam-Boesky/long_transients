@@ -1,5 +1,6 @@
 import os
 import sys
+import pickle
 import ztffields
 import numpy as np
 import traceback
@@ -192,6 +193,14 @@ def process_missed_quadrants(quads_to_reextract: dict):
     """
     data_path = get_data_path()
 
+    # Load persistent metadata cache (keyed by (fieldid, ccdid, qid))
+    metadata_cache_path = os.path.join(data_path, 'ztf_metadata_cache.pkl')
+    if os.path.exists(metadata_cache_path):
+        with open(metadata_cache_path, 'rb') as f:
+            metadata_cache = pickle.load(f)
+    else:
+        metadata_cache = {}
+
     # Build a list of (fieldid, ccdid, qid, bands_to_extract) for quadrants that
     # have at least one missing band with an available ZTF image.
     quadrants_to_run = []
@@ -202,12 +211,20 @@ def process_missed_quadrants(quads_to_reextract: dict):
         if not missing_bands:
             continue
 
-        # Query ZTF metadata once per quadrant to see which bands have images
-        print(f'Querying metadata for {dirname} in {missing_bands}...')
-        metadata = get_ztf_metadata_from_metadata(
-            ztf_metadata={'fieldid': fieldid, 'ccdid': ccdid, 'qid': qid},
-            verbose=0,
-        )
+        # Query ZTF metadata once per quadrant to see which bands have images,
+        # using the on-disk cache to avoid redundant network calls across sessions.
+        cache_key = (fieldid, ccdid, qid)
+        if cache_key not in metadata_cache:
+            print(f'Querying metadata for {dirname}...')
+            metadata_cache[cache_key] = get_ztf_metadata_from_metadata(
+                ztf_metadata={'fieldid': fieldid, 'ccdid': ccdid, 'qid': qid},
+                verbose=0,
+            )
+            with open(metadata_cache_path, 'wb') as f:
+                pickle.dump(metadata_cache, f)
+        else:
+            print(f'Using cached metadata for {dirname}.')
+        metadata = metadata_cache[cache_key]
         available_bands = [fc[1] for fc in metadata['filtercode'].unique()]
         bands_to_extract = [b for b in missing_bands if b in available_bands]
 
