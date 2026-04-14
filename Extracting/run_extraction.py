@@ -99,15 +99,23 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
 
         # Check if we have already extracted the quadrant before doing anything
         data_path = get_data_path()
-        if os.path.exists(
-            os.path.join(
-                data_path,
-                'catalog_results',
-                quad_dirname
-            )
-        ):
-            print(f'{quad_dirname} already exists. Skipping!')
+        bands_not_extracted = []
+        for band in bands:
+            if not os.path.exists(
+                os.path.join(
+                    data_path,
+                    'catalog_results',
+                    quad_dirname,
+                    f'ZTF_{band}.hdf5'
+                )
+            ):
+                bands_not_extracted.append(band)
+        if len(bands_not_extracted) == 0:
+            print(f'{quad_dirname} in {bands} already exists. Skipping!')
             return
+
+        # Only extract the bands that are not already extracted
+        bands = bands_not_extracted
 
         print(f'Extracting sources from quadrant with field_id={fieldid}, ccdid={ccdid}, qid={qid}...')
 
@@ -284,9 +292,10 @@ def extract_sources():
 
     # fields_imaged_all_bands = ['000315', '000316', '000573']
 
-    # THIS IS THE FINAL RUN!!!
-    for fid in fields_imaged_all_bands:
-        process_field(fid)
+    process_missed_quadrants(quads_to_reextract)
+    # # THIS IS THE FINAL RUN!!!
+    # for fid in fields_imaged_all_bands:
+    #     process_field(fid)
 
 if __name__=='__main__':
     extract_sources()
