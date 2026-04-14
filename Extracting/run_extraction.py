@@ -132,7 +132,7 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
             bands=bands,
             data_dir=os.path.join(data_path, 'ztf_data'),
         )
-        tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=False)
+        tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=True)
         print(f'Extracted sources from field with metadata {ztf_metadata}. Stored at: {tile_output_path}')
 
     except Exception as e:
