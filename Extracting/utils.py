@@ -1,5 +1,6 @@
 import os
 import pathlib
+from contextlib import nullcontext
 
 from astropy.io import ascii
 from astropy.table import Table, MaskedColumn
@@ -136,6 +137,15 @@ def metadata_from_field_dirname(field_dirname: str) -> Dict[str, str]:
     return {'fieldid': field, 'ccdid': ccdid, 'qid': qid}
 
 
+def rcid_to_ccdid_qid(rcid: int) -> tuple:
+    """Convert a ZTF readout-channel ID to (ccdid, qid).
+
+    ZTF has 16 CCDs each with 4 quadrants, giving 64 readout channels.
+    The mapping is: rcid = (ccdid - 1) * 4 + (qid - 1).
+    """
+    return rcid // 4 + 1, rcid % 4 + 1
+
+
 # Columns that are logically integers but may arrive as nullable floats (None/NaN fill).
 # These must be cast to masked int64 before writing to avoid float rounding of large IDs.
 _INT64_COLUMNS = frozenset({'PSTARR_PanSTARR_ID', 'PanSTARR_ID', 'qualityFlag', 'primaryDetection'})
@@ -154,10 +164,8 @@ def prepare_table_for_write(table: Table) -> Table:
     table = table.copy()
     for colname in table.colnames:
         col = table[colname]
-        # Bytes -> str
-        if col.dtype.kind == 'S' or (
-            col.dtype.kind == 'O' and len(col) > 0 and isinstance(col[0], bytes)
-        ):
+        # Bytes or any remaining object dtype -> str (HDF5 has no object equivalent)
+        if col.dtype.kind == 'S' or col.dtype.kind == 'O':
             table[colname] = col.astype(str)
         # Nullable float -> masked int64 for known integer columns
         elif colname in _INT64_COLUMNS:
@@ -192,6 +200,22 @@ def load_ecsv(fpath: str, careful_load: bool = True) -> Table:
 # Set up casjobs object
 wsid, password = get_credentials(MAST_CREDENTIAL_FNAME)
 MASTCASJOBS = MastCasJobs(context="PanSTARRS_DR2", userid=wsid, password=password, request_type='POST')
+
+# Per-process CasJobs lock (set by init_worker_lock in parallel contexts).
+# Only one process should talk to the CasJobs service at a time because the
+# shared account cannot have multiple open DataReaders simultaneously.
+_casjobs_lock = None
+
+
+def init_worker_lock(lock) -> None:
+    """Initializer for ProcessPoolExecutor workers — stores the shared lock."""
+    global _casjobs_lock
+    _casjobs_lock = lock
+
+
+def casjobs_query_lock():
+    """Return the active CasJobs lock, or a no-op context if none was set."""
+    return _casjobs_lock if _casjobs_lock is not None else nullcontext()
 
 
 def _add_pstarr_mag_cols(tab: Table) -> Table:

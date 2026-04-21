@@ -21,11 +21,11 @@ from astropy.utils.data import clear_download_cache
 
 try:
     from Source_Extractor import Source_Extractor
-    from utils import get_credentials, MASTCASJOBS
+    from utils import get_credentials, MASTCASJOBS, casjobs_query_lock
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.getcwd()))
     from Extracting.Source_Extractor import Source_Extractor
-    from Extracting.utils import get_credentials, MASTCASJOBS
+    from Extracting.utils import get_credentials, MASTCASJOBS, casjobs_query_lock
 
 ZTF_CUTOUT_HALFWIDTH = 0.8888889 / 2
 
@@ -184,7 +184,9 @@ WHERE rn = 1 into mydb.{tab_name}
         ra_range_strs = [str(ra).replace('.', 'p').replace('-', 'n')[:6] for ra in self.ra_range]      # formatting coords
         dec_range_strs = [str(dec).replace('.', 'p').replace('-', 'n')[:6] for dec in self.dec_range]  # formatting coords
 
-        # Get tables for each band
+        # Get tables for each band.  All CasJobs calls are serialised via the
+        # lock so that parallel workers don't open concurrent DataReaders on the
+        # same shared account.
         band_tables = []
         for band in self.bands:
 
@@ -196,21 +198,22 @@ WHERE rn = 1 into mydb.{tab_name}
             # If overwriting myDB, drop the table
             if self.overwrite_mydb:
                 print(f'Overwriting mydb.{table_name}')
-                MASTCASJOBS.drop_table_if_exists(table_name)
+                with casjobs_query_lock():
+                    MASTCASJOBS.drop_table_if_exists(table_name)
 
             # If the table is there, grab it. Else, submit the query and then grab it
             for _ in range(3):
                 try:
+                    with casjobs_query_lock():
+                        # If the table is not in mydb, submit a request to make it
+                        mydb_table_list = MASTCASJOBS.list_tables()
+                        if table_name not in mydb_table_list:
+                            print(f'{table_name} not in MyDB, submitting request to make it!')
+                            self._submit_table_query(band, table_name)
 
-                    # If the table is not in mydb, submit a request to make it
-                    mydb_table_list = MASTCASJOBS.list_tables()
-                    if table_name not in mydb_table_list:
-                        print(f'{table_name} not in MyDB, submitting request to make it!')
-                        self._submit_table_query(band, table_name)
-
-                    # Retrieve the table
-                    print(f'Retrieving {table_name} from MyDB!')
-                    band_tables.append(MASTCASJOBS.get_table(table_name))
+                        # Retrieve the table
+                        print(f'Retrieving {table_name} from MyDB!')
+                        band_tables.append(MASTCASJOBS.get_table(table_name))
                     break
 
                 except Exception as e:
@@ -226,14 +229,15 @@ WHERE rn = 1 into mydb.{tab_name}
                        clear_download_cache()
 
                     # Delete some tables if the local database is too full
-                    mydb_table_list = MASTCASJOBS.list_tables()
-                    if len(mydb_table_list) > 50:
-                        delete_prop = 0.5
-                        print(f'WARNING: mydb appears to be pretty cluttered. Deleting some ({delete_prop * 100}% of '
-                              'mydb) first...')
-                        tabs_to_delete = random.sample(mydb_table_list, k=int(len(mydb_table_list) * delete_prop))
-                        for t in tabs_to_delete:
-                            MASTCASJOBS.drop_table_if_exists(t)
+                    with casjobs_query_lock():
+                        mydb_table_list = MASTCASJOBS.list_tables()
+                        if len(mydb_table_list) > 50:
+                            delete_prop = 0.5
+                            print(f'WARNING: mydb appears to be pretty cluttered. Deleting some ({delete_prop * 100}% of '
+                                  'mydb) first...')
+                            tabs_to_delete = random.sample(mydb_table_list, k=int(len(mydb_table_list) * delete_prop))
+                            for t in tabs_to_delete:
+                                MASTCASJOBS.drop_table_if_exists(t)
 
         # Join the band tables
         final_table = self._join_tables(band_tables)
