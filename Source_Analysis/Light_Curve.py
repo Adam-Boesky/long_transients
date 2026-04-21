@@ -15,6 +15,7 @@ from astropy.coordinates import SkyCoord
 from concurrent.futures import ThreadPoolExecutor
 
 from Extracting.utils import get_pstarr_lc_from_coord, get_pstarr_lc_from_id, img_flux_to_ab_mag, get_data_path
+from Source_Analysis.ZTF_Local_LC import ZTF_LC
 
 ALL_LC_COLNAMES = ['ptf_id', 'wise_id', 'ztf_id', 'ra', 'dec', 'mjd', 'g_mag', 'g_magerr', 'r_mag', 'r_magerr', 'i_mag',
                    'i_magerr', 'w1_mag', 'w1_magerr', 'w2_mag', 'w2_magerr', 'w3_mag', 'w3_magerr', 'w4_mag',
@@ -78,6 +79,7 @@ class Light_Curve:
             query_in_parallel: bool = True,
             pstarr_objid: Optional[int] = None,
             pstarr_coord: Optional[Tuple[float]] = None,
+            ztf_local_dir: Optional[str] = None,
         ):
         self.ra = ra
         self.dec = dec
@@ -87,6 +89,7 @@ class Light_Curve:
         self.query_in_parallel = query_in_parallel  # whether we should query the apis in parallel or not
         self.pstarr_objid = pstarr_objid
         self.pstarr_coord = pstarr_coord
+        self.ztf_local_dir = ztf_local_dir  # if set, load ZTF LCs from local parquet files instead of the API
 
         # Map class catalog names to astroquery catalog names
         self.catalog_astroquery_map = {
@@ -109,6 +112,18 @@ class Light_Curve:
         """Query the IRSA service for the specified catalog and return the light curve data."""
         # Construct the lightcurve
         if catalog == 'ztf':
+            if self.ztf_local_dir is not None:
+                print(f"Querying LOCAL {catalog} catalog for light curve...")
+                local_lc = ZTF_LC(
+                    self.ztf_local_dir,
+                    ra=self.ra,
+                    dec=self.dec,
+                    query_rad_arcsec=self.query_rad_arcsec,
+                )
+                lightcurve_tab = local_lc.get_lc()
+                lightcurve_tab.rename_column('hmjd', 'mjd')
+                return lightcurve_tab
+
             # Desired column names
             desired_colnames = ['oid', 'ra', 'dec', 'mjd', 'filtercode', 'mag', 'magerr']
 

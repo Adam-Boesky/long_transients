@@ -18,7 +18,7 @@ from matplotlib.axes._axes import Axes
 
 from astropy.wcs import WCS
 from astropy.time import Time
-from astropy.table import Table, vstack, MaskedColumn
+from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from astropy.visualization import simple_norm, time_support
 from astropy.io.fits import HDUList
@@ -27,7 +27,7 @@ from astroquery.sdss import SDSS
 
 sys.path.append('/Users/adamboesky/Research/long_transients')
 
-from Extracting.utils import get_data_path, load_cached_table, load_ecsv, get_snr_from_mag
+from Extracting.utils import get_data_path, load_cached_table, load_ecsv, get_snr_from_mag, prepare_table_for_write
 from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata_from_coords, get_ztf_metadata_from_metadata, get_pstarr_cutout
 from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
@@ -373,6 +373,7 @@ class Source():
             verbose: int = 1,
             catch_plotting_exceptions: bool = True,
             lc_catalogs: List[str] = ['ztf', 'wise', 'neowise', 'ptf', 'sdss', 'panstarrs', 'gaia', 'custom'],
+            ztf_lc_dir: Optional[str] = None,
             detected_bands: Optional[tuple] = None,
         ):
         self.ra = ra
@@ -386,6 +387,7 @@ class Source():
         self.cutout_bands = bands if cutout_bands is None else cutout_bands
         self.merged_field_basedir = merged_field_basedir
         self.ztf_data_dir = ztf_data_dir
+        self.ztf_lc_dir = ztf_lc_dir  # directory of local ZTF parquet LC files (if None, uses API)
         self.lc_catalogs = lc_catalogs
 
         # The maximum distance for an object to be considered a match
@@ -436,6 +438,7 @@ class Source():
                         self.data['PSTARR_dec'][0],
                     ))
                 ) else None,
+                ztf_local_dir=self.ztf_lc_dir,
             )
 
         return self._light_curve
@@ -1442,7 +1445,7 @@ class Source():
     def get_info_string(self, wise_snr_thresh: float = 3.0) -> str:
         """Get string with all the necessary source information."""
         info_string = r'\textbf{Source Information:}' f'\nCoordinates: ({self.ra:.5f}, {self.dec:.5f})'
-        info_string += f'ZTF location: {int(self.data["fieldid"])} {int(self.data["ccdid"])} {int(self.data["qid"])}'
+        info_string += f'\nZTF location: {int(self.data["fieldid"])} {int(self.data["ccdid"])} {int(self.data["qid"])}'
         info_string += f'\nFiltering: {self.filtered_out_info if len(self.filtered_out_info) > 0 else "No bands filtered out."}'
         tns_info = self.get_TNS_info()
         if tns_info is None:
@@ -1676,17 +1679,8 @@ class Sources:
         if len(to_save) == 0:
             to_save['ra'] = []
             to_save['dec'] = []
+        to_save = prepare_table_for_write(to_save)
         if fname.endswith('.hdf5'):
-
-            # Cast some integer columns to int64 for hdf5 compatibility
-            for col in to_save.colnames:
-                if col in ('PSTARR_PanSTARR_ID', 'PanSTARR_ID', 'qualityFlag', 'primaryDetection'):
-                    data = np.array(to_save[col])
-                    mask = np.array([v is None or (isinstance(v, float) and np.isnan(v)) for v in data])
-                    fill = -1
-                    values = np.array([v if not (v is None or (isinstance(v, float) and np.isnan(v))) else fill for v in data], dtype=np.int64)                                                                       
-                    to_save[col] = MaskedColumn(values, mask=mask)   
-
             to_save.write(
                 fname,
                 path='data',
