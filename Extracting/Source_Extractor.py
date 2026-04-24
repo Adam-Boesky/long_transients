@@ -347,6 +347,10 @@ class Source_Extractor():
             )
             self.stars = EPSFStars([s for s in self.stars if not np.any(np.isnan(s.data))])  # drop cutouts with nans
             fitter = EPSFFitter(fit_boxsize=self.fit_boxsize)
+            # photutils stores fit_boxsize as a numpy array via as_pair(), but newer astropy
+            # versions require a plain tuple in overlap_slices — convert to avoid the
+            # "truth value of an array is ambiguous" error.
+            fitter.fit_boxsize = tuple(int(x) for x in fitter.fit_boxsize)
             epsf_builder = EPSFBuilder(fitter=fitter)
             self.epsf, _ = epsf_builder(self.stars) # self.epsf is an EPSFModel
         except Exception as e:
