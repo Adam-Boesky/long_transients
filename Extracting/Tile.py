@@ -117,8 +117,9 @@ class Tile():
 
         # Set the PSF sources
         def _set_sources_for_psf(band: str):
+            band_mask = (self.pstar_catalog.data[f'{band}PSFMag'] != -999.0) & np.isfinite(self.pstar_catalog.data[f'{band}PSFMag'])
             self.ztf_catalogs[band].sextractor.set_sources_for_psf(
-                self.pstar_catalog.data[
+                self.pstar_catalog.data[band_mask][
                     ['ra', 'dec', f'{band}KronMag', f'{band}KronMagErr', f'{band}PSFMag', f'{band}PSFMagErr']
                 ]
             )

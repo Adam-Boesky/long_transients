@@ -134,7 +134,7 @@ WHERE rn = 1 into mydb.{tab_name}
         for tab in tabs:
             if final_table is None:
                 final_table = tab
-                continue  # first table is the starting point — skip self-join
+                continue
 
             if len(final_table) == 0:
                 final_table = tab
@@ -150,10 +150,15 @@ WHERE rn = 1 into mydb.{tab_name}
                 final_table = Table(final_table.filled(-999) if hasattr(final_table, 'filled') else final_table)
                 tab_filled = Table(tab.filled(-999) if hasattr(tab, 'filled') else tab)
 
-                # Join on columns common to both tables, excluding 'rn' (a SQL row-number
+                # Join on columns common to both tables, excluding 'primaryDetection' and 'rn' (a SQL row-number
                 # artifact that can differ between per-band queries and must not be a key).
-                keys = [k for k in final_table.colnames if k in tab_filled.colnames and k != 'rn']
-                final_table = join(final_table, tab_filled, join_type='outer', keys=keys)
+                for col in ['primaryDetection', 'rn']:
+                    if col in final_table.colnames:
+                        final_table.remove_column(col)
+                    if col in tab_filled.colnames:
+                        tab_filled.remove_column(col)
+
+                final_table = join(final_table, tab_filled, join_type='outer')
 
             elif len(tab) == 0:
                 for col in tab.colnames:
