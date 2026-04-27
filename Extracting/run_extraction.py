@@ -175,7 +175,7 @@ def process_field(field_id: int):
                 fieldid,
                 ccdid,
                 qid,
-                [c[1] for c in df['filtercode']]
+                list(dict.fromkeys(c[1] for c in df['filtercode']))
             ) for (fieldid, ccdid, qid), df in field_df.groupby(['field', 'ccdid', 'qid'])
         ]
 

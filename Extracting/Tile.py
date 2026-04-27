@@ -28,6 +28,7 @@ class Tile():
         """A class to represent a tile of the sky. This corresponds to one quadrant of a ZTF field."""
         if isinstance(bands, str):
             bands = [bands]
+        bands = list(dict.fromkeys(bands))  # deduplicate while preserving order
 
         if not isinstance(ztf_metadata, dict) and not isinstance(ra, float) and not isinstance(dec, float):
             raise ValueError('Tile must be given either (ra, dec) or a ztf_metadata dictionary.')
