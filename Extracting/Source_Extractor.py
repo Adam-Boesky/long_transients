@@ -152,7 +152,7 @@ class Source_Extractor():
         min_dists = []
         for x, y in zip(xs, ys):
             dists = np.sqrt((xs - x)*(xs - x) + (ys - y)*(ys - y))
-            min_dists.append(np.min(dists[dists != 0]))
+            min_dists.append(np.min(dists[dists > 1E-5]))
         min_dists = np.array(min_dists)
         pstarr_table = pstarr_table[min_dists > 10]
 
