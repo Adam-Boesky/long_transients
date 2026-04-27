@@ -134,6 +134,7 @@ WHERE rn = 1 into mydb.{tab_name}
         for tab in tabs:
             if final_table is None:
                 final_table = tab
+                continue  # first table is the starting point — skip self-join
 
             if len(final_table) == 0:
                 final_table = tab
@@ -144,11 +145,15 @@ WHERE rn = 1 into mydb.{tab_name}
                     if k in tab.columns:
                         final_table[k] = final_table[k].astype(tab[k].dtype)
 
-                # Fill missing values in 'gKronMag' with a placeholder, e.g., -999 or another sentinel value
-                final_table = final_table.filled(-999)
+                # Fill masked values in BOTH tables before joining.  astropy 6+ raises
+                # TableMergeError when a key column contains missing values.
+                final_table = Table(final_table.filled(-999) if hasattr(final_table, 'filled') else final_table)
+                tab_filled = Table(tab.filled(-999) if hasattr(tab, 'filled') else tab)
 
-                # Join!
-                final_table = join(final_table, tab, join_type='outer')
+                # Join on columns common to both tables, excluding 'rn' (a SQL row-number
+                # artifact that can differ between per-band queries and must not be a key).
+                keys = [k for k in final_table.colnames if k in tab_filled.colnames and k != 'rn']
+                final_table = join(final_table, tab_filled, join_type='outer', keys=keys)
 
             elif len(tab) == 0:
                 for col in tab.colnames:
@@ -245,21 +250,22 @@ WHERE rn = 1 into mydb.{tab_name}
         # Drop residual row number column
         if 'rn' in final_table.columns: final_table.remove_column('rn')
 
-        # Fill in mask with nans
+        # Convert masked values to NaN so downstream code can use np.isfinite() checks.
         final_table = Table(final_table, masked=True)
         for col in final_table.colnames:
             column = final_table[col]
             if (np.issubdtype(column.dtype, np.number) and col not in ('PanSTARR_ID', 'objID')) or ('flag' in column.name):
-                # Take care of mask first
-                final_table[col] = column.astype(object)
-                final_table[col][column.mask] = np.nan
-
-                # Convert column to float if numeric to allow np.nan
-                final_table[col] = column.astype(float)
+                # np.ma.filled converts masked entries to NaN in one step.  The previous
+                # three-line approach (astype object → assign NaN → astype float) had a bug
+                # where the final assignment used the original `column` reference, undoing
+                # the NaN writes entirely.
+                final_table[col] = np.ma.filled(np.ma.array(np.asarray(column), dtype=float), np.nan)
             else:
-                # Convert to object dtype for non-numeric columns
-                final_table[col] = column.astype(object)
-                final_table[col][column.mask] = np.nan
+                arr = column.astype(object)
+                mask = np.asarray(getattr(column, 'mask', False))
+                if mask.ndim > 0 and mask.any():
+                    arr[mask] = np.nan
+                final_table[col] = arr
 
         # Unmask the table (removes the mask attribute entirely)
         final_table = Table(final_table, masked=False)

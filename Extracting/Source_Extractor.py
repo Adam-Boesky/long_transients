@@ -147,14 +147,18 @@ class Source_Extractor():
         """Set the sources for the PSF photometry. Will do so by making a cut on SNR > 10, psf mag - kron mag < 0.05,
         and psf mag brighter than 10.
         """
+        print(f'\tPSF star selection [{self.band}]: starting with {len(pstarr_table)} PanSTARRS sources')
+
         # Distance to other sources mask (> 10 pixels)
         xs, ys = self.ra_dec_to_pix(pstarr_table['ra'], pstarr_table['dec'])
+        print(f'\tPSF star selection [{self.band}]: pixel x range [{np.nanmin(xs):.1f}, {np.nanmax(xs):.1f}], y range [{np.nanmin(ys):.1f}, {np.nanmax(ys):.1f}]')
         min_dists = []
         for x, y in zip(xs, ys):
             dists = np.sqrt((xs - x)*(xs - x) + (ys - y)*(ys - y))
             min_dists.append(np.min(dists[dists != 0]))
         min_dists = np.array(min_dists)
         pstarr_table = pstarr_table[min_dists > 10]
+        print(f'\tPSF star selection [{self.band}]: {len(pstarr_table)} after isolation (>10 px from neighbors)')
 
         # Make sure sources aren't don't have any nans in the pixels around them
         xs, ys = self.ra_dec_to_pix(pstarr_table['ra'], pstarr_table['dec'])
@@ -174,22 +178,24 @@ class Source_Extractor():
 
             # Check if the cutout has too many nans
             if np.sum(cutout) / (self.psf_cutout_size * self.psf_cutout_size) < 0.05 and \
-                len(cutout) != 0:  
+                len(cutout) != 0:
                 # <5% of the pixels in the cutout are NaN, and the cutout isn't empty, which would happen for sources
                 # that are not in the field (which is allowed because the panstarrs query has some padding around the
                 # ZTF cutouts).
                 not_nan[i] = 1
         not_nan = not_nan.astype(bool)
         pstarr_table = pstarr_table[not_nan]
+        print(f'\tPSF star selection [{self.band}]: {len(pstarr_table)} after NaN cutout check (psf_cutout_size={self.psf_cutout_size}, r_fwhm={self.r_fwhm:.3f})')
 
-        # Mask on detected bands
+        # Mask on detected bands — guard against both NaN (properly-converted masked values)
+        # and -999 (sentinel used in older cached tables)
         pstarr_table = Table(pstarr_table.copy(), masked=False)
-        detected_mask = (
-            (pstarr_table[f'{self.band}KronMag'] != -999.0) &
-            (pstarr_table[f'{self.band}KronMagErr'] != -999.0) &
-            (pstarr_table[f'{self.band}PSFMag'] != -999.0)
-        )
+        def _valid(col):
+            arr = np.asarray(pstarr_table[col], dtype=float)
+            return np.isfinite(arr) & (arr != -999.0)
+        detected_mask = _valid(f'{self.band}KronMag') & _valid(f'{self.band}KronMagErr') & _valid(f'{self.band}PSFMag')
         pstarr_table = pstarr_table[detected_mask]
+        print(f'\tPSF star selection [{self.band}]: {len(pstarr_table)} after band-detection filter')
 
         # Cut on SNR, psf mag - kron mag, and psf mag upper limit
         pstarr_snr = get_snr_from_mag(
@@ -197,11 +203,11 @@ class Source_Extractor():
             np.array(pstarr_table[f'{self.band}KronMagErr']),
             self.zero_pt_mag
         )
-        pstarr_table = pstarr_table[(
-            (pstarr_snr >= 10) &
-            (pstarr_table[f'{self.band}PSFMag'] - pstarr_table[f'{self.band}KronMag'] < 0.05) &
-            (pstarr_table[f'{self.band}PSFMag'] < 17)
-        )]
+        snr_mask = pstarr_snr >= 10
+        morph_mask = pstarr_table[f'{self.band}PSFMag'] - pstarr_table[f'{self.band}KronMag'] < 0.05
+        maglim_mask = pstarr_table[f'{self.band}PSFMag'] < 17
+        print(f'\tPSF star selection [{self.band}]: SNR>=10: {np.sum(snr_mask)}, PSF-Kron<0.05: {np.sum(morph_mask)}, PSFMag<17: {np.sum(maglim_mask)}')
+        pstarr_table = pstarr_table[snr_mask & morph_mask & maglim_mask]
 
         # Convert to x and y coords, and store
         self._point_source_coords = SkyCoord(pstarr_table['ra'], pstarr_table['dec'], unit='deg')
