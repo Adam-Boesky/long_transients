@@ -260,17 +260,16 @@ WHERE rn = 1 into mydb.{tab_name}
         for col in final_table.colnames:
             column = final_table[col]
             if (np.issubdtype(column.dtype, np.number) and col not in ('PanSTARR_ID', 'objID')) or ('flag' in column.name):
-                # np.ma.filled converts masked entries to NaN in one step.  The previous
-                # three-line approach (astype object → assign NaN → astype float) had a bug
-                # where the final assignment used the original `column` reference, undoing
-                # the NaN writes entirely.
-                final_table[col] = np.ma.filled(np.ma.array(np.asarray(column), dtype=float), np.nan)
+                # Take care of mask first
+                final_table[col] = column.astype(object)
+                final_table[col][column.mask] = np.nan
+
+                # Convert column to float if numeric to allow np.nan
+                final_table[col] = column.astype(float)
             else:
-                arr = column.astype(object)
-                mask = np.asarray(getattr(column, 'mask', False))
-                if mask.ndim > 0 and mask.any():
-                    arr[mask] = np.nan
-                final_table[col] = arr
+                # Convert to object dtype for non-numeric columns
+                final_table[col] = column.astype(object)
+                final_table[col][column.mask] = np.nan
 
         # Unmask the table (removes the mask attribute entirely)
         final_table = Table(final_table, masked=False)
