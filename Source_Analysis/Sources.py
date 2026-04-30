@@ -398,6 +398,7 @@ class Source():
 
         # Properties
         self._field_catalogs = field_catalogs
+        self._precomputed_cat_indices = None  # {band: ind_closest} pre-set by Sources for bulk efficiency
         self._data = None
         self._postage_stamps = None
         self._ztf_lightcurve = None
@@ -510,9 +511,11 @@ class Source():
             )
 
             # Filter for fields that we have actually extracted and stored
+            # The IRSA coordinate query returns 'field'; the metadata query returns 'fieldid'.
+            field_col = 'fieldid' if 'fieldid' in self._image_metadata.columns else 'field'
             inds_extracted = []
             test_paths = []
-            for ind, field in self._image_metadata['fieldid'].items():
+            for ind, field in self._image_metadata[field_col].items():
                 field_id = str(field).zfill(6)
                 if os.path.exists(os.path.join(self.merged_field_basedir, f'{field_id}_g.hdf5')):
                     inds_extracted.append(ind)
@@ -608,13 +611,15 @@ class Source():
                 if _cat_col in self._data.colnames:
                     self._data[_cat_col] = self._data[_cat_col].astype('S10')
 
-            if self.verbose > 0: print('Searching for source in the catalogs!')
             for band, cat in self.field_catalogs.items():
-                if self.verbose > 0: print(f'Searching {band} catalog for source...')
 
                 # Get the source from each catalog
-                coords = SkyCoord(ra=cat['ra'], dec=cat['dec'], unit='deg')
-                ind_closest, _ = closest_within_radius(self.coord, coords, max_arcsec=self.max_arcsec)
+                if self._precomputed_cat_indices is not None and band in self._precomputed_cat_indices:
+                    ind_closest = self._precomputed_cat_indices[band]
+                else:
+                    if self.verbose > 0: print(f'Searching {band} catalog for source...')
+                    coords = SkyCoord(ra=cat['ra'], dec=cat['dec'], unit='deg')
+                    ind_closest, _ = closest_within_radius(self.coord, coords, max_arcsec=self.max_arcsec)
 
                 # If a coord was found, join the tables
                 if ind_closest is not None:
@@ -1629,6 +1634,21 @@ class Sources:
         if self._data is None:
             if len(self.sources) == 0:
                 return Table(data={k: [] for k in MANDATORY_SOURCE_COLUMNS}, masked=False)
+
+            # Pre-compute closest catalog index per band for all sources at once (one KD-tree
+            # query per band instead of one O(K) linear scan per source per band)
+            source_coords = self.coords
+            ref = self.sources[0]
+            for band, cat in ref.field_catalogs.items():
+                cat_coords = SkyCoord(ra=cat['ra'], dec=cat['dec'], unit='deg')
+                idx, sep2d, _ = match_coordinates_sky(source_coords, cat_coords)
+                for i, src in enumerate(self.sources):
+                    if src._precomputed_cat_indices is None:
+                        src._precomputed_cat_indices = {}
+                    src._precomputed_cat_indices[band] = (
+                        idx[i] if sep2d[i].arcsecond <= src.max_arcsec else None
+                    )
+
             self._data = vstack([src.data for src in self.sources])
             self._data = Table(self._data, masked=False)
 
