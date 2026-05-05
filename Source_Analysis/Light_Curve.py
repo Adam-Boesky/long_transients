@@ -297,9 +297,12 @@ class Light_Curve:
 
                 # Escape the loop if no error was raised
                 break
-            except:
+            except Exception as e:
                 if i_attempt >= max_attempts - 1:
-                    raise
+                    raise RuntimeError(
+                        f"Failed to fetch light curve from catalog '{catalog}' "
+                        f"after {max_attempts} attempt(s)"
+                    ) from e
                 else:
                     print(f'Attempt {i_attempt + 1} / {max_attempts} to query for light curves failed. Trying again...')
                     traceback.print_exc()

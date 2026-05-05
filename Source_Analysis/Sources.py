@@ -631,6 +631,8 @@ class Source():
                             if isinstance(cat[cname][ind_closest], str):
                                 self.filter_info = ast.literal_eval(cat[cname][ind_closest])['in_bands']
                             entry_is_nan = False
+                        elif self._data[cname][0] is None:
+                            entry_is_nan = True
                         elif isinstance(self._data[cname][0], str):
                             entry_is_nan = self._data[cname][0].lower() == 'nan'
                         else:
