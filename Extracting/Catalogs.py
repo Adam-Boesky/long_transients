@@ -137,7 +137,10 @@ WHERE rn = 1 into mydb.{tab_name}
                 continue
 
             if len(final_table) == 0:
+                empty_cols = [col for col in final_table.colnames if col not in tab.colnames]
                 final_table = tab
+                for col in empty_cols:
+                    final_table[col] = np.zeros(len(final_table)) * np.nan
             elif len(tab) != 0:
 
                 # First cast the common columns to the same dtype

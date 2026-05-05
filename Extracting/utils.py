@@ -164,11 +164,8 @@ def prepare_table_for_write(table: Table) -> Table:
     table = table.copy()
     for colname in table.colnames:
         col = table[colname]
-        # Bytes or any remaining object dtype -> str (HDF5 has no object equivalent)
-        if col.dtype.kind == 'S' or col.dtype.kind == 'O':
-            table[colname] = col.astype(str)
-        # Nullable float -> masked int64 for known integer columns
-        elif colname in _INT64_COLUMNS:
+        # Convert integer ID columns
+        if colname in _INT64_COLUMNS:
             data = np.array(col)
             mask = np.array([v is None or (isinstance(v, float) and np.isnan(v)) for v in data])
             values = np.array(
@@ -176,6 +173,9 @@ def prepare_table_for_write(table: Table) -> Table:
                 dtype=np.int64,
             )
             table[colname] = MaskedColumn(values, mask=mask)
+        # Bytes or any remaining object dtype -> str (HDF5 has no object equivalent)
+        elif col.dtype.kind == 'S' or col.dtype.kind == 'O':
+            table[colname] = col.astype(str)
     return table
 
 
