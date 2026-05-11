@@ -1,6 +1,7 @@
 import os
 import sys
 import ast
+from glob import glob
 import warnings
 import traceback
 import time
@@ -27,7 +28,7 @@ from astroquery.sdss import SDSS
 
 sys.path.append('/Users/adamboesky/Research/long_transients')
 
-from Extracting.utils import get_data_path, load_cached_table, load_ecsv, get_snr_from_mag, prepare_table_for_write
+from Extracting.utils import get_data_path, load_cached_table, load_ecsv, get_snr_from_mag, prepare_table_for_write, _INT64_COLUMNS
 from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata_from_coords, get_ztf_metadata_from_metadata, get_pstarr_cutout
 from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
 from ztf_fp_query.query import ZTFFP_Service
@@ -71,6 +72,7 @@ MANDATORY_SOURCE_COLUMNS = [
     'ZTF_r_qid', 'ZTF_i_field', 'ZTF_i_ccdid', 'ZTF_i_qid',
 ]
 Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
+CATALOG_INT_MAP = {'in_both': 0, 'in_ztf': 1, 'in_pstarr': 2}
 
 
 def set_mpl_params(font_size: int = 12):
@@ -375,6 +377,7 @@ class Source():
             lc_catalogs: List[str] = ['ztf', 'wise', 'neowise', 'ptf', 'sdss', 'panstarrs', 'gaia', 'custom'],
             ztf_lc_dir: Optional[str] = None,
             detected_bands: Optional[tuple] = None,
+            filtering_dirpath: Optional[str] = None,
         ):
         self.ra = ra
         self.dec = dec
@@ -395,6 +398,7 @@ class Source():
         # parallax
         self.max_arcsec = max_arcsec
         self.gaia_max_arcsec = gaia_max_arcsec
+        self.filtering_dirpath = filtering_dirpath
 
         # Properties
         self._field_catalogs = field_catalogs
@@ -665,7 +669,14 @@ class Source():
             for col in [c for c in MANDATORY_SOURCE_COLUMNS if c not in data_tab.columns]:
                 data_tab[col] = [np.nan]
 
-        self._data = data_tab
+        self._data = Table(data_tab, masked=False)
+
+        # Table(masked=False) fills masked ints with the column fill_value (e.g. -1) rather
+        # than None, so integer ID columns that were masked on load need a second pass.
+        for colname in _INT64_COLUMNS:
+            if colname in self._data.colnames:
+                if np.ma.is_masked(data_tab[colname][0]) or data_tab[colname][0] is None:
+                    self._data[colname] = np.array([None], dtype=object)
 
     @property
     def in_bands(self) -> List[str]:
@@ -1373,61 +1384,49 @@ class Source():
             return None
         return tns_df.iloc[[idx]]
 
-    def get_filtered_out_info(self, filtered_out_dirpath: Optional[str] = None) -> Dict[str, str]:
-        """Get the information about the source being filtered out."""
-        # Get the bands that have been filtered out
-        reason_dict = {}
-        filtered_out_bands = [band for band in self.bands if band not in self.in_bands]
-        if len(filtered_out_bands) == 0:
-            return reason_dict
+    def get_filtered_out_info(
+        self, filtering_dirpath: Optional[str] = None
+    ) -> Dict[str, Dict[str, str]]:
+        """Get filtering info as {catalog: {band: reason}}.
 
-        # Get the info for each band
-        for band in filtered_out_bands:
+        Each cell contains the filter reason from the corresponding
+        {cat}_{band}_filtered_out.ecsv, '-' if the source isn't there,
+        or 'N/A' if the file doesn't exist.
+        """
+        result = {cat: {band: '-' for band in self.bands} for cat in CATALOG_INT_MAP}
 
-            # Load the filtered out info file
-            for cat in range(3):  # iterate over the three catalogs
-
-                # Get the coordinates of all filtered sources
-                if filtered_out_dirpath is None:
-                    filtered_out_info_path = os.path.join(
-                        get_data_path(),
-                        'filter_results', 
-                        str(self.image_metadata['fieldid']).zfill(6) if isinstance(self.image_metadata['fieldid'], int) \
-                            else self.image_metadata['fieldid'],
-                        f'{cat}_{band}_filtered_out.ecsv'
-                    )
-                else:
-                    filtered_out_info_path = os.path.join(
-                        filtered_out_dirpath, 
-                        str(self.image_metadata['fieldid']).zfill(6) if isinstance(self.image_metadata['fieldid'], int) \
-                            else self.image_metadata['fieldid'],
-                        f'{cat}_{band}_filtered_out.ecsv'
-                    )
-                if not os.path.exists(filtered_out_info_path):
-                    print(f'Warning: Filtered out info file not found at {filtered_out_info_path}')
+        for band in self.bands:
+            for cat_name, cat_idx in CATALOG_INT_MAP.items():
+                field = (
+                    str(self.image_metadata['fieldid']).zfill(6)
+                    if isinstance(self.image_metadata['fieldid'], int)
+                    else self.image_metadata['fieldid']
+                )
+                base = filtering_dirpath or os.path.join(get_data_path(), 'filter_results')
+                fname = f'{cat_idx}_{band}_filtered_out.ecsv'
+                path = os.path.join(base, field, fname)
+                if not os.path.exists(path):
+                    path = os.path.join(base, fname)
+                if not os.path.exists(path):
+                    result[cat_name][band] = 'N/A'
                     continue
-                filtered_out_info = load_cached_table(filtered_out_info_path)
-                if len(filtered_out_info) == 0:  # no sources were filtered out, may be result of no extraction
-                    continue
-                filtered_coords = SkyCoord(filtered_out_info['ra'], filtered_out_info['dec'], unit='deg')
 
-                # Find closest match within max_arcsec
-                seps = self.coord.separation(filtered_coords)
+                table = load_cached_table(path)
+                if len(table) == 0:
+                    continue
+
+                coords = SkyCoord(table['ra'], table['dec'], unit='deg')
+                seps = self.coord.separation(coords)
                 if np.min(seps.arcsec) <= self.max_arcsec:
-                    reason_dict[band] = filtered_out_info[np.argmin(seps.arcsec)]['filter']
-                    break
+                    result[cat_name][band] = table[np.argmin(seps.arcsec)]['filter']
 
-            # If no match was found, it was because the source was not extracted at all
-            if band not in reason_dict:
-                reason_dict[band] = 'no_extraction'
-
-        return reason_dict
+        return result
 
     @property
-    def filtered_out_info(self) -> Dict[str, str]:
+    def filtered_out_info(self) -> Dict[str, Dict[str, str]]:
         """Get the information about the source being filtered out."""
         if not hasattr(self, '_filtered_out_info'):
-            self._filtered_out_info = self.get_filtered_out_info()
+            self._filtered_out_info = self.get_filtered_out_info(self.filtering_dirpath)
         return self._filtered_out_info
 
     def _get_GAIA_info(self, max_arcsec: float):
@@ -1453,7 +1452,6 @@ class Source():
         """Get string with all the necessary source information."""
         info_string = r'\textbf{Source Information:}' f'\nCoordinates: ({self.ra:.5f}, {self.dec:.5f})'
         info_string += f'\nZTF location: {int(self.data["fieldid"])} {int(self.data["ccdid"])} {int(self.data["qid"])}'
-        info_string += f'\nFiltering: {self.filtered_out_info if len(self.filtered_out_info) > 0 else "No bands filtered out."}'
         tns_info = self.get_TNS_info()
         if tns_info is None:
             info_string += '\nSource not in TNS.'
@@ -1486,6 +1484,25 @@ class Source():
         
         return info_string
 
+    def plot_filtered_out_table(self, ax: Axes) -> None:
+        """Render filtered_out_info as a matplotlib table (rows=catalogs, cols=bands)."""
+        catalog_names = list(CATALOG_INT_MAP.keys())
+        info = self.filtered_out_info
+        cell_text = [[band] + [info[cat][band] for cat in catalog_names] for band in self.bands]
+        col_widths = [0.08] + [0.3] * len(catalog_names)
+
+        tbl = ax.table(
+            cellText=cell_text,
+            colLabels=[''] + catalog_names,
+            colWidths=col_widths,
+            loc='center',
+            cellLoc='center',
+        )
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(8)
+        ax.set_title('Filtering', fontsize=9)
+        ax.axis('off')
+
     def plot_everything(self) -> Axes:
         """Function that plots everything on one page!"""
         # Set up the layout
@@ -1498,12 +1515,13 @@ class Source():
         ax4 = plt.subplot2grid((5, 3), (1, 1))
         ax5 = plt.subplot2grid((5, 3), (1, 2))
         lc_ax = plt.subplot2grid((5, 3), (2, 0), colspan=3)
-        spec_ax = plt.subplot2grid((5, 3), (3, 0), colspan=3)
+        spec_ax = plt.subplot2grid((5, 3), (3, 0), colspan=2)
+        filter_table_ax = plt.subplot2grid((5, 3), (3, 2))
         wise_ax = plt.subplot2grid((5, 3), (4, 2))
         cutout_axes = np.array([[ax0, ax1, ax2], [ax3, ax4, ax5]])
         axes = np.array([cutout_axes, lc_ax, spec_ax, wise_ax], dtype=object)
 
-        # Axis for text stuff
+        # Axis for text info
         text_ax = plt.subplot2grid((5, 3), (4, 0), colspan=2)
 
         # Plot
@@ -1512,6 +1530,7 @@ class Source():
         self.plot_lc(ax=lc_ax, fig=fig, xlab_kwags={})
         self.plot_spectrum(ax=spec_ax)
         self.plot_wise_mag_hist(ax=wise_ax, snr_thresh=snr_thresh)
+        self.plot_filtered_out_table(ax=filter_table_ax)
 
         # Annotate text info at the bottom
         info_string = self.get_info_string(wise_snr_thresh=snr_thresh)
@@ -1582,10 +1601,20 @@ class Sources:
 
         Args:
             fname: Path to the file to load from
-            
+
         Returns:
             A new Sources instance loaded from the file
         """
+        # Derive filtering_dirpath from the file location.
+        # If filtered_out ecsvs live alongside the source file (single-field dir), use the
+        # parent dir directly. Otherwise go two levels up (multi-field {filter_dir}/{field}/).
+        if 'filtering_dirpath' not in kwargs:
+            parent = os.path.dirname(os.path.abspath(fname))
+            if glob(os.path.join(parent, '*_filtered_out.ecsv')):
+                kwargs['filtering_dirpath'] = parent
+            else:
+                kwargs['filtering_dirpath'] = os.path.dirname(parent)
+
         # Read the table from file
         table = load_ecsv(fname)
 

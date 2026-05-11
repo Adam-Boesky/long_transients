@@ -238,7 +238,7 @@ class Light_Curve:
                 elif catalog == 'panstarrs':
 
                     # Check if we have an objid
-                    if self.pstarr_objid is not None and not np.isnan(self.pstarr_objid):
+                    if self.pstarr_objid is not None and not np.ma.is_masked(self.pstarr_objid) and not np.isnan(self.pstarr_objid):
                         lightcurve_tab = get_pstarr_lc_from_id(self.pstarr_objid)
                     else:
                         print('Pan-STARRS objid not found. Falling back on coordinate query...')
