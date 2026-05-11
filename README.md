@@ -32,8 +32,15 @@ It is important to realize that sources may have non-detections in Pan-STARRS or
 
 ### 3. Filter sources
 This step takes the sources and passes them through filtration pipelines. You'll just need to look at the `filter_fields.py` file.
+- Run `filter_fields.py` with the option of the bash script `filter_fields.sh`.
+- Ensure that directories labeled by fieldid (e.g. `000313`) populate into the `filter_results/` directory with files `0.ecsv`, `1.ecsv`, and `2.ecsv` corresponding to in_both, in_ztf, and in_pstarr.
 
-### 4. Make (and sort) analysis pages
+### 4. Combine filtration results into one table
+This step takes the filtration results and combines them into a single table.
+- Run `combined_filtered_tabs.py` with the option of the bash script `combined_filtered_tabs.sh`.
+- Ensure that a new folder `combined/` appears in the `filter_results/` directory with files `0.ecsv`, `1.ecsv`, and `2.ecsv` and the corresponding flowcharts and stats. These files have all the candidates for each of the three catalogs!
+
+### 5. Make (and sort) analysis pages
 Make analysis pages for each source by running `store_src_plots.py` which does something like:
 ```
 import matplotlib.pyplot as plt
