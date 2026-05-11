@@ -1,7 +1,6 @@
 import os
 import sys
 import shutil
-import pickle
 import numpy as np
 import schemdraw
 import pandas as pd
@@ -15,20 +14,26 @@ from astropy.coordinates import SkyCoord, match_coordinates_sky, search_around_s
 from schemdraw.flow import Start, Arrow, Box, Decision
 from schemdraw.elements import Element
 from decimal import Decimal, ROUND_HALF_UP
+from KDEpy import TreeKDE
+from scipy.stats import norm
 
 sys.path.append('/Users/adamboesky/Research/long_transients')
 sys.path.append('/n/home04/aboesky/berger/long_transients')
 
 
+from astroquery.gaia import Gaia
+
 from Source_Analysis.Sources import Sources, MANDATORY_SOURCE_COLUMNS
-from Extracting.utils import get_snr_from_mag, get_data_path, load_ecsv
+from Extracting.utils import get_snr_from_mag, get_data_path, load_ecsv, prepare_table_for_write, _INT64_COLUMNS
 from concurrent.futures import ProcessPoolExecutor
+
+Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
 
 BANDS = ['g', 'r', 'i']
 CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Coverage'}
 PSTARR_UPPER_LIM = {'g': 23.3, 'r': 23.2, 'i': 23.1}
-EXTRACTED_CATALOG_DIR = 'debugging'  # 'catalog_results/field_results'
-FILTER_RESULT_DIR = 'debugging/filter_results'  # 'filter_results_gemini'
+EXTRACTED_CATALOG_DIR = 'catalog_results/field_results' # 'debugging'
+FILTER_RESULT_DIR = 'filter_results_kde'  # 'debugging/filter_results'  # 'filter_results_gemini'
 
 def _is_flag(flags: np.ndarray, flag: Union[int, Iterable[int]]) -> np.ndarray:
     """
@@ -71,12 +76,15 @@ def remove_mask(tab: Table, *args, **kwargs) -> Table:
     # Convert masked entries to np.nan
     for col in tab.colnames:
         column = tab[col]
-        if np.issubdtype(column.dtype, np.number):
-            # Convert column to float if numeric to allow np.nan
+        if col in _INT64_COLUMNS:
+            # Keep integer ID columns as object with None sentinel — converting to float
+            # loses precision for large IDs like PanSTARRS objIDs (> 53-bit float64 mantissa).
+            tab[col] = column.astype(object)
+            tab[col][column.mask] = None
+        elif np.issubdtype(column.dtype, np.number):
             tab[col] = column.astype(float)
             tab[col][column.mask] = np.nan
         else:
-            # Convert to object dtype for non-numeric columns
             tab[col] = column.astype(object)
             tab[col][column.mask] = np.nan
 
@@ -120,6 +128,182 @@ def get_merged_tab_coords(tabs: Dict[str, Table], max_arcsec: float = 1.0) -> Ta
         'dec':   all_dec[canonical],
         'bands': [tuple(sorted(band_sets[k])) for k in canonical_idx],
     })
+
+
+def query_gaia_for_field(
+    field_name: str,
+    ras: np.ndarray,
+    decs: np.ndarray,
+    padding_deg: float = 0.1,
+) -> Table:
+    """Single bulk Gaia DR3 query for a field, with on-disk caching.
+
+    Result is written to {get_data_path()}/gaia_cache/{field_name}.ecsv on
+    first call and reloaded from there on subsequent calls.
+    Returns columns: ra, dec, parallax_over_error, pm, pmra_error, pmdec_error.
+    """
+    cache_dir  = os.path.join(get_data_path(), 'gaia_cache')
+    cache_path = os.path.join(cache_dir, f'{field_name}.ecsv')
+
+    if os.path.exists(cache_path):
+        print(f'Loading cached Gaia data from {cache_path}')
+        return Table.read(cache_path, format='ascii.ecsv')
+
+    center_ra  = float(np.mean(ras))
+    center_dec = float(np.mean(decs))
+    coords = SkyCoord(ras, decs, unit='deg')
+    center = SkyCoord(center_ra, center_dec, unit='deg')
+    radius_deg = float(np.max(center.separation(coords).deg)) + padding_deg
+
+    query = f"""
+        SELECT ra, dec, parallax_over_error, pm, pmra_error, pmdec_error
+        FROM gaiadr3.gaia_source
+        WHERE CONTAINS(
+            POINT('ICRS', ra, dec),
+            CIRCLE('ICRS', {center_ra}, {center_dec}, {radius_deg})
+        ) = 1
+    """
+    print(f'Querying Gaia (r={radius_deg:.2f} deg) — result will be cached at {cache_path}')
+    job = Gaia.launch_job_async(query)
+    result = job.get_results()
+
+    os.makedirs(cache_dir, exist_ok=True)
+    result.write(cache_path, format='ascii.ecsv', overwrite=True)
+    return result
+
+
+def _match_sources_to_gaia(
+    srcs: Sources,
+    gaia_table: Table,
+    max_arcsec: float = 5.0,
+) -> np.ndarray:
+    """Match srcs to gaia_table by sky position.
+
+    Returns an array of row indices into gaia_table (length = len(srcs)).
+    Entries are -1 where no match exists within max_arcsec.
+    """
+    src_coords  = srcs.coords
+    gaia_coords = SkyCoord(
+        np.array(gaia_table['ra'], dtype=float),
+        np.array(gaia_table['dec'], dtype=float),
+        unit='deg',
+    )
+    idx, sep2d, _ = match_coordinates_sky(src_coords, gaia_coords)
+    idx = idx.copy()
+    idx[sep2d.arcsec > max_arcsec] = -1
+    return idx
+
+
+class Envelope_KDE:
+    """Rolling KDE envelope over the (mag, Δmag) plane for one photometric band."""
+
+    def __init__(self, mag_grid: np.ndarray, dmag_grid: np.ndarray, kde_ys: np.ndarray):
+        self.mag_grid = mag_grid
+        self.dmag_grid = dmag_grid
+        self.kde_ys = kde_ys  # shape (N_mag, N_dmag)
+
+    def get_percentile(
+        self,
+        mag_grid: np.ndarray,
+        percentile: Union[float, Iterable[float]],
+    ) -> np.ndarray:
+        """Return the Δmag value at *percentile* for each entry of *mag_grid*.
+
+        Returns a 1-D array if *percentile* is scalar, otherwise a 2-D array
+        of shape (len(percentiles), len(mag_grid)).
+        """
+        scalar = isinstance(percentile, (int, float))
+        percentiles = [percentile] if scalar else list(percentile)
+
+        cdf = np.cumsum(self.kde_ys, axis=1) / np.sum(self.kde_ys, axis=1, keepdims=True)
+
+        results = np.array([
+            [np.interp(p, cdf[i], self.dmag_grid) for i in range(len(self.mag_grid))]
+            for p in percentiles
+        ])
+        results = np.array([
+            np.interp(mag_grid, self.mag_grid, results[i])
+            for i in range(len(percentiles))
+        ])
+
+        return results[0] if scalar else results
+
+
+def build_kde_envelopes(
+    tabs: Dict[str, Table],
+    mag_grid: np.ndarray = np.arange(14, 24, 0.25),
+    dmag_grid: np.ndarray = np.linspace(-5, 5, 1000),
+    half_bin_width: float = 0.5,
+    min_dmagerr: float = 0.01,
+) -> Dict[str, Envelope_KDE]:
+    """Build a rolling per-band KDE envelope from quality-filtered source tables.
+
+    For each magnitude grid point, sources within *half_bin_width* magnitudes
+    are used to fit a TreeKDE whose per-source bandwidth equals the combined
+    photometric error (dmagerr = sqrt(pstarr_err² + ztf_err²)).
+    """
+    envelopes = {}
+    for band in tabs.keys():
+        tab = tabs[band]
+
+        # Require finite PSF mags in both catalogs
+        finite_mask = (
+            np.isfinite(tab[f'PSTARR_{band}PSFMag']) &
+            np.isfinite(tab[f'ZTF_{band}PSFMag'])
+        )
+        tab = tab[finite_mask]
+
+        pstarr_mag = np.array(tab[f'PSTARR_{band}PSFMag'])
+        pstarr_magerr = np.array(tab[f'PSTARR_{band}PSFMagErr'])
+        ztf_mag = np.array(tab[f'ZTF_{band}PSFMag'])
+        ztf_magerr = np.array(tab[f'ZTF_{band}PSFMagErr'])
+
+        mag = np.mean([pstarr_mag, ztf_mag], axis=0)
+        dmag = ztf_mag - pstarr_mag
+        dmagerr = np.maximum(np.sqrt(pstarr_magerr**2 + ztf_magerr**2), min_dmagerr)
+
+        finite_mask = np.isfinite(dmagerr) & np.isfinite(dmag)
+
+        kde_ys = []
+        for mag_center in mag_grid:
+            mag_mask = np.abs(mag - mag_center) < half_bin_width
+            mag_mask &= finite_mask
+            if np.sum(mag_mask) <= 1:
+                kde_ys.append(np.full(len(dmag_grid), np.nan))
+                continue
+            y_kde = TreeKDE(bw=dmagerr[mag_mask]).fit(dmag[mag_mask]).evaluate(dmag_grid)
+            kde_ys.append(y_kde)
+
+        envelopes[band] = Envelope_KDE(mag_grid, dmag_grid, np.array(kde_ys))
+
+    return envelopes
+
+
+def load_or_build_kde_envelopes(
+    field_name: str,
+    tabs: Dict[str, Table],
+    **kde_kwargs,
+) -> Dict[str, Envelope_KDE]:
+    """Return cached KDE envelopes for *field_name*, building and caching them if needed.
+
+    Each band is stored as a .npz file containing mag_grid, dmag_grid, and kde_ys.
+    """
+    cache_dir = os.path.join(get_data_path(), 'kde_envelopes', field_name)
+    bands = list(tabs.keys())
+
+    # Check if all band cache files exist
+    if all(os.path.exists(os.path.join(cache_dir, f'{band}.npz')) for band in bands):
+        envelopes = {}
+        for band in bands:
+            data = np.load(os.path.join(cache_dir, f'{band}.npz'))
+            envelopes[band] = Envelope_KDE(data['mag_grid'], data['dmag_grid'], data['kde_ys'])
+        return envelopes
+
+    envelopes = build_kde_envelopes(tabs, **kde_kwargs)
+    os.makedirs(cache_dir, exist_ok=True)
+    for band, env in envelopes.items():
+        np.savez(os.path.join(cache_dir, f'{band}.npz'), mag_grid=env.mag_grid, dmag_grid=env.dmag_grid, kde_ys=env.kde_ys)
+    return envelopes
 
 
 class Filters():
@@ -217,7 +401,7 @@ class Filters():
                 self.save_filter_stats()
 
             if filt_name == 'only_big_dmag':
-                return {}, {}, {}
+                return {}, {}
             return tabs
 
         # Make into a dict if merged
@@ -427,13 +611,18 @@ class Filters():
                     ),
                 )
 
+                # Compute the combined both-catalog mask first so the exclusive masks
+                # below can gate on it, preventing a source from landing in both
+                # good_tabs and ztf_tabs/pstarr_tabs simultaneously.
+                both_mask = np.logical_or(psf_mask, kron_mask)
+
                 # Get all the sources for which exclusively ZTF *OR* Pan-STARRS has SNR > 5
                 ztf_psf_mask = (ztf_psf_snr > snr_min) & np.logical_not(psf_mask)
                 ztf_kron_mask = (ztf_kron_snr > snr_min) & np.logical_not(kron_mask)
-                ztf_mask = np.logical_or(ztf_psf_mask, ztf_kron_mask)
+                ztf_mask = np.logical_or(ztf_psf_mask, ztf_kron_mask) & np.logical_not(both_mask)
                 pstarr_psf_mask = (pstarr_psf_snr > snr_min) & np.logical_not(psf_mask)
                 pstarr_kron_mask = (pstarr_kron_snr > snr_min) & np.logical_not(kron_mask)
-                pstarr_mask = np.logical_or(pstarr_psf_mask, pstarr_kron_mask)
+                pstarr_mask = np.logical_or(pstarr_psf_mask, pstarr_kron_mask) & np.logical_not(both_mask)
 
                 # Fill in tabs
                 ztf_tabs[band] = tab[ztf_mask]
@@ -479,7 +668,7 @@ class Filters():
                 )
 
             # Total
-            mask = np.logical_and(psf_mask, kron_mask)
+            mask = np.logical_or(psf_mask, kron_mask)
             good_tabs[band] = tab[mask]
             bad_tabs[band] = tab[~mask]
 
@@ -504,29 +693,24 @@ class Filters():
     def only_big_dmag(
             self,
             tabs: Dict[str, Table],
-            mag_thresh: int = 5,
-            bin_means: Optional[Dict[str, List[float]]] = None,
-            bin_stds: Optional[Dict[str, List[float]]] = None,
+            sigma_boundary: float = 3.0,
+            envelopes: Dict[str, Envelope_KDE] = None,
             *args,
             **kwargs,
-        ) -> Tuple[Table, Dict[str, List[float]], Dict[str, List[float]]]:
-        """Filter out sources with a delta mag > `mag_thresh`"""
+        ) -> Tuple[Table, Table, Dict[str, Envelope_KDE]]:
+        """Keep sources whose Δmag lies outside the KDE sigma envelope."""
         if len(tabs) == 0:
-            return {}, {}, {}, {}
+            return {}, {}, {}
 
         good_tabs = {}
         bad_tabs = {}
+        percentiles = [norm.cdf(-sigma_boundary), norm.cdf(sigma_boundary)]
+        min_mag = 14.0  # matches the KDE grid start
 
-        # Check if we are given bins to use
-        given_bins = bin_means is not None and bin_stds is not None
-        if not given_bins:
-            bin_means, bin_stds = {}, {}
-
-        min_mag = 15.0
         for band in tabs.keys():
             tab = tabs[band]
 
-            # Get the mags that we are going to use based on the string
+            # Resolve catalog-flag-aware mag columns
             if f'{band}_Catalog_Flag' in tab.colnames:
                 pstarr_mags = np.where(tab[f'{band}_Catalog_Flag'] == 1, PSTARR_UPPER_LIM[band], tab[f'PSTARR_{band}PSFMag'])
                 ztf_mags = np.where(tab[f'{band}_Catalog_Flag'] == 2, tab[f'ZTF_{band}_mag_limit'], tab[f'ZTF_{band}PSFMag'])
@@ -534,33 +718,23 @@ class Filters():
                 pstarr_mags = np.where(tab['Catalog_Flag'] == 1, PSTARR_UPPER_LIM[band], tab[f'PSTARR_{band}PSFMag'])
                 ztf_mags = np.where(tab['Catalog_Flag'] == 2, tab[f'ZTF_{band}_mag_limit'], tab[f'ZTF_{band}PSFMag'])
 
-            # Fill in the panstarrs upper limit values  # TODO: THINK ABOUT THIS
             upper_lims = pstarr_mags == -999
-            # pstarr_mags[upper_lims] = PSTARR_UPPER_LIM[band]
 
-            # Get the n-sigma boundaries on delta mag
-            mag_bin_edges = np.arange(min_mag, np.nanmax(np.concatenate((pstarr_mags, ztf_mags))) + 1, step=1)
-            if not given_bins:
-                bin_means[band], bin_stds[band] = [], []
-            outside_mask = np.ones(len(tab), dtype=bool)
-            for i in range(len(mag_bin_edges) - 1):
-                lower, upper = mag_bin_edges[i], mag_bin_edges[i+1]
-                bin_mask = (~upper_lims) & (pstarr_mags > lower) & (pstarr_mags < upper)
-                if not given_bins:
-                    bin_means[band].append(np.nanmean(ztf_mags[bin_mask] - pstarr_mags[bin_mask]))
-                    bin_stds[band].append(np.nanstd(ztf_mags[bin_mask] - pstarr_mags[bin_mask]))
+            mag = np.mean([pstarr_mags, ztf_mags], axis=0)
+            dmag = ztf_mags - pstarr_mags
 
-                outside_mask[bin_mask] = np.abs(ztf_mags[bin_mask] - pstarr_mags[bin_mask] - bin_means[band][-1]) > mag_thresh * bin_stds[band][-1]
+            # Evaluate per-source KDE percentile bounds
+            vals = envelopes[band].get_percentile(mag, percentiles)
+            outside_mask = (dmag < vals[0]) | (dmag > vals[1])
 
-            # Masks
-            gtr_mag_min_mask = pstarr_mags > min_mag
-            outside_mask &= gtr_mag_min_mask  # ignore anything less than some magnitude
-            outside_mask &= (~upper_lims)
+            # Only consider sources with valid mags above the KDE grid floor
+            outside_mask &= pstarr_mags > min_mag
+            outside_mask &= ~upper_lims
 
             good_tabs[band] = tab[outside_mask]
-            bad_tabs[band] = tab[outside_mask]
+            bad_tabs[band] = tab[~outside_mask]
 
-        return good_tabs, bad_tabs, bin_means, bin_stds
+        return good_tabs, bad_tabs, envelopes
 
     def kde_filter(
             self,
@@ -660,9 +834,8 @@ class Filters():
             sources: Union[Sources, Dict[str, Sources]],
             catalog: Literal['in_both', 'in_ztf', 'in_pstarr'],
             n: int = 2,
-            mag_thresh: int = 5,
-            bin_means: Optional[Dict[str, List[float]]] = None,
-            bin_stds: Optional[Dict[str, List[float]]] = None,
+            sigma_boundary: float = 3.0,
+            envelopes: Optional[Dict[str, Envelope_KDE]] = None,
             *args,
             **kwargs,
         ) -> Tuple[Sources, Sources]:
@@ -679,11 +852,10 @@ class Filters():
 
             # Run only_big_dmag on all bands using the same source data table
             # (each band reads its own band-prefixed columns, e.g. ZTF_gPSFMag)
-            good_tabs, _, _, _ = self.only_big_dmag(
+            good_tabs, _, _ = self.only_big_dmag(
                 {band: data for band in BANDS},
-                mag_thresh=mag_thresh,
-                bin_means=bin_means,
-                bin_stds=bin_stds,
+                sigma_boundary=sigma_boundary,
+                envelopes=envelopes,
             )
 
             # Count how many bands each source has big dmag in
@@ -708,62 +880,98 @@ class Filters():
 
         return good_sources, bad_sources
 
-    def _parallax_in_srcs(self, srcs: Sources) -> Tuple[Sources, Sources]:
+    def _parallax_in_srcs(
+        self,
+        srcs: Sources,
+        gaia_table: Optional[Table] = None,
+    ) -> Tuple[Sources, Sources]:
         mask = np.ones(len(srcs), dtype=bool)
-        for i, src in enumerate(srcs):
-            if len(src.GAIA_info) > 0:
-                mask[i] = (
-                    (src.GAIA_info[0]['parallax_over_error'] < 5.0)
-                    or src.GAIA_info['parallax_over_error'].mask[0]
-                )
-        good_srcs = srcs[mask]
-        bad_srcs = srcs[~mask]
-        return good_srcs, bad_srcs
+
+        if gaia_table is not None and len(srcs) > 0:
+            idx = _match_sources_to_gaia(srcs, gaia_table)
+            for i in range(len(srcs)):
+                if idx[i] == -1:
+                    continue
+                poe = gaia_table[idx[i]]['parallax_over_error']
+                if not np.ma.is_masked(poe) and poe >= 5.0:
+                    mask[i] = False
+        else:
+            for i, src in enumerate(srcs):
+                if len(src.GAIA_info) > 0:
+                    mask[i] = (
+                        src.GAIA_info[0]['parallax_over_error'] < 5.0
+                        or src.GAIA_info['parallax_over_error'].mask[0]
+                    )
+
+        return srcs[mask], srcs[~mask]
 
     def parallax_filter(
         self,
         sources: Union[Sources, Dict[str, Sources]],
         *args,
+        gaia_table: Optional[Table] = None,
         **kwargs,
     ) -> Union[Tuple[Dict[str, Sources], Dict[str, Sources]], Tuple[Sources, Sources]]:
         if isinstance(sources, Dict):
             good_sources = {}
             bad_sources = {}
             for band in sources.keys():
-                good_sources[band], bad_sources[band] = self._parallax_in_srcs(sources[band])
+                good_sources[band], bad_sources[band] = self._parallax_in_srcs(
+                    sources[band], gaia_table=gaia_table
+                )
             return good_sources, bad_sources
         else:
-            return self._parallax_in_srcs(sources)
+            return self._parallax_in_srcs(sources, gaia_table=gaia_table)
 
-    def _proper_motion_in_srcs(self, srcs: Sources) -> Tuple[Sources, Sources]:
+    def _proper_motion_in_srcs(
+        self,
+        srcs: Sources,
+        gaia_table: Optional[Table] = None,
+    ) -> Tuple[Sources, Sources]:
         mask = np.ones(len(srcs), dtype=bool)
-        for i, src in enumerate(srcs):
-            if len(src.GAIA_info) > 0:
-                mask[i] = (src.GAIA_info[0]['pm'] / (src.GAIA_info[0]['pmra_error'] + src.GAIA_info[0]['pmdec_error']) < 5.0) or \
-                    (src.GAIA_info['pm'].mask[0] or \
-                    src.GAIA_info['pmra_error'].mask[0] or \
-                    src.GAIA_info['pmdec_error'].mask[0]
+
+        if gaia_table is not None and len(srcs) > 0:
+            idx = _match_sources_to_gaia(srcs, gaia_table)
+            for i in range(len(srcs)):
+                if idx[i] == -1:
+                    continue
+                row = gaia_table[idx[i]]
+                pm, pmra_e, pmdec_e = row['pm'], row['pmra_error'], row['pmdec_error']
+                if not (np.ma.is_masked(pm) or np.ma.is_masked(pmra_e) or np.ma.is_masked(pmdec_e)):
+                    if pm / (pmra_e + pmdec_e) >= 5.0:
+                        mask[i] = False
+        else:
+            for i, src in enumerate(srcs):
+                if len(src.GAIA_info) > 0:
+                    mask[i] = (
+                        src.GAIA_info[0]['pm'] / (
+                            src.GAIA_info[0]['pmra_error'] + src.GAIA_info[0]['pmdec_error']
+                        ) < 5.0
+                    ) or (
+                        src.GAIA_info['pm'].mask[0]
+                        or src.GAIA_info['pmra_error'].mask[0]
+                        or src.GAIA_info['pmdec_error'].mask[0]
                     )
 
-        good_srcs = srcs[mask]
-        bad_srcs = srcs[~mask]
-
-        return good_srcs, bad_srcs
+        return srcs[mask], srcs[~mask]
 
     def proper_motion_filter(
             self,
             sources: Union[Sources, Dict[str, Sources]],
             *args,
+            gaia_table: Optional[Table] = None,
             **kwargs,
         ) -> Union[Tuple[Dict[str, Sources], Dict[str, Sources]], Sources]:
         if isinstance(sources, Dict):
             good_sources = {}
             bad_sources = {}
             for band in sources.keys():
-                good_sources[band], bad_sources[band] = self._proper_motion_in_srcs(sources[band])
+                good_sources[band], bad_sources[band] = self._proper_motion_in_srcs(
+                    sources[band], gaia_table=gaia_table
+                )
             return good_sources, bad_sources
         else:
-            return self._proper_motion_in_srcs(sources)
+            return self._proper_motion_in_srcs(sources, gaia_table=gaia_table)
     
     def _no_nearby_source_in_srcs(self, srcs: Sources, n_nearby_max: int) -> Sources:
         all_coords = srcs.coords
@@ -1220,6 +1428,11 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
             print(f'Warning: Band {band} not available for field {field_name}...')
     print('Finished loading tables...')
 
+    # # TEMPORARY:
+    # ra_temp, dec_temp = 163.5855, 17.6518
+    # for band in tables.keys():
+    #     tables[band] = tables[band][(np.isclose(tables[band]['ra'], ra_temp, atol=1e-3)) & (np.isclose(tables[band]['dec'], dec_temp, atol=1e-3))]
+
     # Set values <=0 to the upper limit for ZTF and add mag cols for Pan-STARRS
     for band in tables.keys():
 
@@ -1235,10 +1448,11 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         tab[f'ZTF_{band}_upper_lim_flag'][upper_lim_mask] = True
         tables[band] = remove_mask(tab)
 
-    # Get the stored 5-sigma delta mags
-    with open(os.path.join(get_data_path(), '5sigma_delta_mags.pkl'), 'rb') as f:
-        delta_mag_5sigma = pickle.load(f)
-    bin_means, bin_stds = delta_mag_5sigma['means'], delta_mag_5sigma['stds']
+    # Bulk Gaia query — one network round-trip for the whole field, cached to disk.
+    all_ras  = np.concatenate([np.asarray(t['ra'])  for t in tables.values()])
+    all_decs = np.concatenate([np.asarray(t['dec']) for t in tables.values()])
+    field_gaia_table = query_gaia_for_field(field_name, all_ras, all_decs)
+    print(f'Gaia query returned {len(field_gaia_table)} sources for field {field_name}.')
 
     # Delete and recreate field filter directory
     filter_result_dirpath = os.path.join(get_data_path(), f'{FILTER_RESULT_DIR}/{field_name}')
@@ -1284,6 +1498,11 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'psf_fit_filter')
     all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'dec_greater_than', min_dec=min_dec)
 
+    # Build (or load cached) KDE envelopes from quality-filtered sources
+    in_both_quality_tabs = {band: tab[tab['Catalog_Flag'] == 0] for band, tab in all_quality_source_tabs.items()}
+    envelopes = load_or_build_kde_envelopes(field_name, in_both_quality_tabs)
+    sigma_boundary = 3.0
+
     #---------------------------------------------------------------#
     # Initial stats
     init_counts = {band: len(tab) for band, tab in tabs.items()}
@@ -1307,25 +1526,24 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     tabs, ztf_tabs_low_snr, pstarr_tabs_low_snr = filters.filter(tabs, 'snr_filter', snr_min=5, both_cat=True)
 
     # Delta mag > n sigma
-    dmag_sigma = 5
-    tabs, _, _ = filters.filter(tabs, 'only_big_dmag', mag_thresh=dmag_sigma, bin_means=bin_means, bin_stds=bin_stds)
+    tabs, _ = filters.filter(tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes)
 
     # Converting to sources
     merged_coords = get_merged_tab_coords(tabs)
     sources = Sources(ras=merged_coords['ra'], decs=merged_coords['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
 
     # Check for big dmag in >1 bands
-    sources = filters.filter(sources, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, bin_means=bin_means, bin_stds=bin_stds)
+    sources = filters.filter(sources, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes)
 
     # Store pre-gaia filteration if requested
     if store_pre_gaia:
         sources.save(os.path.join(filter_result_dirpath, f'0_pre_gaia.ecsv'))
 
     # Check for proper motion
-    sources = filters.filter(sources, 'proper_motion_filter')
+    sources = filters.filter(sources, 'proper_motion_filter', gaia_table=field_gaia_table)
 
     # Check for parallax
-    sources = filters.filter(sources, 'parallax_filter')
+    sources = filters.filter(sources, 'parallax_filter', gaia_table=field_gaia_table)
     #---------------------------------------------------------------#
 
     # Save the sources and flowchart figure
@@ -1392,24 +1610,24 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Delta mag > n sigma
     for band in in_both_tabs.keys():
         in_both_tabs[band]['Catalog_Flag'] = 0
-    in_both_tabs, _, _ = filters.filter(in_both_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, bin_means=bin_means, bin_stds=bin_stds, branch=branch)
+    in_both_tabs, _ = filters.filter(in_both_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
     # Converting to sources
     merged_coords_in_both = get_merged_tab_coords(in_both_tabs, max_arcsec=3.0)
     sources_in_both = Sources(ras=merged_coords_in_both['ra'], decs=merged_coords_in_both['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
 
     # Check for big dmag in >1 bands
-    sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, bin_means=bin_means, bin_stds=bin_stds, branch=branch)
+    sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
     # Store pre-gaia filteration if requested
     if store_pre_gaia:
         sources_in_both.save(os.path.join(filter_result_dirpath, f'1_in_both_pre_gaia.ecsv'))
 
     # Check for proper motion
-    sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch)
+    sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch, gaia_table=field_gaia_table)
 
     # Check for parallax
-    sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch)
+    sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch, gaia_table=field_gaia_table)
     sources_in_both.save(os.path.join(filter_result_dirpath, f'1_wide_association.ecsv'))
 
     ######################################################################
@@ -1418,14 +1636,14 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     branch = 'in_ztf'
 
     # Delta mag > n sigma
-    in_ztf_tabs, _, _ = filters.filter(in_ztf_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, bin_means=bin_means, bin_stds=bin_stds, branch=branch)
+    in_ztf_tabs, _ = filters.filter(in_ztf_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
     # Converting to sources
     merged_coords_in_ztf = get_merged_tab_coords(in_ztf_tabs, max_arcsec=3.0)
     sources_in_ztf = Sources(ras=merged_coords_in_ztf['ra'], decs=merged_coords_in_ztf['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
 
     # Check for big dmag in >1 bands
-    sources_in_ztf = filters.filter(sources_in_ztf, 'at_least_n_big_dmag_bands', catalog='in_ztf', n=2, bin_means=bin_means, bin_stds=bin_stds, branch=branch)
+    sources_in_ztf = filters.filter(sources_in_ztf, 'at_least_n_big_dmag_bands', catalog='in_ztf', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
     # Check for big dmag in >1 bands
     sources_in_ztf = filters.filter(sources_in_ztf, 'no_nearby_source_filter', n_nearby_max=5, branch=branch)
@@ -1435,14 +1653,14 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         sources_in_ztf.save(os.path.join(filter_result_dirpath, f'1_pre_gaia.ecsv'))
 
     # Check for proper motion
-    sources_in_ztf = filters.filter(sources_in_ztf, 'proper_motion_filter', branch=branch)
+    sources_in_ztf = filters.filter(sources_in_ztf, 'proper_motion_filter', branch=branch, gaia_table=field_gaia_table)
 
     # Check for parallax
-    sources_in_ztf = filters.filter(sources_in_ztf, 'parallax_filter', branch=branch)
+    sources_in_ztf = filters.filter(sources_in_ztf, 'parallax_filter', branch=branch, gaia_table=field_gaia_table)
     #---------------------------------------------------------------#
 
     # Save the sources and flowchart figure
-    sources_in_ztf.save(os.path.join(filter_result_dirpath, f'1.ecsv'))
+    sources_in_ztf.save(os.path.join(filter_result_dirpath, f'1.hdf5'))
     d = create_filter_flowchart(filters.filter_stats)
     d.save(os.path.join(filter_result_dirpath, '1_flowchart.pdf'))
 
@@ -1515,24 +1733,24 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     in_both_tabs = filters.filter(in_both_tabs, 'psf_fit_filter', branch=branch)
 
     # Delta mag > n sigma
-    in_both_tabs, _, _ = filters.filter(in_both_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, bin_means=bin_means, bin_stds=bin_stds, branch=branch)
+    in_both_tabs, _ = filters.filter(in_both_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
     # Converting to sources
     merged_coords_in_both = get_merged_tab_coords(in_both_tabs, max_arcsec=3.0)
     sources_in_both = Sources(ras=merged_coords_in_both['ra'], decs=merged_coords_in_both['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
 
     # Check for big dmag in >1 bands
-    sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, bin_means=bin_means, bin_stds=bin_stds, branch=branch)
+    sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
     # Store pre-gaia filtration if requested
     if store_pre_gaia:
         sources_in_both.save(os.path.join(filter_result_dirpath, f'2_in_both_pre_gaia.ecsv'))
 
     # Check for proper motion
-    sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch)
+    sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch, gaia_table=field_gaia_table)
 
     # Check for parallax
-    sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch)
+    sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch, gaia_table=field_gaia_table)
 
     sources_in_both.save(os.path.join(filter_result_dirpath, f'2_wide_association.ecsv'))
 
@@ -1541,16 +1759,12 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     branch = 'in_pstarr'
 
     # Delta mag > n sigma
-    in_pstarr_tabs, _, _ = filters.filter(in_pstarr_tabs, 'only_big_dmag', mag_thresh=dmag_sigma, bin_means=bin_means, bin_stds=bin_stds, branch=branch)
+    in_pstarr_tabs, _ = filters.filter(in_pstarr_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
     #### TESTING ####
     # SAVE SO WE CAN SEE THE DATA
     for band, tab in in_pstarr_tabs.items():
-        for colname in tab.colnames:
-            col = tab[colname]
-            if col.dtype.kind == 'S' or (col.dtype.kind == 'O' and len(col) > 0 and isinstance(col[0], bytes)):
-                tab[colname] = col.astype(str)
-        tab.write(os.path.join(filter_result_dirpath, f'2_{band}_test.ecsv'), overwrite=True)
+        prepare_table_for_write(tab).write(os.path.join(filter_result_dirpath, f'2_{band}_test.ecsv'), overwrite=True)
 
     # # Converting to sources
     # sources_in_pstarr: Dict[str, Sources] = {
@@ -1607,12 +1821,12 @@ def filter_fields():
 
     fields = [f for f in fields if f not in os.listdir(os.path.join(get_data_path(), f'{FILTER_RESULT_DIR}'))]
 
-    # with ProcessPoolExecutor(max_workers=1) as executor:
-    #     executor.map(_filter_field_wrapper, fields)
+    with ProcessPoolExecutor(max_workers=1) as executor:
+        executor.map(_filter_field_wrapper, fields)
     # for f in fields:
     #     _filter_field_wrapper(f)
 
-    _filter_field_wrapper('000573')
+    # _filter_field_wrapper('000573')
 
 
 if __name__ == '__main__':
