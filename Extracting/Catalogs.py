@@ -172,18 +172,33 @@ WHERE rn = 1 into mydb.{tab_name}
 
     def _submit_table_query(self, band: str, table_name: str) -> int:
 
-        # Submit the query and monitor it
+        # Outer loop: re-submit if the job itself fails or is cancelled.
         band_query = self._get_band_query(band, tab_name=table_name)
-        jobid = MASTCASJOBS.submit(band_query, task_name=f"{band}_PanSTARRS_DR2_TILE_QUERY")
-        print(f'Submitted query for {table_name} with id={jobid}')
         for attempt in range(3):
-            try:
-                MASTCASJOBS.monitor(jobid)
-            except Exception as e:
-                if attempt == 2:
-                    raise e
+            jobid = MASTCASJOBS.submit(band_query, task_name=f"{band}_PanSTARRS_DR2_TILE_QUERY")
+            print(f'Submitted query for {table_name} with id={jobid} (attempt {attempt + 1})')
 
-        return jobid
+            # Inner loop: retry monitor() on the same job for transient network errors.
+            for monitor_attempt in range(3):
+                try:
+                    status_code, status_str = MASTCASJOBS.monitor(jobid)
+                    break
+                except Exception as e:
+                    if monitor_attempt == 2:
+                        raise e
+
+            if status_code == 5:
+                return jobid
+
+            # Job was cancelled or failed — drop any partial table and retry submission.
+            print(f'CasJobs job {jobid} for {table_name} ended with status {status_code} ({status_str}). Dropping table if it exists...')
+            MASTCASJOBS.drop_table_if_exists(table_name)
+            if attempt == 2:
+                raise RuntimeError(
+                    f"CasJobs job {jobid} for {table_name} ended with status {status_code} ({status_str}) after 3 attempts"
+                )
+
+        return jobid  # unreachable, satisfies type checker
 
     def get_data(self) -> Table:
         # Query Pan-STARRS DR2 using the specified RA and DEC range
@@ -226,7 +241,12 @@ WHERE rn = 1 into mydb.{tab_name}
 
                         # Retrieve the table
                         print(f'Retrieving {table_name} from MyDB!')
-                        band_tables.append(MASTCASJOBS.get_table(table_name))
+                        band_table = MASTCASJOBS.get_table(table_name)
+                        if len(band_table) == 0:
+                            print(f'WARNING: {table_name} has 0 rows — dropping and retrying.')
+                            MASTCASJOBS.drop_table_if_exists(table_name)
+                            raise RuntimeError(f'{table_name} returned 0 rows')
+                        band_tables.append(band_table)
                     break
 
                 except Exception as e:

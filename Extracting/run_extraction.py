@@ -1,5 +1,6 @@
 import multiprocessing
 import os
+import shutil
 import sys
 import pickle
 import ztffields
@@ -8,6 +9,7 @@ import traceback
 
 from typing import Iterable
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from astropy.table import Table
 
 try:
     from Tile import Tile
@@ -34,6 +36,29 @@ def add_to_bad_quads(quad_dirname: str):
     with open(bad_quads_fpath, 'wb') as f:
         print('saving bad quads, ', bad_quads)
         np.save(f, bad_quads)
+
+
+def _pstarr_has_all_bands(dirpath: str, bands: Iterable[str]) -> bool:
+    """Return True if PSTARR.hdf5 has non-NaN data for every band that was actually extracted.
+
+    A band is considered missing if ZTF_{band}.hdf5 exists (meaning the band was
+    extracted) but its PSFMag column in PSTARR.hdf5 is absent or entirely NaN —
+    the signature of a silently failed CasJobs query merged in as all-NaN columns.
+    Bands with no corresponding ZTF file are skipped since they were never extracted.
+    """
+    try:
+        tab = Table.read(os.path.join(dirpath, 'PSTARR.hdf5'), path='data')
+    except Exception:
+        return False
+    if len(tab) == 0:
+        return True  # legitimately empty sky region
+    for band in bands:
+        if not os.path.exists(os.path.join(dirpath, f'ZTF_{band}.hdf5')):
+            continue  # band was never extracted, don't expect it in PSTARR
+        col = f'{band}PSFMag'
+        if col not in tab.colnames or np.all(np.isnan(tab[col].astype(float))):
+            return False
+    return True
 
 
 def get_incomplete_quadrant_dirs(bands: Iterable[str] = ('g', 'r', 'i')) -> dict:
@@ -72,6 +97,8 @@ def get_incomplete_quadrant_dirs(bands: Iterable[str] = ('g', 'r', 'i')) -> dict
         missing = []
 
         if 'PSTARR.hdf5' not in root_files:
+            missing.append('PSTARR.hdf5')
+        elif not _pstarr_has_all_bands(dirpath, bands):
             missing.append('PSTARR.hdf5')
 
         for band in bands:
@@ -195,14 +222,17 @@ def process_field(field_id: int):
 
 
 def process_missed_quadrants(quads_to_reextract: dict):
-    """Re-extract quadrants that are missing HDF5 files.
+    """Re-extract quadrants that are missing or incomplete HDF5 files.
 
-    For each incomplete quadrant, queries ZTF metadata to confirm which missing
-    bands actually have images available, then runs extraction on those bands.
+    For each incomplete quadrant, queries ZTF metadata to confirm which bands
+    have images available, then runs extraction on those bands.  If PSTARR.hdf5
+    is in the missing list, the entire quadrant directory is deleted so that a
+    full fresh extraction is performed across all available bands.
 
     Parameters:
-        quads_to_reextract: dict mapping quad_dirname -> list of missing band characters
-                            (e.g. ['g', 'r']), derived from get_incomplete_quadrant_dirs().
+        quads_to_reextract: dict mapping quad_dirname -> list of missing file names
+                            (e.g. ['PSTARR.hdf5', 'ZTF_g.hdf5']), as returned by
+                            get_incomplete_quadrant_dirs().
     """
     data_path = get_data_path()
 
@@ -239,7 +269,20 @@ def process_missed_quadrants(quads_to_reextract: dict):
             print(f'Using cached metadata for {dirname}.')
         metadata = metadata_cache[cache_key]
         available_bands = [fc[1] for fc in metadata['filtercode'].unique()]
-        bands_to_extract = [b for b in missing_bands if b in available_bands]
+
+        # If PSTARR.hdf5 is incomplete, delete the whole directory so process_quadrant
+        # treats it as a fresh extraction across all available bands.
+        quad_dirpath = os.path.join(data_path, 'catalog_results', dirname)
+        if 'PSTARR.hdf5' in missing_bands and os.path.isdir(quad_dirpath):
+            print(f'{dirname}: deleting directory due to incomplete PSTARR.hdf5.')
+            shutil.rmtree(quad_dirpath)
+            bands_to_extract = available_bands
+        else:
+            # Parse band characters out of ZTF_{band}.hdf5 filenames.
+            bands_to_extract = [
+                f[4] for f in missing_bands
+                if f.startswith('ZTF_') and f.endswith('.hdf5') and f[4] in available_bands
+            ]
 
         if not bands_to_extract:
             print(f'{dirname}: no ZTF images available for missing bands {missing_bands}. Skipping.')
