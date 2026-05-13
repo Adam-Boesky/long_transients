@@ -1,5 +1,6 @@
 import os
 import pathlib
+import subprocess
 from contextlib import nullcontext
 
 from astropy.io import ascii
@@ -13,6 +14,16 @@ import pandas as pd
 
 MAST_CREDENTIAL_FNAME = 'mast_dino_login.txt'
 print(f'CasJobs will use the credentials from {MAST_CREDENTIAL_FNAME}')
+
+
+def fitscheck_valid(fpath: str) -> bool:
+    """Return True if fitscheck exits 0 (file is a valid, non-corrupt FITS file)."""
+    result = subprocess.run(
+        ["fitscheck", "--ignore-missing", "--compliance", fpath],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return result.returncode == 0
 
 
 def get_credentials(fname: str) -> Union[Tuple[str, str], str]:

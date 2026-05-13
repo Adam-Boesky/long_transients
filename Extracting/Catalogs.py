@@ -1,5 +1,4 @@
 """Objects that get the information from astrophysical catalogs."""
-import subprocess
 import atexit
 import random
 import os
@@ -21,11 +20,11 @@ from astropy.utils.data import clear_download_cache
 
 try:
     from Source_Extractor import Source_Extractor
-    from utils import get_credentials, MASTCASJOBS, casjobs_query_lock
+    from utils import get_credentials, fitscheck_valid, MASTCASJOBS, casjobs_query_lock
 except ModuleNotFoundError:
     sys.path.append(os.path.dirname(os.getcwd()))
     from Extracting.Source_Extractor import Source_Extractor
-    from Extracting.utils import get_credentials, MASTCASJOBS, casjobs_query_lock
+    from Extracting.utils import get_credentials, fitscheck_valid, MASTCASJOBS, casjobs_query_lock
 
 ZTF_CUTOUT_HALFWIDTH = 0.8888889 / 2
 
@@ -405,36 +404,30 @@ class ZTF_Catalog(Catalog):
         # File path where the image will be saved
         file_path = os.path.join(self.data_dirpath, f'ztf_{paddedfield}_{filtercode}_c{paddedccdid}_q{qid}_refimg.fits')
 
-        # Check if the image already exists and is valid
+        # Return existing file if valid, otherwise delete and re-download
         if os.path.exists(file_path):
             print(f"Checking if image already downloaded and valid: {file_path.split('/')[-1]}")
-
-            # Make sure that the image is not truncated
-            result = subprocess.run(
-                ["fitscheck", "--ignore-missing", "--compliance", file_path],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            if "truncated" in result.stdout.lower() or "truncated" in result.stderr.lower():
-                print(f"{file_path.split('/')[-1]} is not valid. Deleting and re-downloading...")
-                os.remove(file_path)
-            else:
+            if fitscheck_valid(file_path):
                 print(f"Image is valid at {file_path}")
                 return file_path
+            print(f"{file_path.split('/')[-1]} is not valid. Deleting and re-downloading...")
+            os.remove(file_path)
 
-        # Try downloading 3 times
-        for _ in range(3):
+        # Try downloading 3 times, validating each attempt
+        for attempt in range(3):
             response = requests.get(image_url, auth=(username, password), stream=True)
             if response.status_code == 200:
                 with open(file_path, 'wb') as file:
                     for chunk in response.iter_content(chunk_size=1024):
                         if chunk:
                             file.write(chunk)
-                print(f"Image downloaded and saved at {file_path}")
-                return file_path
+                if fitscheck_valid(file_path):
+                    print(f"Image downloaded and saved at {file_path}")
+                    return file_path
+                print(f"Downloaded file is not valid (attempt {attempt + 1}/3). Deleting and retrying...")
+                os.remove(file_path)
 
-        print(f"Failed to download image from {image_url}. Status code: {response.status_code}")
+        print(f"Failed to download a valid image from {image_url} after 3 attempts.")
         return None
 
 
