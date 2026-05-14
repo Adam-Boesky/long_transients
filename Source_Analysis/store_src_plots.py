@@ -23,8 +23,14 @@ mpl.rcParams['font.size'] = 12  # Adjust the font size as needed
 mpl.rcParams['axes.formatter.use_mathtext'] = True
 
 OVERWRITE = False
-CANDIDATE_DIR = 'gemini_analysis_pages'
-FILTER_RESULTS_DIRNAME = 'filter_results_gemini'
+CANDIDATE_DIR = 'kde_analysis_pages'
+FILTER_RESULTS_DIRNAME = 'filter_results_kde'
+
+
+def src_fname(src: Source, prefix: str = '') -> str:
+    ra_str  = f"{src.ra:.4f}".replace('.', 'p').replace('-', 'n')
+    dec_str = f"{src.dec:.4f}".replace('.', 'p').replace('-', 'n')
+    return f"{prefix}{ra_str}_{dec_str}.pdf"
 
 
 def save_src_plot(src: Source, out_fname: str, overwrite: bool, n_attempts: int = 3):
@@ -75,10 +81,7 @@ def store_source_plots():
         **src_kwargs,
     )
     with Pool(processes=3) as pool:
-        # Construct the source name
-        ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs]
-        dec_strs = [f"{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs]
-        candidate_names = [f"{ra_str}_{dec_str}.pdf" for ra_str, dec_str in zip(ra_strs, dec_strs)]
+        candidate_names = [src_fname(src) for src in srcs]
 
         args = [
             (src, os.path.join(plot_dir, cand_name), OVERWRITE, 3)
@@ -102,10 +105,7 @@ def store_source_plots():
         os.mkdir(plot_dir)
 
     with Pool(processes=3) as pool:
-        # Construct the source name
-        ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf]
-        dec_strs = [f"{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf]
-        candidate_names = [f"{ra_str}_{dec_str}.pdf" for ra_str, dec_str in zip(ra_strs, dec_strs)]
+        candidate_names = [src_fname(src) for src in srcs_ztf]
 
         args = [
             (src, os.path.join(plot_dir, cand_name), OVERWRITE, 3)
@@ -121,10 +121,7 @@ def store_source_plots():
     # Wide associations in ZTF
     srcs_ztf_wide = Sources.from_file(os.path.join(path_to_data, f'{FILTER_RESULTS_DIRNAME}/combined/1_wide_association.ecsv'))
     with Pool(processes=3) as pool:
-        # Construct the source name
-        ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf_wide]
-        dec_strs = [f"{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_ztf_wide]
-        candidate_names = [f"wide_{ra_str}_{dec_str}.pdf" for ra_str, dec_str in zip(ra_strs, dec_strs)]
+        candidate_names = [src_fname(src, prefix='wide_') for src in srcs_ztf_wide]
 
         args = [
             (src, os.path.join(plot_dir, cand_name), OVERWRITE, 1)
@@ -149,8 +146,8 @@ def store_source_plots():
 
     # with Pool(processes=3) as pool:
     #     # Construct the source name
-    #     ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_pstarr]
-    #     dec_strs = [f"{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_pstarr]
+    #     ra_strs = [f"{f"{src.ra:.4f}".replace('.', 'p').replace('-', 'n')}" for src in srcs_pstarr]
+    #     dec_strs = [f"{f"{src.dec:.4f}".replace('.', 'p').replace('-', 'n')}" for src in srcs_pstarr]
     #     candidate_names = [f"{i}_candidate_{ra_str}_{dec_str}.pdf" for i, (ra_str, dec_str) in enumerate(zip(ra_strs, dec_strs))]
 
     #     args = [
@@ -167,10 +164,7 @@ def store_source_plots():
     # Wide associations in ZTF
     srcs_pstarr_wide = Sources.from_file(os.path.join(path_to_data, f'{FILTER_RESULTS_DIRNAME}/combined/2_wide_association.ecsv'))
     with Pool(processes=3) as pool:
-        # Construct the source name
-        ra_strs = [f"{str(src.ra).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_pstarr_wide]
-        dec_strs = [f"{str(src.dec).replace('.', 'p').replace('-', 'n')[:6]}" for src in srcs_pstarr_wide]
-        candidate_names = [f"{i}_candidate_wide_{ra_str}_{dec_str}.pdf" for i, (ra_str, dec_str) in enumerate(zip(ra_strs, dec_strs))]
+        candidate_names = [f"{i}_candidate_wide_{src_fname(src)}" for i, src in enumerate(srcs_pstarr_wide)]
 
         args = [
             (src, os.path.join(plot_dir, cand_name), OVERWRITE, 1)
