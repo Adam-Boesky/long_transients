@@ -13,6 +13,8 @@ from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky, search_around_sky
 from schemdraw.flow import Start, Arrow, Box, Decision
 from schemdraw.elements import Element
+from matplotlib.font_manager import FontProperties
+from matplotlib.textpath import TextPath
 from decimal import Decimal, ROUND_HALF_UP
 from KDEpy import TreeKDE
 from scipy.stats import norm
@@ -1107,6 +1109,23 @@ def associate_in_btwn_distance(table1: Table, table2: Table, min_sep: float = 1.
     return associated_table, table1[np.logical_not(mask)]
 
 
+def _box_width_for_text(text: str, fontsize: float = 12.5, inches_per_unit: float = 0.5, padding: float = 0.5) -> float:
+    """Return the minimum schemdraw Box w needed to contain `text` without clipping.
+
+    Uses TextPath to measure glyph extents, then applies an empirical 1.13× correction
+    to match matplotlib's actual rendered width (TextPath underestimates by ~13%).
+    """
+    fp = FontProperties(size=fontsize)
+    max_w_pts = 0.0
+    for line in text.split('\n'):
+        if line.strip():
+            tp = TextPath((0, 0), line, prop=fp)
+            bb = tp.get_extents()
+            max_w_pts = max(max_w_pts, bb.width)
+    text_units = (max_w_pts / 72.0) / inches_per_unit * 1.13
+    return max(3.0, text_units + padding)
+
+
 def add_filt_from_counts(
         filt_name: str,
         counts: Dict[str, int],
@@ -1133,9 +1152,16 @@ def add_filt_from_counts(
             stats += f'{band}: {ct:,} ({format_two_sig_figs(ct_norm)})\n'
     stats = stats[:-1]
 
+    # Compute box width from text so labels are never clipped.
+    # Start/Terminal is a pill shape whose rounded ends eat into text space, so use more padding.
+    box_w = _box_width_for_text(stats, padding=1.0 if start else 0.5)
+
     # Add to graph
     if start:
-        d += Start().label(stats)
+        # Also size height so all text lines clear the pill curvature (default h=1.25 is too tight for 3 lines)
+        n_lines = stats.count('\n') + 1
+        box_h = max(1.25, n_lines * 0.45 + 0.3)
+        d += Start(w=box_w, h=box_h).label(stats)
         new_box = None
     else:
         if previous_element is not None:
@@ -1145,7 +1171,7 @@ def add_filt_from_counts(
         d += arrow
 
         # Annotate the arrow with the filter name
-        new_box = Box().label(stats)
+        new_box = Box(w=box_w).label(stats)
         d += new_box
 
     return d, new_box
@@ -1205,14 +1231,14 @@ def add_decision_from_counts(
     decision = Decision(w=5, h=3.9, E='Yes', S='No').label(filt_name)
     d += decision
 
-    # Add the yes and no boxes
+    # Add the yes and no boxes, sized to fit their text
     arrow = Arrow().right(d.unit*3/4).at(decision.E)
     d += arrow
-    yes_box = Box().label(stats_yes)
+    yes_box = Box(w=_box_width_for_text(stats_yes)).label(stats_yes)
     d += yes_box
     arrow = Arrow().down(d.unit/2).at(decision.S)
     d += arrow
-    no_box = Box().label(stats_no)
+    no_box = Box(w=_box_width_for_text(stats_no)).label(stats_no)
     d += no_box
 
     return d, yes_box, no_box

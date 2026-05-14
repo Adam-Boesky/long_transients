@@ -93,7 +93,7 @@ class Light_Curve:
 
         # Map class catalog names to astroquery catalog names
         self.catalog_astroquery_map = {
-            'ztf': 'ztf_objects_dr23',
+            'ztf': 'ztf_objects_dr24',
             'wise': 'allwise_p3as_mep',
             'neowise': 'neowiser_p1bs_psd',
             'ptf': 'ptf_lightcurves',
@@ -254,6 +254,11 @@ class Light_Curve:
                         SkyCoord(self.ra, self.dec, unit='deg'),
                         photoobj_fields=desired_colnames,
                     )
+                    # query_crossid can return an HTML error page (e.g. 503) parsed as a
+                    # table instead of raising; detect this and treat as no result.
+                    if lightcurve_tab is not None and 'objID' not in lightcurve_tab.colnames:
+                        print(f'SDSS query_crossid returned unexpected columns {lightcurve_tab.colnames} — treating as no result.')
+                        lightcurve_tab = None
                 elif catalog == 'custom':
                     # Get the filename -> coordinate mapping
                     custom_phot_fnames = [fname.split('.')[0] for fname in os.listdir(CUSTOM_PHOT_DIR) if fname != 'README.md'] # dropping file extensions
@@ -485,11 +490,11 @@ class Light_Curve:
             if len(cat_lc) > 0:
 
                 # ZTF uses different oids for different bands, so we must associate between bands
-                # we will use an angular separation of <0.5arcseconds as our between-band requirement
+                # we will use an angular separation of <1.5arcseconds as our between-band requirement
                 if catalog_name == 'ztf':
-                    src_coord = SkyCoord(cat_lc[0]['ra'], cat_lc[0]['dec'], unit='deg')
+                    src_coord = SkyCoord(np.nanmean(cat_lc['ra']), np.nanmean(cat_lc['dec']), unit='deg')
                     all_coords = SkyCoord(cat_lc['ra'], cat_lc['dec'], unit='deg')
-                    mask = src_coord.separation(all_coords).arcsec < 0.5
+                    mask = src_coord.separation(all_coords).arcsec < 1.5
                 else:  # otherwise, we can just ensure that the IDs line up
                     mask = cat_lc[f'{catalog_name}_id'] == cat_lc[f'{catalog_name}_id'][0]
                 cat_lc = cat_lc[mask]
