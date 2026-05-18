@@ -455,6 +455,12 @@ class Source():
             print('Getting source spectrum from SDSS...')
             sdss_res = SDSS.query_region(self.coord, radius=self.max_arcsec*u.arcsec, spectro=True)
 
+            # query_region can return an HTML error page (e.g. 503) parsed as a table;
+            # detect this by checking for an expected column and treat as no result.
+            if sdss_res is not None and 'run2d' not in sdss_res.colnames:
+                print(f'SDSS query_region returned unexpected columns {sdss_res.colnames} — treating as no result.')
+                sdss_res = None
+
             if sdss_res is None:
                 print(f'Source at ({self.coord.ra.deg}, {self.coord.dec.deg}) has no spectrum in SDSS.')
                 self._has_spectrum = False
@@ -647,12 +653,12 @@ class Source():
                             else:
                                 self._data[cname][0] = cat[cname][ind_closest]
 
-        # Reorder columns
-        pstarr_cols = [col for col in self._data.colnames if col.startswith('PSTARR')]
-        ztf_cols = [col for col in self._data.colnames if col.startswith('ZTF')]
-        other_cols = [col for col in self._data.colnames if not (col.startswith('PSTARR') or col.startswith('ZTF'))]
-        ordered_cols = ['ra', 'dec'] + pstarr_cols + ztf_cols + [col for col in other_cols if col not in ['ra', 'dec']]
-        self._data = self._data[ordered_cols]
+            # Reorder columns once after building
+            pstarr_cols = [col for col in self._data.colnames if col.startswith('PSTARR')]
+            ztf_cols = [col for col in self._data.colnames if col.startswith('ZTF')]
+            other_cols = [col for col in self._data.colnames if not (col.startswith('PSTARR') or col.startswith('ZTF'))]
+            ordered_cols = ['ra', 'dec'] + pstarr_cols + ztf_cols + [col for col in other_cols if col not in ['ra', 'dec']]
+            self._data = self._data[ordered_cols]
 
         return self._data
 
