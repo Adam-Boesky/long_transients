@@ -54,7 +54,7 @@ class ZTF_LC:
 
     def __init__(
         self,
-        data_dir: str,
+        data_dir: str = '/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/ztf_lc_dir/',
         ra: Optional[float] = None,
         dec: Optional[float] = None,
         objectid: Optional[int] = None,
@@ -123,12 +123,14 @@ class ZTF_LC:
             rf'^ztf_{fieldid:06d}_z{band}_c{ccdid:02d}_q{qid}_dr\d+\.parquet$'
         )
 
-        # Get the 0 or 1 subdirectory and append it to the data_dir
-        data_subdir = os.path.join(self.data_dir, fieldid[2])
+        subdir_char = f"{fieldid:06d}"[2]  # '0' for fields 0–999, '1' for 1000–1999
+        field_dir = os.path.join(self.data_dir, subdir_char, f"field{fieldid:06d}")
+        if not os.path.isdir(field_dir):
+            return None
 
-        for fname in os.listdir(data_subdir):
+        for fname in os.listdir(field_dir):
             if pattern.match(fname):
-                return os.path.join(self.data_dir, fname)
+                return os.path.join(field_dir, fname)
         return None
 
     # ------------------------------------------------------------------
@@ -237,14 +239,15 @@ class ZTF_LC:
                     if row is not None:
                         tabs.append(self._row_to_table(row, band))
         else:
-            # objectid-only fallback: scan all files in data_dir
-            for fname in sorted(os.listdir(self.data_dir)):
-                meta = self.parse_filename(fname)
-                if meta is None:
-                    continue
-                row = self._search_file(os.path.join(self.data_dir, fname))
-                if row is not None:
-                    tabs.append(self._row_to_table(row, meta['band']))
+            # objectid-only fallback: walk all subdirs
+            for root, _dirs, files in os.walk(self.data_dir):
+                for fname in sorted(files):
+                    meta = self.parse_filename(fname)
+                    if meta is None:
+                        continue
+                    row = self._search_file(os.path.join(root, fname))
+                    if row is not None:
+                        tabs.append(self._row_to_table(row, meta['band']))
 
         if tabs:
             lc = vstack(tabs)

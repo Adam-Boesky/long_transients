@@ -1,6 +1,7 @@
 import os
 import sys
 import shutil
+import requests
 import numpy as np
 import schemdraw
 import pandas as pd
@@ -24,7 +25,7 @@ sys.path.append('/n/home04/aboesky/berger/long_transients')
 from astroquery.gaia import Gaia
 
 from Source_Analysis.Sources import Sources, MANDATORY_SOURCE_COLUMNS
-from Extracting.utils import get_snr_from_mag, get_data_path, load_ecsv, prepare_table_for_write, _INT64_COLUMNS
+from Extracting.utils import get_snr_from_mag, get_data_path, load_ecsv, prepare_table_for_write, _INT64_COLUMNS, get_credentials
 from concurrent.futures import ProcessPoolExecutor
 
 Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
@@ -144,32 +145,46 @@ def query_gaia_for_field(
     """
     cache_dir  = os.path.join(get_data_path(), 'gaia_cache')
     cache_path = os.path.join(cache_dir, f'{field_name}.ecsv')
+    os.makedirs(cache_dir, exist_ok=True)
 
     if os.path.exists(cache_path):
         print(f'Loading cached Gaia data from {cache_path}')
         return Table.read(cache_path, format='ascii.ecsv')
 
-    center_ra  = float(np.mean(ras))
-    center_dec = float(np.mean(decs))
-    coords = SkyCoord(ras, decs, unit='deg')
-    center = SkyCoord(center_ra, center_dec, unit='deg')
-    radius_deg = float(np.max(center.separation(coords).deg)) + padding_deg
+    username, password = get_credentials('gaia_login.txt')
+    if Gaia._TapPlus__user is None:
+        Gaia.login(user=username, password=password)
+
+    ra_min  = float(np.min(ras))  - padding_deg
+    ra_max  = float(np.max(ras))  + padding_deg
+    dec_min = float(np.min(decs)) - padding_deg
+    dec_max = float(np.max(decs)) + padding_deg
+
+    # Mirror the wrapping logic from Source_Extractor.get_coord_range / PSTARR_Catalog._get_band_query
+    if float(np.min(ras)) < 10.0 and float(np.max(ras)) > 350.0:
+        ra_clause = (f"(ra BETWEEN {ra_max} AND 360 OR ra BETWEEN 0 AND {ra_min})")
+    else:
+        ra_clause = f"ra BETWEEN {ra_min} AND {ra_max}"
 
     query = f"""
         SELECT ra, dec, parallax_over_error, pm, pmra_error, pmdec_error
         FROM gaiadr3.gaia_source
-        WHERE CONTAINS(
-            POINT('ICRS', ra, dec),
-            CIRCLE('ICRS', {center_ra}, {center_dec}, {radius_deg})
-        ) = 1
+        WHERE {ra_clause}
+        AND   dec BETWEEN {dec_min} AND {dec_max}
     """
-    print(f'Querying Gaia (r={radius_deg:.2f} deg) — result will be cached at {cache_path}')
-    job = Gaia.launch_job_async(query)
-    result = job.get_results()
-
-    os.makedirs(cache_dir, exist_ok=True)
-    result.write(cache_path, format='ascii.ecsv', overwrite=True)
-    return result
+    print(f'Querying Gaia (box {ra_min:.2f}-{ra_max:.2f} RA, {dec_min:.2f}-{dec_max:.2f} dec) — result will be cached at {cache_path}')
+    for attempt in range(3):
+        try:
+            job = Gaia.launch_job_async(query)
+            result = job.get_results()
+            result.write(cache_path, format='ascii.ecsv', overwrite=True)
+            return result
+        except requests.exceptions.HTTPError as e:
+            print(f'Gaia query failed (attempt {attempt + 1}/3): {e}')
+            if '401' in str(e):
+                print('Gaia session expired, re-logging in...')
+                Gaia.login(user=username, password=password)
+    raise RuntimeError(f'Gaia query failed after 3 attempts for field {field_name}')
 
 
 def _match_sources_to_gaia(
@@ -1415,6 +1430,11 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
 
 def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool = False):
     """Filter a field, save flowchart plots, and save candidates."""
+    filter_result_dirpath = os.path.join(get_data_path(), f'{FILTER_RESULT_DIR}/{field_name}')
+    if os.path.exists(filter_result_dirpath) and not overwrite:
+        print(f'Field {field_name} already exists. Use `overwrite=True` to overwrite it.')
+        return
+
     # Load in the tables
     print('Loading tables...')
     tables = {}
@@ -1455,14 +1475,9 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     print(f'Gaia query returned {len(field_gaia_table)} sources for field {field_name}.')
 
     # Delete and recreate field filter directory
-    filter_result_dirpath = os.path.join(get_data_path(), f'{FILTER_RESULT_DIR}/{field_name}')
     if os.path.exists(filter_result_dirpath):
-        if overwrite:
-            print(f'Overwriting {filter_result_dirpath}/')
-            shutil.rmtree(filter_result_dirpath)
-        else:
-            print(f'Field {field_name} already exists. Use `overwrite=True` to overwrite it.')
-            return
+        print(f'Overwriting {filter_result_dirpath}/')
+        shutil.rmtree(filter_result_dirpath)
     os.makedirs(filter_result_dirpath, exist_ok=True)
 
 
@@ -1808,18 +1823,26 @@ def _filter_field_wrapper(field):
 
 def filter_fields():
     """Filter fields!"""
-    fields = os.listdir('/Users/adamboesky/Research/long_transients/Data/catalog_results/field_results')
-    fields = [f.split('_')[0] for f in fields]
-    fields = np.unique(fields)
+    # field_results_dirpath = os.path.join(get_data_path(), EXTRACTED_CATALOG_DIR)
+    # fields = os.listdir(field_results_dirpath)
+    # fields = [f.split('_')[0] for f in fields]
+    # fields = np.unique(fields)
 
-    # Gemini fields
-    north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
-    south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
-    gemini_fields = np.concatenate([north_fields, south_fields])
-    gemini_fields = [str(f).zfill(6) for f in gemini_fields]
-    fields = np.intersect1d(ar1=fields, ar2=gemini_fields)
+    # Complete fields (all 64 quadrants have been fully-extracted)
+    fields = ['000616', '000617', '000619', '000303', '000304', '000373',
+       '000374', '000375', '000377', '000363', '000368', '000339',
+       '000516', '000517', '000518', '000324', '000326', '000337',
+       '000338', '000567', '000568', '000569', '000305', '000313',
+       '000315', '000318']
 
-    fields = [f for f in fields if f not in os.listdir(os.path.join(get_data_path(), f'{FILTER_RESULT_DIR}'))]
+    # # Gemini fields
+    # north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
+    # south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
+    # gemini_fields = np.concatenate([north_fields, south_fields])
+    # gemini_fields = [str(f).zfill(6) for f in gemini_fields]
+    # fields = np.intersect1d(ar1=fields, ar2=gemini_fields)
+
+    # fields = [f for f in fields if f not in os.listdir(os.path.join(get_data_path(), f'{FILTER_RESULT_DIR}'))]
 
     with ProcessPoolExecutor(max_workers=1) as executor:
         executor.map(_filter_field_wrapper, fields)
