@@ -7,10 +7,13 @@ import schemdraw
 import pandas as pd
 import ztffields
 import matplotlib.pyplot as plt
+import astropy.units as u
 
-from typing import Dict, List, Iterable, Tuple, Union, Optional
+from typing import Dict, List, Iterable, Tuple, Union, Optional, Literal
+from scipy.interpolate import RegularGridInterpolator
+from scipy.stats import norm
 from astropy.table import Table, vstack
-from astropy.coordinates import SkyCoord, match_coordinates_sky
+from astropy.coordinates import SkyCoord, match_coordinates_sky, search_around_sky
 from schemdraw.flow import Start, Arrow, Box, Decision
 from schemdraw.elements import Element
 from decimal import Decimal, ROUND_HALF_UP
@@ -20,13 +23,15 @@ sys.path.append('/n/home04/aboesky/berger/long_transients')
 
 
 from Source_Analysis.Sources import Sources, MANDATORY_SOURCE_COLUMNS
-from Extracting.utils import get_snr_from_mag, get_data_path, load_ecsv
+from Extracting.utils import get_snr_from_mag, get_data_path, load_ecsv, prepare_table_for_write
 from concurrent.futures import ProcessPoolExecutor
 
 BANDS = ['g', 'r', 'i']
 CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Coverage'}
 PSTARR_UPPER_LIM = {'g': 23.3, 'r': 23.2, 'i': 23.1}
-
+KDE_3SIGMA_COVERAGE = norm.cdf(3) - norm.cdf(-3)  # 2-tailed 3-sigma coverage: ~0.9973
+EXTRACTED_CATALOG_DIR = 'debugging'  # 'catalog_results/field_results'
+FILTER_RESULT_DIR = '/Users/adamboesky/Research/long_transients/Debugging/kde_tuning'
 
 def _is_flag(flags: np.ndarray, flag: Union[int, Iterable[int]]) -> np.ndarray:
     """
@@ -39,7 +44,7 @@ def _is_flag(flags: np.ndarray, flag: Union[int, Iterable[int]]) -> np.ndarray:
     Returns:
         np.ndarray of bool, True where any of the specified flags are set.
     """
-    flags = flags.astype(int)
+    flags = np.nan_to_num(flags, nan=0).astype(int)
     if isinstance(flag, int):
         return np.bitwise_and(flags, flag) != 0
     else:
@@ -81,41 +86,43 @@ def remove_mask(tab: Table, *args, **kwargs) -> Table:
     return Table(tab, masked=False)
 
 
-def get_merged_tab_coords(tabs: Iterable[Table], max_arcsec: float = 1.0) -> Table:
-    """Given an iterable of astropy Table objects, return a table of their associated ra and decs."""
-    if not isinstance(tabs, list):
-        tabs = list(tabs)
+def get_merged_tab_coords(tabs: Dict[str, Table], max_arcsec: float = 1.0) -> Table:
+    """Given a dict of band -> Table, return a table of unique ra/dec coordinates with a
+    'bands' column indicating which bands each source was detected in."""
+    # Filter empty tables but preserve keys
+    tabs = {k: t for k, t in tabs.items() if len(t) > 0}
+    if not tabs:
+        return Table(data={'ra': [], 'dec': [], 'bands': []})
 
-    # Need to start with a non-empty table
-    if len(tabs) == 0:
-        return Table(data={'ra': [], 'dec': []})
-    while True:
-        merged_tab = tabs[0].copy()
-        if len(merged_tab) == 0:
-            if len(tabs) > 1:
-                tabs = tabs[1:]
-            else:
-                return merged_tab
-        else:
-            break
-    merged_tab = merged_tab[['ra', 'dec']]
+    keys = list(tabs.keys())
+    tables = list(tabs.values())
 
-    for tab in tabs[1:]:
+    # Concatenate all coords — one SkyCoord build, one KD-tree
+    all_ra   = np.concatenate([np.asarray(t['ra'])   for t in tables])
+    all_dec  = np.concatenate([np.asarray(t['dec'])  for t in tables])
+    key_of   = np.concatenate([np.full(len(t), ki)   for ki, t in enumerate(tables)])
+    all_coords = SkyCoord(all_ra, all_dec, unit='deg')
 
-        # Skip if tab is empty
-        if len(tab) == 0:
-            continue
+    # Self-match: find all pairs within max_arcsec (builds KD-tree once)
+    idx1, idx2, _, _ = search_around_sky(all_coords, all_coords, max_arcsec * u.arcsec)
 
-        # Get angular separations
-        merged_coords = SkyCoord(merged_tab['ra'], merged_tab['dec'], unit='deg')
-        tab_coords = SkyCoord(tab['ra'], tab['dec'], unit='deg')
-        idx, sep2d, _ = match_coordinates_sky(tab_coords, merged_coords)
+    # Greedy dedup: for each forward pair (i < j), mark j as a duplicate of i
+    # and merge j's band membership into i's set
+    is_dup = np.zeros(len(all_coords), dtype=bool)
+    band_sets = [{keys[int(key_of[k])]} for k in range(len(all_coords))]
+    fwd = idx1 < idx2
+    for i, j in zip(idx1[fwd], idx2[fwd]):
+        if not is_dup[i]:
+            is_dup[j] = True
+            band_sets[i].add(keys[int(key_of[j])])
 
-        # Associate
-        same_src_mask = sep2d.arcsecond <= max_arcsec
-        merged_tab = vstack((merged_tab, tab[~same_src_mask][['ra', 'dec']]))
-
-    return merged_tab
+    canonical = ~is_dup
+    canonical_idx = np.where(canonical)[0]
+    return Table({
+        'ra':    all_ra[canonical],
+        'dec':   all_dec[canonical],
+        'bands': [tuple(sorted(band_sets[k])) for k in canonical_idx],
+    })
 
 
 class Filters():
@@ -127,8 +134,9 @@ class Filters():
             'snr_filter': self.snr_filter,
             'shape_filter': self.shape_filter,
             'only_big_dmag': self.only_big_dmag,
-            'tag_kde_vals': self.tag_kde_vals,
+            'kde_filter': self.kde_filter,
             'at_least_n_bands': self.at_least_n_bands,
+            'at_least_n_big_dmag_bands': self.at_least_n_big_dmag_bands,
             'parallax_filter': self.parallax_filter,
             'proper_motion_filter': self.proper_motion_filter,
             'no_nearby_source_filter': self.no_nearby_source_filter,
@@ -139,6 +147,35 @@ class Filters():
         }
         self.reset_filter_stats()
         self.filter_stat_fname = filter_stat_fname
+
+        # Pre-build per-band KDE interpolators and density thresholds from the
+        # precomputed grid arrays. The threshold per band is the density level L such
+        # that integrating the KDE above L encloses KDE_3SIGMA_COVERAGE (~99.73%) of
+        # the total probability mass.
+        X = np.load(os.path.join(get_data_path(), 'X.npy'))
+        Y = np.load(os.path.join(get_data_path(), 'Y.npy'))
+        xgrid = X[0, :]   # shape (100,) — PanSTARRS mag axis
+        ygrid = Y[:, 0]   # shape (100,) — dmag axis
+        cell_area = (xgrid[1] - xgrid[0]) * (ygrid[1] - ygrid[0])
+        self._kde_interps: Dict[str, RegularGridInterpolator] = {}
+        self._kde_levels: Dict[str, float] = {}
+        for band in BANDS:
+            Z = np.load(os.path.join(get_data_path(), f'Z_{band}.npy'))
+            self._kde_interps[band] = RegularGridInterpolator(
+                (ygrid, xgrid), Z,
+                method='linear',
+                bounds_error=False,
+                fill_value=np.nan,
+            )
+            # Sort density values descending, integrate to find the level enclosing
+            # KDE_3SIGMA_COVERAGE of the probability mass captured by the grid.
+            # We normalize against the grid's total mass (not 1.0) because the grid
+            # covers a finite region and may not capture 100% of the KDE's mass.
+            sorted_z = np.sort(Z.ravel())[::-1]
+            cumprob = np.cumsum(sorted_z) * cell_area
+            total_mass = cumprob[-1]
+            idx = np.searchsorted(cumprob, KDE_3SIGMA_COVERAGE * total_mass)
+            self._kde_levels[band] = float(sorted_z[min(idx, len(sorted_z) - 1)])
 
     def reset_filter_stats(self):
         """Reset the filter statistics."""
@@ -212,8 +249,6 @@ class Filters():
             if self.filter_stat_fname is not None:
                 self.save_filter_stats()
 
-            if filt_name == 'only_big_dmag':
-                return {}, {}, {}
             return tabs
 
         # Make into a dict if merged
@@ -224,11 +259,11 @@ class Filters():
         # Filtration stats
         before_counts = {}
         for band, tab in tabs.items():
-            
+
             # at_least_n_bands merges the bands so the counts before are the origin numbers.
             # If the catalog is merged, we cound the number of sources in each combbination of bands.
             # If the catalog is not merged, we simply count the number of sources in each band.
-            if filt_name == 'at_least_n_bands':
+            if filt_name == 'at_least_n_bands' or filt_name == 'at_least_n_big_dmag_bands':
                 for band in ('gri', 'gr', 'gi', 'ri'):
                     before_counts[band] = len(tab)
             elif band == 'merged':
@@ -245,8 +280,8 @@ class Filters():
         # Add bad_tabs to filtered out
         filtered_out_tab_cols = ['ra', 'dec', 'fieldid', 'ccdid', 'qid']
         for band, tab in bad_tabs.items():
-            if len(tab.data) > 0:
-                if band == 'merged':
+            if band == 'merged':
+                if len(tab.data) > 0:
                     # Get available columns from the table
                     tab_shortened = tab.data[filtered_out_tab_cols]
                     tab_shortened['filter'] = filt_name
@@ -260,18 +295,18 @@ class Filters():
                     self.filtered_out['g'] = vstack((self.filtered_out['g'], tab_shortened[tab.in_g]))
                     self.filtered_out['r'] = vstack((self.filtered_out['r'], tab_shortened[tab.in_r]))
                     self.filtered_out['i'] = vstack((self.filtered_out['i'], tab_shortened[tab.in_i]))
-                else:
+            elif len(tab) > 0:
                 # Get available columns from the table
-                    tab = tab[filtered_out_tab_cols]
-                    tab['filter'] = filt_name
-                    tab = tab.filled(np.nan)
+                tab = tab[filtered_out_tab_cols]
+                tab['filter'] = filt_name
+                tab = tab.filled(np.nan)
 
-                    # Cast integer `fieldid`, `ccdid`, and `qid` columns to float for compatibility
-                    for col in ['fieldid', 'ccdid', 'qid']:
-                        if col in tab.colnames:
-                            tab[col] = tab[col].astype(np.float64)
+                # Cast integer `fieldid`, `ccdid`, and `qid` columns to float for compatibility
+                for col in ['fieldid', 'ccdid', 'qid']:
+                    if col in tab.colnames:
+                        tab[col] = tab[col].astype(np.float64)
 
-                    self.filtered_out[band] = vstack((self.filtered_out[band], tab))
+                self.filtered_out[band] = vstack((self.filtered_out[band], tab))
 
         # Get the counts after filtration
         after_counts = {}
@@ -501,16 +536,12 @@ class Filters():
             self,
             tabs: Dict[str, Table],
             mag_thresh: int = 5,
-            upper_lim: Optional[str] = None,
             bin_means: Optional[Dict[str, List[float]]] = None,
             bin_stds: Optional[Dict[str, List[float]]] = None,
             *args,
             **kwargs,
         ) -> Tuple[Table, Dict[str, List[float]], Dict[str, List[float]]]:
         """Filter out sources with a delta mag > `mag_thresh`"""
-        if upper_lim is not None and upper_lim not in ('ZTF', 'PSTARR'):
-            raise ValueError('Upper limit must be None or `PSTARR` or `ZTF`.')
-
         if len(tabs) == 0:
             return {}, {}, {}, {}
 
@@ -527,15 +558,12 @@ class Filters():
             tab = tabs[band]
 
             # Get the mags that we are going to use based on the string
-            if upper_lim == 'PSTARR':
-                pstarr_mags = np.ones(len(tab[f'PSTARR_{band}PSFMag'])) * PSTARR_UPPER_LIM[band]
-                ztf_mags = np.array(tab[f'ZTF_{band}PSFMag'])
-            elif upper_lim == 'ZTF':
-                ztf_mags = np.array(tab[f'ZTF_{band}_mag_limit'])
-                pstarr_mags = np.array(tab[f'PSTARR_{band}PSFMag'])
+            if f'{band}_Catalog_Flag' in tab.colnames:
+                pstarr_mags = np.where(tab[f'{band}_Catalog_Flag'] == 1, PSTARR_UPPER_LIM[band], tab[f'PSTARR_{band}PSFMag'])
+                ztf_mags = np.where(tab[f'{band}_Catalog_Flag'] == 2, tab[f'ZTF_{band}_mag_limit'], tab[f'ZTF_{band}PSFMag'])
             else:
-                pstarr_mags = np.array(tab[f'PSTARR_{band}PSFMag'])
-                ztf_mags = np.array(tab[f'ZTF_{band}PSFMag'])
+                pstarr_mags = np.where(tab['Catalog_Flag'] == 1, PSTARR_UPPER_LIM[band], tab[f'PSTARR_{band}PSFMag'])
+                ztf_mags = np.where(tab['Catalog_Flag'] == 2, tab[f'ZTF_{band}_mag_limit'], tab[f'ZTF_{band}PSFMag'])
 
             # Fill in the panstarrs upper limit values  # TODO: THINK ABOUT THIS
             upper_lims = pstarr_mags == -999
@@ -564,31 +592,11 @@ class Filters():
             bad_tabs[band] = tab[outside_mask]
 
         return good_tabs, bad_tabs, bin_means, bin_stds
-    
-    def tag_kde_vals(self, tabs: Dict[str, Table], *args, **kwargs) -> Tuple[Table, Dict[str, List[float]], Dict[str, List[float]]]:
-        for band in tabs.keys():
-
-            # Load the KDE
-            with open(os.path.join(get_data_path(), f'{band}_kde.pkl'), 'rb') as f:
-                kde = pickle.load(f)
-
-            # Get the KDE values
-            x = tabs[band][f'PSTARR_{band}PSFMag']
-            y = tabs[band][f'ZTF_{band}PSFMag'] - tabs[band][f'PSTARR_{band}PSFMag']
-            nan_mask = np.isnan(x) | np.isnan(y)
-            kde_scores = np.ones(len(x)) * np.nan
-            kde_scores[~nan_mask] = kde(np.vstack((x[~nan_mask], y[~nan_mask])).T)
-
-            # Add to the table
-            tabs[band][f'{band}_kde'] = kde_scores
-
-        return tabs
 
     def kde_filter(
             self,
             tabs: Dict[str, Table],
-            level: float = 0.0005,
-            upper_lim: Optional[str] = None,
+            level: Optional[float] = None,
             *args,
             **kwargs,
         ) -> Tuple[Table, Dict[str, List[float]], Dict[str, List[float]]]:
@@ -599,51 +607,34 @@ class Filters():
         good_tabs = {}
         bad_tabs = {}
 
-        # Set up figure for getting contours
-        _, axes = plt.subplots(1, 3, figsize=(13.6, 4), sharey=True)
-        with open('X.npy', 'rb') as f:
-            X = np.load(f)
-        with open('Y.npy', 'rb') as f:
-            Y = np.load(f)
-
-        # Iterate over bands and get sources outside the contour
         for band in tabs.keys():
             tab = tabs[band]
-            ax = axes[band]
 
-            # Get the contour
-            with open(f'Z_{band}.npy', 'rb') as f:
-                Z = np.load(f)
-            contour = ax.contour(X, Y, Z, colors='red', levels=[level])
-            path = contour.get_paths()[0]
-
-            # Get the mags that we are going to use based on the string
-            if upper_lim == 'PSTARR':
-                pstarr_mags = np.ones(len(tab[f'PSTARR_{band}PSFMag'])) * PSTARR_UPPER_LIM[band]
-                ztf_mags = np.array(tab[f'ZTF_{band}PSFMag'])
-            elif upper_lim == 'ZTF':
-                ztf_mags = np.array(tab[f'ZTF_{band}_mag_limit'])
-                pstarr_mags = np.array(tab[f'PSTARR_{band}PSFMag'])
+            # Get the mags that we are going to use based on the catalog flag
+            if f'{band}_Catalog_Flag' in tab.colnames:
+                pstarr_mags = np.where(tab[f'{band}_Catalog_Flag'] == 1, PSTARR_UPPER_LIM[band], tab[f'PSTARR_{band}PSFMag'])
+                ztf_mags = np.where(tab[f'{band}_Catalog_Flag'] == 2, tab[f'ZTF_{band}_mag_limit'], tab[f'ZTF_{band}PSFMag'])
             else:
-                pstarr_mags = np.array(tab[f'PSTARR_{band}PSFMag'])
-                ztf_mags = np.array(tab[f'ZTF_{band}PSFMag'])
+                pstarr_mags = np.where(tab['Catalog_Flag'] == 1, PSTARR_UPPER_LIM[band], tab[f'PSTARR_{band}PSFMag'])
+                ztf_mags = np.where(tab['Catalog_Flag'] == 2, tab[f'ZTF_{band}_mag_limit'], tab[f'ZTF_{band}PSFMag'])
 
-            # Fill in the panstarrs upper limit values  # TODO: THINK ABOUT THIS
-            upper_lims = pstarr_mags == -999
-            # pstarr_mags[upper_lims] = PSTARR_UPPER_LIM[band]
+            upper_lims = pstarr_mags == -999  # TODO: THINK ABOUT THIS
 
-            # Get the n-sigma boundaries on delta mag
-            outside_mask = path.contains_points(
-                np.vstack((
-                    pstarr_mags,
-                    ztf_mags - pstarr_mags,
-                )).T,
-            )
-            outside_mask &= (~upper_lims)
+            # Interpolate KDE density for all points from the precomputed grid.
+            # Inputs are (dmag, pstarr_mag) to match the (ygrid, xgrid) axis order.
+            dmags = ztf_mags - pstarr_mags
+            kde_scores = self._kde_interps[band](np.column_stack((dmags, pstarr_mags)))
 
-            # Filter tabs
-            good_tabs[band] = tab[outside_mask]
-            bad_tabs[band] = tab[outside_mask]
+            # Sources outside the KDE boundary (density < threshold) are kept as
+            # transient candidates. Use the per-band 3-sigma level computed at init
+            # unless overridden.
+            threshold = level if level is not None else self._kde_levels[band]
+            outside_mask = (kde_scores < threshold) & (~upper_lims)
+
+            tab_out = tab[outside_mask].copy()
+            tab_out[f'{band}_kde_score'] = kde_scores[outside_mask]
+            good_tabs[band] = tab_out
+            bad_tabs[band] = tab[~outside_mask]
 
         return good_tabs, bad_tabs
 
@@ -674,6 +665,55 @@ class Filters():
             enough_bands_mask = np.sum(band_mask, axis=1) >= n
             good_sources[band] = sources[band][enough_bands_mask]
             bad_sources[band] = sources[band][~enough_bands_mask]
+
+        return good_sources, bad_sources
+
+    def at_least_n_big_dmag_bands(
+            self,
+            sources: Union[Sources, Dict[str, Sources]],
+            catalog: Literal['in_both', 'in_ztf', 'in_pstarr'],
+            n: int = 2,
+            level: Optional[float] = None,
+            *args,
+            **kwargs,
+        ) -> Tuple[Sources, Sources]:
+        """Keep sources with a significant delta mag in at least n bands.
+        Reuses kde_filter to evaluate per-band significance from source data."""
+        good_sources = {}
+        bad_sources = {}
+        for key in sources.keys():
+            srcs = sources[key]
+
+            # Tag rows with their index so we can recover the per-band masks after filtering
+            data = srcs.data.copy()
+            data['_row_idx'] = np.arange(len(data))
+
+            # Run kde_filter on all bands using the same source data table
+            # (each band reads its own band-prefixed columns, e.g. ZTF_gPSFMag)
+            good_tabs, _ = self.kde_filter(
+                {band: data for band in BANDS},
+                level=level,
+            )
+
+            # Count how many bands each source has big dmag in
+            n_big_dmag = np.zeros(len(data), dtype=int)
+            for gtab in good_tabs.values():
+                n_big_dmag[gtab['_row_idx']] += 1
+
+            mask = n_big_dmag >= n
+
+            # Make sure that the source has at least two bands in the catalog that we are filtering.
+            # This is to avoid duplicates between the in_both/in_ztf/in_pstarr catalogs.
+            catalog_int_map = {'in_both': 0, 'in_ztf': 1, 'in_pstarr': 2}
+            catalog_int = catalog_int_map[catalog]
+            in_catalog_matrix = np.column_stack([
+                data[f'{band}_Catalog_Flag'] for band in BANDS
+            ])
+            in_catalog_mask = in_catalog_matrix == catalog_int
+            mask &= np.sum(in_catalog_mask, axis=1) > 1
+
+            good_sources[key] = srcs[mask]
+            bad_sources[key] = srcs[~mask]
 
         return good_sources, bad_sources
 
@@ -845,6 +885,8 @@ def associate_in_btwn_distance(table1: Table, table2: Table, min_sep: float = 1.
         1. Table associated with second table in between min_sep and max_sep.
         2. table1 but without all the rows from the assocatiated table.
     """
+    if len(table1) == 0 or len(table2) == 0:
+        return Table(data={c: [] for c in table1.colnames}), table1
     coords1 = SkyCoord(ra=table1['ra'], dec=table1['dec'], unit='deg')
     coords2 = SkyCoord(ra=table2['ra'], dec=table2['dec'], unit='deg')
     idx, sep2d, _ = match_coordinates_sky(coords1, coords2)
@@ -1150,8 +1192,8 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
                 'shape_filter': 'Axis ratio',
                 'psf_fit_filter': 'PSF fit',
                 'only_big_dmag': r'$\Delta \rm{mag} > 5 \sigma$',
-                'tag_kde_vals': 'Tag KDE values',
                 'at_least_n_bands': r'$\Delta \rm{mag} > 5 \sigma$ in $>1$ band',
+                'at_least_n_big_dmag_bands': r'$\Delta \rm{mag} > 5 \sigma$ in $>1$ band',
                 'no_nearby_source_filter': r'$<5$ sources within $200^{\prime\prime}$',
                 'proper_motion_filter': 'Proper motion ' + r'$\frac{\rm{value}}{\sigma} < 5$',
                 'parallax_filter': 'Parallax ' + r'$\frac{\rm{value}}{\sigma} < 5$',
@@ -1180,8 +1222,9 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     bands = ('g', 'r', 'i')
     for band in bands:
         try:
-            print(f'catalog_results/field_results/{field_name}_{band}.ecsv')
-            tables[band] = load_ecsv(os.path.join(get_data_path(), f'catalog_results/field_results/{field_name}_{band}.ecsv'))
+            print(f'{EXTRACTED_CATALOG_DIR}/{field_name}_{band}.ecsv')
+            # tables[band] = load_ecsv(os.path.join(get_data_path(), f'{EXTRACTED_CATALOG_DIR}/{field_name}_{band}.ecsv'))
+            tables[band] = Table.read(os.path.join(get_data_path(), f'{EXTRACTED_CATALOG_DIR}/{field_name}_{band}.hdf5'), path='data')
         except FileNotFoundError:
             print(f'Warning: Band {band} not available for field {field_name}...')
     print('Finished loading tables...')
@@ -1201,13 +1244,8 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         tab[f'ZTF_{band}_upper_lim_flag'][upper_lim_mask] = True
         tables[band] = remove_mask(tab)
 
-    # Get the stored 5-sigma delta mags
-    with open(os.path.join(get_data_path(), '5sigma_delta_mags.pkl'), 'rb') as f:
-        delta_mag_5sigma = pickle.load(f)
-    bin_means, bin_stds = delta_mag_5sigma['means'], delta_mag_5sigma['stds']
-
     # Delete and recreate field filter directory
-    filter_result_dirpath = os.path.join(get_data_path(), f'kde_tuning/{field_name}')
+    filter_result_dirpath = os.path.join(FILTER_RESULT_DIR, field_name)
     if os.path.exists(filter_result_dirpath):
         if overwrite:
             print(f'Overwriting {filter_result_dirpath}/')
@@ -1225,7 +1263,58 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     ################################################################################
     filters = Filters(filter_stat_fname=os.path.join(filter_result_dirpath, '0_filter_stats.csv'))
     print(f'Building flowchart for {CATALOG_KEY[0]} graph...')
+    min_dec = -29.5
     tabs = {band: tab.copy()[tab['Catalog_Flag'] == 0] for band, tab in tables.items()}
+
+    print('TAB PSF MAGS 1', tabs['g']['PSTARR_gPSFMag'])
+
+    # Build a quality-filtered version of all sources (all catalog types) for use as field_catalogs.
+    # Uses a throwaway Filters instance so stats are not polluted.
+    _qfilters = Filters()
+    all_quality_source_tabs = {band: tab.copy() for band, tab in tables.items()}
+    all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'sep_extraction_filter')
+    # tabs, ztf_tabs_low_snr, pstarr_tabs_low_snr = filters.filter(tabs, 'snr_filter', snr_min=5, both_cat=True)
+    all_quality_source_tabs,  all_q_ztf_tabs_low_snr, all_q_pstarr_tabs_low_snr = _qfilters.filter(all_quality_source_tabs, 'snr_filter', snr_min=5, both_cat=True)
+
+    # Stack the different catalog types together
+    for band in tabs.keys():
+        all_q_ztf_tabs_low_snr[band]['Catalog_Flag'] = 1
+        all_q_pstarr_tabs_low_snr[band]['Catalog_Flag'] = 2
+
+        # Insert an empty table for the band none passed the snr filter
+        if band not in all_quality_source_tabs.keys():
+            all_quality_source_tabs[band] = tabs[band][:0].copy()
+    all_quality_source_tabs = {band: vstack([all_quality_source_tabs[band], all_q_ztf_tabs_low_snr[band], all_q_pstarr_tabs_low_snr[band]]) for band in tabs.keys()}
+    all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'shape_filter')
+    all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'pstarr_not_saturated')
+    all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'psf_fit_filter')
+    all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'dec_greater_than', min_dec=min_dec)
+
+    # Pre-compute KDE scores on the fully-filtered all_quality_source_tabs.
+    # Doing this here ensures pstarr_mags/ztf_mags reflect the final filtered values.
+    # All downstream subsets (tabs after kde_filter, Sources.data) carry these columns
+    # automatically, so Sources.data will include kde_scores in the saved HDF5.
+    for band in all_quality_source_tabs.keys():
+        tab = all_quality_source_tabs[band]
+        if f'{band}_Catalog_Flag' in tab.colnames:
+            pstarr_mags = np.where(tab[f'{band}_Catalog_Flag'] == 1, PSTARR_UPPER_LIM[band], tab[f'PSTARR_{band}PSFMag'])
+            ztf_mags = np.where(tab[f'{band}_Catalog_Flag'] == 2, tab[f'ZTF_{band}_mag_limit'], tab[f'ZTF_{band}PSFMag'])
+        else:
+            pstarr_mags = np.where(tab['Catalog_Flag'] == 1, PSTARR_UPPER_LIM[band], tab[f'PSTARR_{band}PSFMag'])
+            ztf_mags = np.where(tab['Catalog_Flag'] == 2, tab[f'ZTF_{band}_mag_limit'], tab[f'ZTF_{band}PSFMag'])
+        dmags = ztf_mags - pstarr_mags
+        all_quality_source_tabs[band][f'{band}_kde_score'] = _qfilters._kde_interps[band](
+            np.column_stack((dmags, pstarr_mags))
+        )
+
+    # Save all_quality_source_tabs so the scatter plot in testing.ipynb can show
+    # the full source distribution with the KDE boundary overplotted.
+    for band, tab in all_quality_source_tabs.items():
+        prepare_table_for_write(tab).write(
+            os.path.join(filter_result_dirpath, f'all_quality_{band}.hdf5'),
+            path='data',
+            overwrite=True,
+        )
 
     #---------------------------------------------------------------#
     # Initial stats
@@ -1233,9 +1322,6 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 
     # Drop all sources with bad SEP extraction flags
     tabs = filters.filter(tabs, 'sep_extraction_filter')
-
-    # Drop all sources with snr < 5
-    tabs, ztf_tabs_low_snr, pstarr_tabs_low_snr = filters.filter(tabs, 'snr_filter', snr_min=5, both_cat=True)
 
     # Axis ratio filter
     tabs = filters.filter(tabs, 'shape_filter')
@@ -1247,39 +1333,45 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     tabs = filters.filter(tabs, 'psf_fit_filter')
 
     # Drop sources with dec < -29.5
-    min_dec = -29.5
     tabs = filters.filter(tabs, 'dec_greater_than', min_dec=min_dec)
 
-    # Tag KDE values
-    tabs = filters.filter(tabs, 'tag_kde_vals')
+    # Drop all sources with snr < 5
+    tabs, ztf_tabs_low_snr, pstarr_tabs_low_snr = filters.filter(tabs, 'snr_filter', snr_min=5, both_cat=True)
 
+    # Delta mag > 3-sigma KDE boundary
+    print('TAB PSF MAGS 3', tabs['g']['PSTARR_gPSFMag'])
+    tabs = filters.filter(tabs, 'kde_filter')
+    print('TAB PSF MAGS 4', tabs['g']['PSTARR_gPSFMag'])
+
+    # Save per-band tabs after kde_filter (before source association)
     for band, tab in tabs.items():
-        tab.write(os.path.join(filter_result_dirpath, f'{band}.ecsv'), format='ascii.ecsv', overwrite=True)
+        prepare_table_for_write(tab).write(
+            os.path.join(filter_result_dirpath, f'0_post_kde_{band}.hdf5'),
+            path='data', overwrite=True,
+        )
 
-    # # Delta mag > n sigma
-    # dmag_sigma = 5
-    # tabs, _, _ = filters.filter(tabs, 'only_big_dmag', mag_thresh=dmag_sigma, bin_means=bin_means, bin_stds=bin_stds)
+    # Converting to sources
+    merged_coords = get_merged_tab_coords(tabs)
+    sources = Sources(ras=merged_coords['ra'], decs=merged_coords['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
 
-    # # Converting to sources
-    # merged_coords = get_merged_tab_coords(tabs.values())
-    # sources = Sources(ras=merged_coords['ra'], decs=merged_coords['dec'], field_catalogs=tabs, verbose=0)
+    # Check for big dmag in >1 bands
+    print('TAB PSF MAGS 5', sources.data[['PSTARR_gPSFMag', 'g_kde_score']])
+    sources = filters.filter(sources, 'at_least_n_big_dmag_bands', catalog='in_both', n=2)
+    print('TAB PSF MAGS 6', sources.data[['PSTARR_gPSFMag', 'g_kde_score']])
 
-    # # Check for big dmag in >1 bands
-    # sources = filters.filter(sources, 'at_least_n_bands', n=2)
-
-    # # Store pre-gaia filteration if requested
-    # if store_pre_gaia:
-    #     sources.save(os.path.join(filter_result_dirpath, f'0_pre_gaia.ecsv'))
+    # Store pre-gaia filteration if requested
+    if store_pre_gaia:
+        sources.save(os.path.join(filter_result_dirpath, f'0_pre_gaia.ecsv'))
 
     # # Check for proper motion
     # sources = filters.filter(sources, 'proper_motion_filter')
 
     # # Check for parallax
     # sources = filters.filter(sources, 'parallax_filter')
-    #---------------------------------------------------------------#
+    # #---------------------------------------------------------------#
 
     # Save the sources and flowchart figure
-    sources.save(os.path.join(filter_result_dirpath, f'0.ecsv'))
+    sources.save(os.path.join(filter_result_dirpath, f'0.hdf5'))
     d = create_filter_flowchart(filters.filter_stats)
     d.save(os.path.join(filter_result_dirpath, '0_flowchart.pdf'))
 
@@ -1291,7 +1383,7 @@ def _filter_field_wrapper(field):
     print(f'Filtering field {field}...')
     filter_field(
         field,
-        overwrite=False,
+        overwrite=True,
         store_pre_gaia=False,
     )
 
@@ -1308,17 +1400,14 @@ def filter_fields():
     gemini_fields = [str(f).zfill(6) for f in gemini_fields]
     fields = np.intersect1d(ar1=fields, ar2=gemini_fields)
 
-    fields = [f for f in fields if f not in os.listdir(os.path.join(get_data_path(), 'filter_results_gemini'))]
+    fields = [f for f in fields if f not in os.listdir(FILTER_RESULT_DIR)]
 
     # with ProcessPoolExecutor(max_workers=1) as executor:
     #     executor.map(_filter_field_wrapper, fields)
-    for f in fields:
-        _filter_field_wrapper(f)
-
-    # _filter_field_wrapper('000293')
-
-    # for f in ('000276', '000294'):
+    # for f in fields:
     #     _filter_field_wrapper(f)
+
+    _filter_field_wrapper('000573')
 
 
 if __name__ == '__main__':
