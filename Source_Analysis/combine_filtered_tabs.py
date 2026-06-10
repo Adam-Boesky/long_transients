@@ -13,7 +13,7 @@ sys.path.append('/Users/adamboesky/Research/long_transients')
 from Extracting.utils import load_ecsv, get_data_path
 from Source_Analysis.filter_fields import combine_stats, create_filter_flowchart
 
-FILTER_RESULTS_DIRNAME = 'filter_results_gemini'
+FILTER_RESULTS_DIRNAME = 'filter_results_kde'
 
 
 def combine_filtered_tabs():

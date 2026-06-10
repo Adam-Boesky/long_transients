@@ -2,8 +2,7 @@ import os
 import re
 import numpy as np
 
-from astropy.table import MaskedColumn
-from Extracting.utils import load_ecsv
+from Extracting.utils import load_ecsv, prepare_table_for_write
 
 
 def convert_directory(directory: str, depth: int = 1, regex: str = ''):
@@ -27,17 +26,7 @@ def convert_directory(directory: str, depth: int = 1, regex: str = ''):
                 continue
 
             print(f'Converting {ecsv_path}...')
-            table = load_ecsv(ecsv_path)
-
-            for col in table.colnames:
-                if col in ('PSTARR_PanSTARR_ID', 'PanSTARR_ID', 'qualityFlag', 'primaryDetection'):
-                    data = np.array(table[col])
-                    mask = np.array([v is None or (isinstance(v, float) and np.isnan(v)) for v in data])
-                    fill = -1
-                    values = np.array([v if not (v is None or (isinstance(v, float) and np.isnan(v))) else fill for v in data], dtype=np.int64)                                                                       
-                    table[col] = MaskedColumn(values, mask=mask)   
-                    print(col, type(table[col][0]))
-
+            table = prepare_table_for_write(load_ecsv(ecsv_path))
             table.write(hdf5_path, path='data', serialize_meta=True, overwrite=True)
 
 if __name__ == '__main__':

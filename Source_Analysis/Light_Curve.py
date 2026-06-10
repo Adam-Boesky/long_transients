@@ -512,7 +512,7 @@ class Light_Curve:
 
         # Join the tables
         if len(lcs) == 1:
-            tab = lcs[0]
+            tab = Table(lcs[0], masked=True)
         elif len(lcs) > 1:
             tab = vstack(lcs)
         else:
