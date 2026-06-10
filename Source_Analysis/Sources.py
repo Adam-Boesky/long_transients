@@ -30,8 +30,7 @@ sys.path.append('/Users/adamboesky/Research/long_transients')
 
 from Extracting.utils import get_data_path, load_cached_table, load_ecsv, get_snr_from_mag, prepare_table_for_write, _INT64_COLUMNS
 from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata_from_coords, get_ztf_metadata_from_metadata, get_pstarr_cutout
-from ztf_fp_query.Forced_Photo_Map import Forced_Photo_Map
-from ztf_fp_query.query import ZTFFP_Service
+from ztf_fp_query.forced_photometry import ForcedPhotometry
 try:
     from Light_Curve import Light_Curve, LC_MARKER_INFO, LC_COLOR_INFO, ALL_BAND_DF
 except ModuleNotFoundError:
@@ -207,6 +206,7 @@ class Postage_Stamp():
             ys: Optional[Iterable] = None,
             ax: Optional[Axes] = None,
             show_center: bool = True,
+            scale_bar_arcsec: float = 10.0,
             **kwargs
         ) -> Axes:
         """Plot the cutout image."""
@@ -242,6 +242,27 @@ class Postage_Stamp():
             x, y = self.ra_dec_to_pix(xs, ys, band)
             ax.scatter(x - reticle_offset - 1, y - 1, color='k', marker='_')
             ax.scatter(x - 1, y - reticle_offset - 1, color='k', marker='|')
+
+        # Draw scale bar in the top-right corner
+        if self.arcsec_per_pixel is not None:
+            img_h, img_w = self.images[band].shape
+            bar_pixels = scale_bar_arcsec / self.arcsec_per_pixel
+            pad_x = img_w * 0.03
+            pad_y = img_h * 0.01
+            x_bar = img_w - 1 - pad_x
+            y_top = img_h - 1 - pad_y
+            y_bottom = y_top - bar_pixels
+            ax.plot([x_bar, x_bar], [y_bottom, y_top], color='black', lw=2, solid_capstyle='butt')
+            label = f'{scale_bar_arcsec:.0f}"' if scale_bar_arcsec >= 1 else f'{scale_bar_arcsec * 60:.0f}\''
+            ax.text(
+                x_bar - img_w * 0.02,
+                (y_bottom + y_top) / 2,
+                label,
+                color='black',
+                ha='right',
+                va='center',
+                fontsize=9,
+            )
 
         return ax
 
@@ -720,60 +741,21 @@ class Source():
 
         return self._postage_stamps
 
-    def _add_lc_mag_columns(self, lc: pd.DataFrame):
-        # Recommended SNT and SNU from https://web.ipac.caltech.edu/staff/fmasci/ztf/forcedphot.pdf
-        snt = 3
-        snu = 5
-
-        # Make arrays and mask for upper lims
-        mag = np.zeros(len(lc)) * np.nan
-        sigma_mag = np.zeros(len(lc)) * np.nan
-        upper_lim_mask = (lc['forcediffimflux'] / lc['forcediffimfluxunc']) < snt
-
-        # Fill in arrays
-        mag[~upper_lim_mask] = (lc['zpdiff'] - 2.5 * np.log10(lc['forcediffimflux']))[~upper_lim_mask]
-        sigma_mag[~upper_lim_mask] = (1.0857 * lc['forcediffimfluxunc'] / \
-                                     lc['forcediffimflux'])[~upper_lim_mask]
-        mag[upper_lim_mask] = (lc['zpdiff'] - \
-                              2.5 * np.log10(snu * lc['forcediffimfluxunc']))[upper_lim_mask]
-
-        # Add to lc dataframe
-        lc['mag'] = mag
-        lc['magerr'] = sigma_mag
-        lc['upperlim'] = upper_lim_mask.astype(int)
-
-        return lc
+    @property
+    def ztf_fp(self) -> Optional['ForcedPhotometry']:
+        """The ForcedPhotometry object for this source, or None if not yet synced."""
+        if self._ztf_lightcurve is None:
+            try:
+                self._ztf_lightcurve = ForcedPhotometry(self.ra, self.dec)
+            except FileNotFoundError:
+                print(f'No lightcurve found for source with ra, dec = ({self.ra}, {self.dec}).')
+        return self._ztf_lightcurve
 
     @property
-    def ztf_lightcurve(self) -> pd.DataFrame:
-        if self._ztf_lightcurve is None:
-
-            # Get the lightcurve filename if it exists
-            photo_map = Forced_Photo_Map()
-            lc_fname = photo_map.get_lightcurve_fname(self.ra, self.dec)
-
-            # If it doesn't exist, submit a query
-            if len(lc_fname) == 0:
-                print(f'No lightcurve found for source with ra, dec = ({self.ra}, {self.dec}).')
-                return self._ztf_lightcurve
-
-            # Path to the data
-            data_path = get_data_path()
-
-            # If it exists, load it and return
-            data = pd.read_csv(
-                os.path.join(data_path, 'ztf_forced_photometry', lc_fname[0]),
-                sep=r'\s+',
-                comment='#',
-                header=0,
-            )
-            data.columns = [c.replace(',', '') for c in data.columns]
-            self._ztf_lightcurve = data
-
-            # Add magnitudes to the lc dataframe
-            self._ztf_lightcurve = self._add_lc_mag_columns(self._ztf_lightcurve)
-
-        return self._ztf_lightcurve
+    def ztf_lightcurve(self) -> Optional[pd.DataFrame]:
+        """The forced-photometry DataFrame (mag, magerr, upperlim already included)."""
+        fp = self.ztf_fp
+        return fp.df if fp is not None else None
 
     def plot_postage_stamps(self, band: str, axes: Optional[Axes] = None, add_labels: bool = True, **kwargs) -> Axes:
         # Make axes if not given
@@ -975,7 +957,7 @@ class Source():
 
         if bands is None:
             bands = self.bands
-        for band in self.bands:
+        for band in bands:
 
             # Get the right band
             lc = self.ztf_lightcurve[self.ztf_lightcurve['filter'] == f'ZTF_{band}']
@@ -1288,7 +1270,7 @@ class Source():
             return ax, wise_ax
         return ax
 
-    def plot_wise_mag_hist(self, ax: Optional[Axes] = None, snr_thresh: float = 0.0, **kwargs) -> Axes:
+    def plot_wise_mag_hist(self, ax: Optional[Axes] = None, color_err_thresh: float = 0.5, **kwargs) -> Axes:
         """Plot the distribution of W1 - W2 magnitudes. Sources with W1 - W2 > 0.8 are AGN according to
         https://iopscience.iop.org/article/10.1088/0004-637X/753/1/30/pdf
         """
@@ -1296,19 +1278,22 @@ class Source():
             _, ax = plt.subplots()
 
         # Annotate if no data
-        if 'w1_snr' not in self.light_curve.lc.columns or 'w2_snr' not in self.light_curve.lc.columns:
+        if 'w1_magerr' not in self.light_curve.lc.columns or 'w2_magerr' not in self.light_curve.lc.columns:
             ax.text(0.5, 0.5, 'Source has no WISE data.', verticalalignment='center', horizontalalignment='center')
             return ax
 
-        # Mask for SNR minimum
-        snr_mask = np.logical_and(self.light_curve.lc['w1_snr'] > snr_thresh, self.light_curve.lc['w2_snr'] > snr_thresh)
+        # Mask on propagated color uncertainty: sigma(W1-W2) = sqrt(sigma_W1^2 + sigma_W2^2)
+        w1_err = self.light_curve.lc['w1_magerr'].filled(fill_value=np.nan)
+        w2_err = self.light_curve.lc['w2_magerr'].filled(fill_value=np.nan)
+        color_err = np.sqrt(w1_err**2 + w2_err**2)
+        color_mask = color_err < color_err_thresh
 
-        # Annotate if no sufficient SNR
-        if np.sum(snr_mask) == 0:
+        # Annotate if nothing passes the cut
+        if np.sum(color_mask) == 0:
             ax.text(
                 0.5,
                 0.5,
-                f'Source has no WISE data\nwith SNR $>$ {snr_thresh}.',
+                f'Source has no WISE data\nwith $\\sigma_{{W1-W2}} < {color_err_thresh}$.',
                 verticalalignment='center',
                 horizontalalignment='center',
             )
@@ -1316,7 +1301,7 @@ class Source():
 
         # Get the delta mags
         delta_mag = self.light_curve.lc['w1_mag'] - self.light_curve.lc['w2_mag']
-        delta_mag = delta_mag[snr_mask]
+        delta_mag = delta_mag[color_mask]
 
         # Plot
         ax.hist(delta_mag, color='k', bins=10)
@@ -1454,7 +1439,7 @@ class Source():
 
         return self._GAIA_info
 
-    def get_info_string(self, wise_snr_thresh: float = 3.0) -> str:
+    def get_info_string(self, wise_color_err_thresh: float = 0.5) -> str:
         """Get string with all the necessary source information."""
         info_string = r'\textbf{Source Information:}' f'\nCoordinates: ({self.ra:.5f}, {self.dec:.5f})'
         info_string += f'\nZTF location: {int(self.data["fieldid"])} {int(self.data["ccdid"])} {int(self.data["qid"])}'
@@ -1473,21 +1458,21 @@ class Source():
             info_string += '\nNo SDSS Source Classification.'
         else:
             info_string += f'\nSDSS Class: {self.spectrum[0][2].data["CLASS"]}'
-        if 'w1_snr' in self.light_curve.lc.columns and 'w2_snr' in self.light_curve.lc.columns:
-            snr_mask = np.logical_and(
-                self.light_curve.lc['w1_snr'] > wise_snr_thresh,
-                self.light_curve.lc['w2_snr'] > wise_snr_thresh,
-            )
-            if np.sum(snr_mask) > 0:
+        if 'w1_magerr' in self.light_curve.lc.columns and 'w2_magerr' in self.light_curve.lc.columns:
+            w1_err = self.light_curve.lc['w1_magerr'].filled(fill_value=np.nan)
+            w2_err = self.light_curve.lc['w2_magerr'].filled(fill_value=np.nan)
+            color_err = np.sqrt(w1_err**2 + w2_err**2)
+            color_mask = color_err < wise_color_err_thresh
+            if np.sum(color_mask) > 0:
                 delta_mag = self.light_curve.lc['w1_mag'] - self.light_curve.lc['w2_mag']
-                delta_mag = delta_mag[snr_mask]
+                delta_mag = delta_mag[color_mask]
                 info_string += (
-                    f'\nWISE W1-W2 Mean (SNR $>$ {wise_snr_thresh}) $=$ {np.mean(delta_mag):.2f}'
-                    f'\nWISE W1-W2 Median (SNR $>$ {wise_snr_thresh}) $=$ {np.median(delta_mag):.2f}'
+                    f'\nWISE W1-W2 Mean ($\\sigma_{{W1-W2}} < {wise_color_err_thresh}$) $=$ {np.mean(delta_mag):.2f}'
+                    f'\nWISE W1-W2 Median ($\\sigma_{{W1-W2}} < {wise_color_err_thresh}$) $=$ {np.median(delta_mag):.2f}'
                 )
         else:
             info_string += '\nNo WISE W1-W2 data.'
-        
+
         return info_string
 
     def plot_filtered_out_table(self, ax: Axes) -> None:
@@ -1531,15 +1516,14 @@ class Source():
         text_ax = plt.subplot2grid((5, 3), (4, 0), colspan=2)
 
         # Plot
-        snr_thresh = 3.0  # snr min for our WISE observations
         self.plot_all_cutouts(axes=cutout_axes)
         self.plot_lc(ax=lc_ax, fig=fig, xlab_kwags={})
         self.plot_spectrum(ax=spec_ax)
-        self.plot_wise_mag_hist(ax=wise_ax, snr_thresh=snr_thresh)
+        self.plot_wise_mag_hist(ax=wise_ax)
         self.plot_filtered_out_table(ax=filter_table_ax)
 
         # Annotate text info at the bottom
-        info_string = self.get_info_string(wise_snr_thresh=snr_thresh)
+        info_string = self.get_info_string()
         text_ax.text(0, 0.95, s=info_string, verticalalignment='top', fontsize='large')
         text_ax.axis('off')
 
@@ -1749,23 +1733,6 @@ class Sources:
         else:
             raise ValueError(f'{fname} must end with .hdf5 or .ecsv')
 
-    def submit_forced_photometry_batch(self) -> int:
-        # Load important objects
-        ztf_fp_service = ZTFFP_Service()
-        ztf_fp_map = Forced_Photo_Map()
-
-        # Boolean masks for filtering
-        already_downloaded = ztf_fp_map.contains(self.ras, self.decs)
-        recently_queried = ztf_fp_service.recently_queried(self.ras, self.decs)
-        currently_pending = ztf_fp_service.currently_pending(self.ras, self.decs)
-
-        to_submit_mask = (not already_downloaded) & (not recently_queried) & (not currently_pending)
-        ras_to_submit, decs_to_submit = self.ras[to_submit_mask], self.decs[to_submit_mask]
-
-        print(f'Submitting forced photometry request on {len(ras_to_submit)} source(s). '
-              f'{np.sum(not to_submit_mask)} of the given coordinates were already downloaded or requested.')
-
-        return ztf_fp_service.submit(ras_to_submit, decs_to_submit)
 
     def inTNS(self):
         # Load TNS if it is not given
