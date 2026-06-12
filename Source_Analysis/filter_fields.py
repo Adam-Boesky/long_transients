@@ -36,7 +36,7 @@ BANDS = ['g', 'r', 'i']
 CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Coverage'}
 PSTARR_UPPER_LIM = {'g': 23.3, 'r': 23.2, 'i': 23.1}
 EXTRACTED_CATALOG_DIR = 'catalog_results/field_results' # 'debugging'
-FILTER_RESULT_DIR = 'filter_results_kde'  # 'debugging/filter_results'  # 'filter_results_gemini'
+FILTER_RESULT_DIR = 'filter_results_kde_sep_flag'  # 'debugging/filter_results'  # 'filter_results_gemini'
 
 def _is_flag(flags: np.ndarray, flag: Union[int, Iterable[int]]) -> np.ndarray:
     """
@@ -562,11 +562,14 @@ class Filters():
         # flags here: https://sextractor.readthedocs.io/en/latest/Flagging.html
         good_tabs = {}
         bad_tabs = {}
+        # Reject sources with truly bad extraction flags (saturation, truncation,
+        # aperture/isophotal corruption, memory overflow).  Flags 1 (has neighbours)
+        # and 2 (originally blended) are NOT rejected — those can legitimately arise
+        # for transients near host-galaxy flux or in moderately crowded fields.
         bad_flags = [4, 8, 16, 32, 64, 128]
         for band in tabs.keys():
             tab = tabs[band]
-            mask = np.logical_or(tab['ZTF_sepExtractionFlag'] == 0, np.isnan(tab['ZTF_sepExtractionFlag']))
-            mask &= ~_is_flag(tab['ZTF_sepExtractionFlag'], bad_flags)
+            mask = ~_is_flag(tab['ZTF_sepExtractionFlag'], bad_flags)
             good_tabs[band] = tab[mask]
             bad_tabs[band] = tab[~mask]
 
