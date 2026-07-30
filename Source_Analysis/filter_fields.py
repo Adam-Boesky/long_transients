@@ -12,6 +12,7 @@ import astropy.units as u
 from typing import Dict, List, Iterable, Tuple, Union, Optional, Literal
 from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky, search_around_sky
+from astropy.time import Time
 from schemdraw.flow import Start, Arrow, Box, Decision
 from schemdraw.elements import Element
 from matplotlib.font_manager import FontProperties
@@ -34,9 +35,10 @@ Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
 
 BANDS = ['g', 'r', 'i']
 CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Coverage'}
+GAIA_OBS_EPOCH = 2021.0  # representative epoch of ZTF detections, used to propagate Gaia positions forward from ref_epoch (J2016.0) before crossmatching
 PSTARR_UPPER_LIM = {'g': 23.3, 'r': 23.2, 'i': 23.1}
 EXTRACTED_CATALOG_DIR = 'catalog_results/field_results' # 'debugging'
-FILTER_RESULT_DIR = 'filter_results_kde_sep_flag'  # 'debugging/filter_results'  # 'filter_results_gemini'
+FILTER_RESULT_DIR = 'filter_results_7_30_2026_gaia_propagation'  # 'filter_results_kde_sep_flag'  # 'debugging/filter_results'  # 'filter_results_gemini'
 
 def _is_flag(flags: np.ndarray, flag: Union[int, Iterable[int]]) -> np.ndarray:
     """
@@ -143,7 +145,8 @@ def query_gaia_for_field(
 
     Result is written to {get_data_path()}/gaia_cache/{field_name}.ecsv on
     first call and reloaded from there on subsequent calls.
-    Returns columns: ra, dec, parallax_over_error, pm, pmra_error, pmdec_error.
+    Returns columns: ra, dec, parallax_over_error, pm, pmra, pmdec, pmra_error,
+    pmdec_error, ref_epoch, astrometric_params_solved.
     """
     cache_dir  = os.path.join(get_data_path(), 'gaia_cache')
     cache_path = os.path.join(cache_dir, f'{field_name}.ecsv')
@@ -169,7 +172,8 @@ def query_gaia_for_field(
         ra_clause = f"ra BETWEEN {ra_min} AND {ra_max}"
 
     query = f"""
-        SELECT ra, dec, parallax_over_error, pm, pmra_error, pmdec_error
+        SELECT ra, dec, parallax_over_error, pm, pmra, pmdec, pmra_error, pmdec_error,
+               ref_epoch, astrometric_params_solved
         FROM gaiadr3.gaia_source
         WHERE {ra_clause}
         AND   dec BETWEEN {dec_min} AND {dec_max}
@@ -193,18 +197,40 @@ def _match_sources_to_gaia(
     srcs: Sources,
     gaia_table: Table,
     max_arcsec: float = 5.0,
+    obs_epoch: float = GAIA_OBS_EPOCH,
 ) -> np.ndarray:
     """Match srcs to gaia_table by sky position.
+
+    Gaia positions are given at ref_epoch (J2016.0) and drift by pmra/pmdec
+    in the meantime, so a fast mover's catalogue position can already be
+    several arcsec away from where it actually sits at ZTF's observation
+    epoch. We propagate each Gaia position forward to obs_epoch with
+    proper motion before matching, so the 5" cut is applied at the right epoch.
+    Sources without a full astrometric solution (masked pmra/pmdec, i.e.
+    astrometric_params_solved != 31) have no measured motion to propagate
+    with and are matched at their static ref_epoch position.
 
     Returns an array of row indices into gaia_table (length = len(srcs)).
     Entries are -1 where no match exists within max_arcsec.
     """
-    src_coords  = srcs.coords
+    src_coords = srcs.coords
+
+    # NOTE: np.array(masked_column) strips the mask and leaves NaN in the
+    # underlying buffer at masked cells -- .filled(0.0) must be called on the
+    # masked column itself, not on a plain ndarray of it, or apply_space_motion
+    # silently returns NaN positions for every row with any masked pm value.
+    pmra  = np.array(gaia_table['pmra'].filled(0.0),  dtype=float)
+    pmdec = np.array(gaia_table['pmdec'].filled(0.0), dtype=float)
+    ref_epoch = np.array(gaia_table['ref_epoch'], dtype=float)
+
     gaia_coords = SkyCoord(
-        np.array(gaia_table['ra'], dtype=float),
-        np.array(gaia_table['dec'], dtype=float),
-        unit='deg',
-    )
+        ra=np.array(gaia_table['ra'], dtype=float) * u.deg,
+        dec=np.array(gaia_table['dec'], dtype=float) * u.deg,
+        pm_ra_cosdec=pmra * u.mas / u.yr,
+        pm_dec=pmdec * u.mas / u.yr,
+        obstime=Time(ref_epoch, format='jyear'),
+    ).apply_space_motion(new_obstime=Time(obs_epoch, format='jyear'))
+
     idx, sep2d, _ = match_coordinates_sky(src_coords, gaia_coords)
     idx = idx.copy()
     idx[sep2d.arcsec > max_arcsec] = -1
@@ -986,9 +1012,15 @@ class Filters():
                     continue
                 row = gaia_table[idx[i]]
                 pm, pmra_e, pmdec_e = row['pm'], row['pmra_error'], row['pmdec_error']
-                if not (np.ma.is_masked(pm) or np.ma.is_masked(pmra_e) or np.ma.is_masked(pmdec_e)):
-                    if pm / (pmra_e + pmdec_e) >= 5.0:
+                if np.ma.is_masked(pm) or np.ma.is_masked(pmra_e) or np.ma.is_masked(pmdec_e):
+                    # No 5/6p solution -> fell back to a 2p (position-only) fit,
+                    # which disproportionately happens for fast movers whose
+                    # transits don't cross-match cleanly (Lindegren et al. 2021,
+                    # Sect. 4.4, arXiv:2012.03380). Treat as a likely mover.
+                    if row['astrometric_params_solved'] != 31:
                         mask[i] = False
+                elif pm / (pmra_e + pmdec_e) >= 5.0:
+                    mask[i] = False
         else:
             for i, src in enumerate(srcs):
                 if len(src.GAIA_info) > 0:
@@ -1460,7 +1492,7 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
             # Add an element to the schemdraw figure
             filter_map = {
                 'sep_extraction_filter': 'SEP extraction flags',
-                'extended_source_artifact_filter': r'Contaminated phot.\ \& PSF$-$Kron $> 1.5$',
+                'extended_source_artifact_filter': r'Contaminated phot. + PSF$-$Kron $> 1.5$',
                 'snr_filter': r'$\rm{SNR} > 5$',
                 'shape_filter': 'Axis ratio',
                 'psf_fit_filter': 'PSF fit',
