@@ -2,6 +2,7 @@
 import os
 import re
 import sys
+import time
 import pickle
 import argparse
 import ztffields
@@ -14,9 +15,9 @@ from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 
 try:
-    from utils import get_data_path, true_nearby, metadata_from_field_dirname, load_ecsv
+    from utils import get_data_path, true_nearby, metadata_from_field_dirname, load_ecsv, _INT64_COLUMNS, prepare_table_for_write
 except ModuleNotFoundError:
-    from .utils import get_data_path, true_nearby, metadata_from_field_dirname, load_ecsv
+    from .utils import get_data_path, true_nearby, metadata_from_field_dirname, load_ecsv, _INT64_COLUMNS, prepare_table_for_write
 import multiprocessing
 
 sys.stdout.flush()
@@ -205,7 +206,8 @@ def collapse_nonunique_srcs(tab: Table) -> Table:
 
     # Process each column efficiently
     for col in tab.colnames:
-        col_data = np.array(tab[col])  # Extract column as NumPy array
+        c = tab[col]
+        col_data = c.filled(-999) if hasattr(c, 'filled') else np.asarray(c)
         grouped_col_data = [col_data[indices[i]:indices[i+1]] for i in range(len(indices)-1)]
         if 'PanSTARR_ID' not in col:
             collapsed_data[col] = np.array([first_not_nan(group) for group in grouped_col_data])
@@ -224,11 +226,20 @@ def collapse_nonunique_srcs(tab: Table) -> Table:
 
     # Process each column again
     for col in collapsed_by_coords.colnames:
-        col_data = np.array(collapsed_by_coords[col])
+        c = collapsed_by_coords[col]
+        col_data = c.filled(-999) if hasattr(c, 'filled') else np.asarray(c)
         grouped_col_data = [col_data[indices[i]:indices[i+1]] for i in range(len(indices)-1)]
         collapsed_final_data[col] = np.array([first_not_nan(group) for group in grouped_col_data])
 
     return Table(collapsed_final_data)
+
+
+_TWELVE_HOURS = 12 * 3600
+
+
+def _recently_written(fpath: str) -> bool:
+    """Return True if fpath exists and was written within the last 12 hours."""
+    return os.path.exists(fpath) and (time.time() - os.path.getmtime(fpath)) < _TWELVE_HOURS
 
 
 def cross_match_quadrant(quadrant_dirpath: str):
@@ -254,20 +265,28 @@ def cross_match_quadrant(quadrant_dirpath: str):
     print(f'Cross matching quadrant {quadrant_dirpath.split("/")[-1]}')
     pstar_tab = load_ecsv(os.path.join(quadrant_dirpath, 'PSTARR.hdf5'), careful_load=True)
 
-    # Cast flags to floats TODO: delete after running extraction again
+    # Cast legacy byte-string ID/flag columns to int64 TODO: delete after running extraction again
     for col in pstar_tab.colnames:
-        if 'flag' in col.lower():
-            pstar_tab[col] = pstar_tab[col].astype(float)
+        if col in _INT64_COLUMNS:
+            data = np.array(pstar_tab[col])
+            mask = np.array([v is None or (isinstance(v, float) and np.isnan(v)) for v in data])
+            values = np.array([0 if m else int(v) for v, m in zip(data, mask)], dtype=np.int64)
+            pstar_tab[col] = Table.MaskedColumn(values, mask=mask)
 
     # Collapse the non-unique Pan-STARRS sources
-    pstar_tab.remove_column('primaryDetection')  # we can remove primaryDetection cuz it's a nuissance and always true
+    if 'primaryDetection' in pstar_tab.colnames:
+        pstar_tab.remove_column('primaryDetection')  # we can remove primaryDetection cuz it's a nuissance and always true
     pstar_tab = collapse_nonunique_srcs(pstar_tab)
 
     # Iterate through the ZTF band catalogs
     for band, fname in zip(BANDS, [f'ZTF_{band}.hdf5' for band in BANDS]):
 
         # Check if already associated
-        if os.path.exists(os.path.join(quadrant_dirpath, f'{band}_associated.hdf5')) and OVERWRITE is False:
+        out_fpath = os.path.join(quadrant_dirpath, f'{band}_associated.hdf5')
+        if _recently_written(out_fpath):
+            print(f'Skipping {band} association for {quadrant_dirpath.split("/")[-1]} — written within last 12 hours.')
+            continue
+        if os.path.exists(out_fpath) and OVERWRITE is False:
             print(
                 f'Skipping {band} association for {quadrant_dirpath.split("/")[-1]} because it is already associated ' +
                 'and overwrite is set to False.'
@@ -285,8 +304,7 @@ def cross_match_quadrant(quadrant_dirpath: str):
 
             # Save the associated table
             associated_tab = associate_tables(ztf_tab, pstar_tab, ztf_nan_mask, wcs)
-            associated_tab['PSTARR_PanSTARR_ID'] = associated_tab['PSTARR_PanSTARR_ID'].astype(object)
-            associated_tab['PSTARR_PanSTARR_ID'][associated_tab['PSTARR_PanSTARR_ID'].mask] = np.nan 
+            associated_tab = prepare_table_for_write(associated_tab)
             associated_tab.write(
                 os.path.join(quadrant_dirpath, f'{band}_associated.hdf5'),
                 path='data',
@@ -318,6 +336,7 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
                 continue
 
         # Start with first available quadrant
+        tabs_to_stack = []
         getting_first_tab = True
         while getting_first_tab and len(field_quad_dirs) > 0:
             first_tab_path = os.path.join(CATALOG_DIR, field_quad_dirs[0], f'{band}_associated.hdf5')
@@ -329,6 +348,7 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
                 field_quadrant_metadata = metadata_from_field_dirname(field_quad_dirs[0])
                 for k, v in field_quadrant_metadata.items():
                     tab[k] = v
+                tabs_to_stack.append(tab)
             else:
                 print(f'WARNING: {first_tab_path} does not exist. Skipping...')
                 field_quad_dirs.remove(field_quad_dirs[0])
@@ -341,6 +361,7 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
         for fqdir in field_quad_dirs[1:]:
             fqpath = os.path.join(CATALOG_DIR, fqdir, f'{band}_associated.hdf5')
             if os.path.exists(fqpath):
+                print(f'Loading {fqpath}...')
                 tab_to_stack = load_ecsv(fqpath, careful_load=True)
 
                 # Add on the field info for each source
@@ -348,10 +369,16 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
                 for k, v in field_quadrant_metadata.items():
                     tab_to_stack[k] = v
 
-                # Stack
-                tab = vstack((tab, tab_to_stack))
+                tabs_to_stack.append(tab_to_stack)
             else:
                 print(f'WARNING: {fqpath} does not exist. Skipping...')
+
+        # Stack the tables
+        print(f'Stacking {len(tabs_to_stack)} tables...')
+        tab = vstack(tabs_to_stack)
+
+        # Write the table
+        print(f'Writing {os.path.join(CATALOG_DIR, field_subdir, f"{field_name}_{band}.hdf5")}...')
         tab.write(
             os.path.join(CATALOG_DIR, field_subdir, f'{field_name}_{band}.hdf5'),
             path='data',
@@ -360,45 +387,24 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
         )
 
 
-def associate_quadrants(initializer: Callable):
+def associate_quadrants(initializer: Callable, field_names: List[str]):
     """Cross match the g, r, i catalogs with the panstarrs catalog for each quadrant."""
     quad_dirpaths = [os.path.join(CATALOG_DIR, quad_dir) for quad_dir in os.listdir(CATALOG_DIR) \
-                     if re.match(r'[0-9]{6}_[0-9]{2}_[0-9]', quad_dir)]
-
-    # # Temporary filtering for gemini-only
-    # north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
-    # south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
-    # gemini_fields = np.concatenate([north_fields, south_fields])
-    # quad_dirpaths = [qdp for qdp in quad_dirpaths if int(qdp.split('/')[-1].split('_')[0]) in gemini_fields]
+                     if re.match(r'[0-9]{6}_[0-9]{2}_[0-9]', quad_dir)
+                     and quad_dir.split('_')[0] in field_names]
 
     with multiprocessing.Pool(processes=N_THREADS, initializer=initializer, initargs=(CATALOG_DIR, BANDS, OVERWRITE, N_THREADS)) as pool:
         pool.map(cross_match_quadrant, quad_dirpaths)
 
 
-def merge_fields(initializer: Callable, output_directory: str = 'field_results'):
+def merge_fields(initializer: Callable, field_names: List[str], output_directory: str = 'field_results'):
     """Merge all quadrants from a field into one table."""
     # Make separate directory for field results
     field_results_dir = os.path.join(CATALOG_DIR, output_directory)
     if not os.path.exists(field_results_dir):
         os.makedirs(field_results_dir)
 
-    # Get the directories for each quadrant and the field names
     quad_dirs = os.listdir(CATALOG_DIR)
-
-    # field_names = list(set([quad_dir.split('_')[0] for quad_dir in quad_dirs]))
-    # field_names.remove('field')
-    # field_names.remove('extraction')
-
-    # # Temporary filtering for gemini-only
-    # north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
-    # south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
-    # gemini_fields = np.concatenate([north_fields, south_fields])
-    # field_names = [fname for fname in field_names if int(fname) in gemini_fields]
-
-    # # TODO: TEMP FIX
-    # field_names = ['000618', '000570', '000313', '000616', '000519', '000573', '000316', '000567', '000620', '000617', '000314']
-    # field_names = field_names
-    # field_names = ['000520']
 
     # Merge fields in parallel
     with multiprocessing.Pool(processes=N_THREADS, initializer=initializer, initargs=(CATALOG_DIR, BANDS, OVERWRITE, N_THREADS)) as pool:
@@ -473,6 +479,14 @@ def cross_match():
         default='gri',
         help='The photometric bands to store for.'
     )
+    parser.add_argument(
+        '-f',
+        '--fields',
+        type=str,
+        nargs='+',
+        default=None,
+        help='Field IDs to process (e.g. -f 000373 000374). Defaults to all fields found in the catalog directory.'
+    )
 
     args = parser.parse_args()
 
@@ -486,13 +500,22 @@ def cross_match():
     OVERWRITE = args.overwrite
     N_THREADS = args.n_threads
 
+    # Resolve field list: explicit arg, or all fields present in the catalog directory
+    if args.fields is not None:
+        field_names = args.fields
+    else:
+        field_names = sorted(set(
+            d.split('_')[0] for d in os.listdir(CATALOG_DIR)
+            if re.match(r'[0-9]{6}_[0-9]{2}_[0-9]', d)
+        ))
+
     # Actions
     if args.associate_quadrants:
         print('Associating sources in quadrants...')
-        associate_quadrants(initializer)
+        associate_quadrants(initializer, field_names=field_names)
     if args.merge_fields:
         print('Merging quadrants from all fields...')
-        merge_fields(initializer, output_directory=args.output_directory)
+        merge_fields(initializer, field_names=field_names, output_directory=args.output_directory)
 
 
 if __name__=='__main__':

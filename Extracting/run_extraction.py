@@ -20,6 +20,11 @@ except ModuleNotFoundError:
     from .Catalogs import ztf_image_exists, get_ztf_metadata_from_metadata
     from .utils import get_data_path, init_worker_lock
 
+# Switch between local parquet-backed PS1 queries and the CasJobs service.
+# True  → fast, fully parallel, no network lock required.
+# False → original CasJobs path; workers are serialised via casjobs_lock.
+USE_LOCAL_PS1 = True
+
 
 def add_to_bad_quads(quad_dirname: str):
     """Add a quadrant to the bad quadrants list."""
@@ -159,8 +164,12 @@ def process_quadrant(fieldid: int, ccdid: int, qid: int, bands: Iterable[str]):
             ztf_metadata=ztf_metadata,
             bands=bands,
             data_dir=os.path.join(data_path, 'ztf_data'),
+            local_ps1=USE_LOCAL_PS1,
+            parallel=USE_LOCAL_PS1,
         )
         tile_output_path = tile.store_catalogs(os.path.join(data_path, 'catalog_results'), overwrite=True)
+        with open(os.path.join(tile_output_path, 'ps1_source.txt'), 'w') as f:
+            f.write('local\n' if USE_LOCAL_PS1 else 'casjobs\n')
         print(f'Extracted sources from field with metadata {ztf_metadata}. Stored at: {tile_output_path}')
 
     except Exception as e:
@@ -190,12 +199,13 @@ def process_field(field_id: int):
     # Get the field dataframe
     field_df = get_ztf_metadata_from_metadata(ztf_metadata={'fieldid': field_id})
 
-    # Shared lock so that worker processes serialise CasJobs API calls
-    # (the service forbids concurrent DataReaders on the same account).
-    casjobs_lock = multiprocessing.Lock()
-
     # Iterate through the field, extracting sources with quadrants parallelized
-    with ProcessPoolExecutor(max_workers=8, initializer=init_worker_lock, initargs=(casjobs_lock,)) as executor:
+    if USE_LOCAL_PS1:
+        executor_kwargs = dict(max_workers=16)
+    else:
+        casjobs_lock = multiprocessing.Lock()
+        executor_kwargs = dict(max_workers=8, initializer=init_worker_lock, initargs=(casjobs_lock,))
+    with ProcessPoolExecutor(**executor_kwargs) as executor:
         futures = [
             executor.submit(
                 process_quadrant,
@@ -292,8 +302,12 @@ def process_missed_quadrants(quads_to_reextract: dict):
         quadrants_to_run.append((fieldid, ccdid, qid, bands_to_extract))
 
     print(f'Re-extracting {len(quadrants_to_run)} quadrants...')
-    casjobs_lock = multiprocessing.Lock()
-    with ProcessPoolExecutor(max_workers=8, initializer=init_worker_lock, initargs=(casjobs_lock,)) as executor:
+    if USE_LOCAL_PS1:
+        executor_kwargs = dict(max_workers=16)
+    else:
+        casjobs_lock = multiprocessing.Lock()
+        executor_kwargs = dict(max_workers=8, initializer=init_worker_lock, initargs=(casjobs_lock,))
+    with ProcessPoolExecutor(**executor_kwargs) as executor:
         futures = [
             executor.submit(process_quadrant, fieldid, ccdid, qid, bands)
             for fieldid, ccdid, qid, bands in quadrants_to_run
@@ -315,18 +329,26 @@ def extract_sources():
 
     # Load the field geometries
     print('Loading fields!')
-    # Load array
     bands_imaged = {}
     for band in ('g', 'r', 'i'):
         bands_imaged[band] = np.load(os.path.join(data_path, f'{band}_imaged_fields.npy'))
     fields_imaged_all_bands = np.intersect1d(ar1=bands_imaged['g'], ar2=bands_imaged['r'])
     fields_imaged_all_bands = np.intersect1d(ar1=fields_imaged_all_bands, ar2=bands_imaged['i'])
 
+    # Fields with g+r but no i-band coverage — still usable by the pipeline
+    gr_fields = np.intersect1d(ar1=bands_imaged['g'], ar2=bands_imaged['r'])
+    gr_only_fields = np.setdiff1d(gr_fields, bands_imaged['i'])
+
     # # Gemini logic
     # north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
     # south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
     # gemini_fields = np.concatenate([north_fields, south_fields])
     # fields_imaged_all_bands = np.intersect1d(ar1=gemini_fields, ar2=fields_imaged_all_bands)
+
+    # Extract g+r-only fields (not yet extracted)
+    print(f'Extracting {len(gr_only_fields)} g+r-only fields...')
+    for fid in gr_only_fields:
+        process_field(fid)
 
     # # Get incomplete quadrants that belong to imaged fields
     # print('Checking for incomplete quadrant directories...')
@@ -338,13 +360,11 @@ def extract_sources():
     #     and any(f.startswith('ZTF_') and f.endswith('.hdf5') for f in missing_files)
     # }
     # print(f'Found {len(quads_to_reextract)} incomplete quadrants to re-extract.')
-
-    # # fields_imaged_all_bands = ['000315', '000316', '000573']
-
     # process_missed_quadrants(quads_to_reextract)
-    # # THIS IS THE FINAL RUN!!!
-    for fid in fields_imaged_all_bands:
-        process_field(fid)
+
+    # # Extract over ALL fields
+    # for fid in fields_imaged_all_bands:
+    #     process_field(fid)
 
 if __name__=='__main__':
     extract_sources()

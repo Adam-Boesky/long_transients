@@ -29,7 +29,7 @@ from astroquery.gaia import Gaia
 
 from Source_Analysis.Sources import Sources, MANDATORY_SOURCE_COLUMNS
 from Extracting.utils import get_snr_from_mag, get_data_path, load_ecsv, prepare_table_for_write, _INT64_COLUMNS, get_credentials
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
 
@@ -305,7 +305,7 @@ def build_kde_envelopes(
         dmag = ztf_mag - pstarr_mag
         dmagerr = np.maximum(np.sqrt(pstarr_magerr**2 + ztf_magerr**2), min_dmagerr)
 
-        finite_mask = np.isfinite(dmagerr) & np.isfinite(dmag)
+        finite_mask = np.isfinite(dmagerr) & np.isfinite(dmag) & (dmagerr < 100.0)
 
         kde_ys = []
         for mag_center in mag_grid:
@@ -596,6 +596,10 @@ class Filters():
         # Flag 2 (deblended) is also allowed.
         good_tabs = {}
         bad_tabs = {}
+        # Reject sources with truly bad extraction flags (saturation, truncation,
+        # aperture/isophotal corruption, memory overflow).  Flags 1 (has neighbours)
+        # and 2 (originally blended) are NOT rejected — those can legitimately arise
+        # for transients near host-galaxy flux or in moderately crowded fields.
         bad_flags = [4, 8, 16, 32, 64, 128]
         for band in tabs.keys():
             tab = tabs[band]
@@ -1492,7 +1496,7 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
             # Add an element to the schemdraw figure
             filter_map = {
                 'sep_extraction_filter': 'SEP extraction flags',
-                'extended_source_artifact_filter': r'Contaminated phot. + PSF$-$Kron $> 1.5$',
+                'extended_source_artifact_filter': r'Contam. phot. $+$ PSF$-$Kron $> 1.5$',
                 'snr_filter': r'$\rm{SNR} > 5$',
                 'shape_filter': 'Axis ratio',
                 'psf_fit_filter': 'PSF fit',
@@ -1937,9 +1941,16 @@ def filter_fields():
     # fields = np.intersect1d(ar1=fields, ar2=gemini_fields)
 
     # fields = [f for f in fields if f not in os.listdir(os.path.join(get_data_path(), f'{FILTER_RESULT_DIR}'))]
+    fields = [f for f in fields if not os.path.exists(os.path.join(get_data_path(), FILTER_RESULT_DIR, f, '2_flowchart.pdf'))]
 
     with ProcessPoolExecutor(max_workers=1) as executor:
-        executor.map(_filter_field_wrapper, fields)
+        futures = {executor.submit(_filter_field_wrapper, f): f for f in fields}
+        for future in as_completed(futures):
+            field = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                print(f'ERROR: Field {field} failed with {type(e).__name__}: {e}', flush=True)
     # for f in fields:
     #     _filter_field_wrapper(f)
 

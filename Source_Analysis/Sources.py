@@ -40,10 +40,10 @@ time_support()
 ACCEPTABLE_PROC_STATUS = [0]
 MANDATORY_SOURCE_COLUMNS = [
     'ra', 'dec', 'PSTARR_rPSFMag', 'PSTARR_iKronMagErr', 'PSTARR_primaryDetection',
-    'PSTARR_rinfoFlag2', 'PSTARR_rpsfLikelihood', 'PSTARR_gPSFMagErr',
+    'PSTARR_rinfoFlag2', 'PSTARR_gPSFMagErr',
     'PSTARR_gKronMag', 'PSTARR_gKronMagErr', 'PSTARR_iinfoFlag2', 'PSTARR_dec', 'PSTARR_rKronMagErr',
-    'PSTARR_ginfoFlag2', 'PSTARR_ipsfLikelihood', 'PSTARR_rKronMag', 'PSTARR_iPSFMagErr',
-    'PSTARR_ra', 'PSTARR_gpsfLikelihood', 'PSTARR_iPSFMag', 'PSTARR_PanSTARR_ID', 'PSTARR_gPSFMag', 'PSTARR_rPSFMagErr',
+    'PSTARR_ginfoFlag2', 'PSTARR_rKronMag', 'PSTARR_iPSFMagErr',
+    'PSTARR_ra', 'PSTARR_iPSFMag', 'PSTARR_PanSTARR_ID', 'PSTARR_gPSFMag', 'PSTARR_rPSFMagErr',
     'PSTARR_iKronMag', 'ZTF_g_b', 'ZTF_r_cpeak', 'ZTF_r_errx2', 'ZTF_i_xmin', 'ZTF_i_xmax', 'ZTF_rKronCircleFlag',
     'ZTF_r_a', 'ZTF_i_xpeak', 'ZTF_i_theta', 'ZTF_i_cxy', 'ZTF_g_thresh', 'ZTF_iPSFMag', 'ZTF_i_mag_limit',
     'ZTF_g_npix', 'ZTF_iKronCircleFlag', 'ZTF_g_ra', 'ZTF_r_npix', 'ZTF_g_cxy', 'ZTF_r_sepExtractionFlag',

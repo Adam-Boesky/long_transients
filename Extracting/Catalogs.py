@@ -299,6 +299,72 @@ WHERE rn = 1 into mydb.{tab_name}
         return final_table
 
 
+class PSTARR_Local_Catalog(Catalog):
+    """PS1 DR2 catalog backed by the local HEALPix-partitioned Parquet dataset.
+
+    Drop-in replacement for PSTARR_Catalog: exposes the same `.data` astropy
+    Table with columns PanSTARR_ID, ra, dec, qualityFlag, objInfoFlag, and
+    per-band KronMag/KronMagErr/PSFMag/PSFMagErr/infoFlag/infoFlag2.
+    psfLikelihood columns are absent (not stored in the local download).
+    """
+
+    def __init__(
+            self,
+            ra_range: Tuple[float, float],
+            dec_range: Tuple[float, float],
+            catalog_bands: Iterable[str] = ('g', 'r', 'i'),
+            parquet_dir=None,
+        ):
+        super().__init__()
+        self.catalog_name = 'PanSTARR'
+        self.ra_range = ra_range
+        self.dec_range = dec_range
+        self.column_map = {'objID': 'PanSTARR_ID', 'raMean': 'ra', 'decMean': 'dec'}
+        self.bands = catalog_bands
+
+        try:
+            from PS1_Local import PanSTARRSLocal, DEFAULT_PARQUET_DIR
+        except ModuleNotFoundError:
+            from Extracting.PS1_Local import PanSTARRSLocal, DEFAULT_PARQUET_DIR
+
+        self._ps1 = PanSTARRSLocal(
+            parquet_dir=parquet_dir if parquet_dir is not None else DEFAULT_PARQUET_DIR,
+            per_band=True,
+        )
+
+    def get_data(self) -> Table:
+        base_cols = ['objID', 'raMean', 'decMean', 'qualityFlag', 'objInfoFlag']
+
+        # Query each band and outer-join on the shared base columns
+        final_df = None
+        for band in self.bands:
+            df = self._ps1.query_tile(
+                ra_range=self.ra_range,
+                dec_range=self.dec_range,
+                band=band,
+            )
+            if final_df is None:
+                final_df = df
+            else:
+                final_df = final_df.merge(df, on=base_cols, how='outer')
+
+        if final_df is None or len(final_df) == 0:
+            return Table()
+
+        # Replace -999 sentinels with NaN for all photometric columns,
+        # mirroring PSTARR_Catalog.get_data()
+        phot_suffixes = ('KronMag', 'KronMagErr', 'PSFMag', 'PSFMagErr',
+                         'infoFlag', 'infoFlag2')
+        skip = {'objID', 'qualityFlag', 'objInfoFlag'}
+        for col in final_df.columns:
+            if col in skip:
+                continue
+            if pd.api.types.is_numeric_dtype(final_df[col]):
+                final_df[col] = final_df[col].where(final_df[col] != -999.0, other=np.nan)
+
+        return Table.from_pandas(final_df)
+
+
 class ZTF_Catalog(Catalog):
     def __init__(
             self,

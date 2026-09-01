@@ -7,10 +7,10 @@ from astropy.table import Table
 from concurrent.futures import ThreadPoolExecutor
 
 try:
-    from Catalogs import (PSTARR_Catalog, ZTF_Catalog, associate_tables_by_coordinates)
+    from Catalogs import (PSTARR_Catalog, PSTARR_Local_Catalog, ZTF_Catalog, associate_tables_by_coordinates)
     from utils import prepare_table_for_write
 except ModuleNotFoundError:
-    from .Catalogs import (PSTARR_Catalog, ZTF_Catalog, associate_tables_by_coordinates)
+    from .Catalogs import (PSTARR_Catalog, PSTARR_Local_Catalog, ZTF_Catalog, associate_tables_by_coordinates)
     from .utils import prepare_table_for_write
 
 
@@ -24,6 +24,7 @@ class Tile():
             data_dir: Optional[str] = None,
             parallel: bool = False,
             overwrite_mydb: bool = False,
+            local_ps1: bool = True,
         ):
         """A class to represent a tile of the sky. This corresponds to one quadrant of a ZTF field."""
         if isinstance(bands, str):
@@ -41,8 +42,8 @@ class Tile():
         self.parallel = parallel
         if self.parallel:
             with ThreadPoolExecutor() as executor:
-                results = executor.map(_create_ztf_catalog, bands)
-                self.ztf_catalogs = {band: catalog for band, catalog in results if catalog is not None}
+                results = list(executor.map(_create_ztf_catalog, bands))
+                self.ztf_catalogs = {band: catalog for band, catalog in zip(bands, results) if catalog is not None}
         else:
             self.ztf_catalogs = {band: _create_ztf_catalog(band) for band in bands}
 
@@ -60,7 +61,10 @@ class Tile():
             self.ra_range, self.dec_range = self.ztf_catalogs[self.bands[0]].get_coordinate_range()
 
             # Get the PanSTARRS catalog for the tile
-            self.pstar_catalog = PSTARR_Catalog(self.ra_range, self.dec_range, prefetch=parallel, catalog_bands=self.bands, overwrite_mydb=overwrite_mydb)
+            if local_ps1:
+                self.pstar_catalog = PSTARR_Local_Catalog(self.ra_range, self.dec_range, catalog_bands=self.bands)
+            else:
+                self.pstar_catalog = PSTARR_Catalog(self.ra_range, self.dec_range, prefetch=parallel, catalog_bands=self.bands, overwrite_mydb=overwrite_mydb)
 
             # The crux of this class will be this massive Astropy table
             self._data_dicts = None
@@ -129,8 +133,8 @@ class Tile():
 
         if self.parallel:
             with ThreadPoolExecutor() as executor:
-                executor.map(_set_sources_for_psf, self.bands)
-                executor.map(_prefetch_ztf, self.bands)
+                list(executor.map(_set_sources_for_psf, self.bands))
+                list(executor.map(_prefetch_ztf, self.bands))
         else:
             for band in self.bands:
                 _set_sources_for_psf(band)

@@ -1,13 +1,14 @@
 #!/bin/bash
 
 #SBATCH -p shared
-#SBATCH -c 12                                                                                           # Number of cores (-c)
+#SBATCH -c 16                                                                                          # Number of cores (-c)
 #SBATCH --mem=128G                                                                                      # Memory pool for all cores (see also --mem-per-cpu)
-#SBATCH -t 0-24:00                                                                                      # Runtime in D-HH:MM, minimum of 10 minutes
+#SBATCH -t 3-00:00                                                                                      # Runtime in D-HH:MM, minimum of 10 minutes
 
 # Paths to STDOUT or STDERR files should be absolute or relative to current working directory
-#SBATCH -o /n/home04/aboesky/berger/long_transients/Extracting/extraction_logs/myoutput_\%j.out           # File to which STDOUT will be written, %j inserts jobid
-#SBATCH -e /n/home04/aboesky/berger/long_transients/Extracting/extraction_logs/myerrors_\%j.err           # File to which STDERR will be written, %j inserts jobid
+#SBATCH -o /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/extraction_logs/myoutput_\%j.out           # File to which STDOUT will be written, %j inserts jobid
+#SBATCH -e /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/extraction_logs/myerrors_\%j.err           # File to which STDERR will be written, %j inserts jobid
+#SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=aboesky@college.harvard.edu     # Send email to user
 
 # Remember:
@@ -17,7 +18,10 @@
 
 # Load modules
 #################################
+module load gcc/12.2.0-fasrc01
 module load python/3.12.5-fasrc01
 source activate long_transients2
 
-python3 /n/home04/aboesky/berger/long_transients/Extracting/run_extraction.py
+cd /n/home04/aboesky/berger/long_transients
+
+python3 -u -m Extracting.run_extraction

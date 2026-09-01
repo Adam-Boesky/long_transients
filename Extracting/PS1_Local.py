@@ -20,13 +20,13 @@ sys.path.append('/n/home04/aboesky/berger/long_transients')
 # panstarrs_ingest.py.  Each subdirectory hpix32=N/ holds one or more
 # Parquet files for pixel N (nested scheme, nside=32).
 DEFAULT_PARQUET_DIR = Path(
-    '/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/panstarrs/parquet'
+    '/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/panstarrs/parquet_v2'
 )
 
 # Columns returned by every query method (band-specific names filled at call time)
 _BASE_OUT_COLS = ['objID', 'raMean', 'decMean', 'qualityFlag', 'objInfoFlag']
 _BAND_OUT_COLS = ['KronMag', 'KronMagErr', 'PSFMag', 'PSFMagErr',
-                  'psfLikelihood', 'infoFlag', 'infoFlag2']
+                  'infoFlag', 'infoFlag2']
 
 VALID_BANDS = frozenset('grizy')
 
@@ -51,6 +51,16 @@ class PanSTARRSLocal:
         python panstarrs_download.py   # fetch from MAST (~3–8 h, full sky)
         python panstarrs_ingest.py     # convert to partitioned Parquet
 
+    Known limitation
+    ----------------
+    The local catalog stores one row per object (the skycell projection with the
+    highest ``primaryDetection``).  For ~0.4% of objects near skycell boundaries,
+    that canonical row has a per-band ``infoFlag2 & 4 != 0`` even though a
+    secondary skycell row would pass the filter.  The CasJobs query avoids this
+    by applying the per-band infoFlag2 filter before deduplication, so it can
+    find a passing row among all skycell projections.  Fixing this would require
+    re-downloading with a per-band deduplication strategy.
+
     Parameters
     ----------
     parquet_dir:
@@ -64,9 +74,11 @@ class PanSTARRSLocal:
         self,
         parquet_dir: str | Path = DEFAULT_PARQUET_DIR,
         nside: int = 32,
+        per_band: bool = False,
     ):
         self.parquet_dir = Path(parquet_dir)
-        self.nside = nside
+        self.nside       = nside
+        self.per_band    = per_band
 
         if not self.parquet_dir.exists():
             raise FileNotFoundError(
@@ -77,8 +89,8 @@ class PanSTARRSLocal:
         # Persistent in-memory DuckDB connection — one connection per instance.
         # Using ':memory:' avoids stale on-disk state across runs.
         self._con = duckdb.connect(database=':memory:')
-        self._build_view()
-        log.info('PanSTARRSLocal ready: %s (nside=%d)', self.parquet_dir, nside)
+        log.info('PanSTARRSLocal ready: %s (nside=%d, per_band=%s)',
+                 self.parquet_dir, nside, per_band)
 
     def __del__(self) -> None:
         try:
@@ -90,19 +102,23 @@ class PanSTARRSLocal:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_view(self) -> None:
-        """Register the Parquet dataset as a DuckDB view named ``ps1``.
+    def _pixel_paths(self, pixels: np.ndarray, band: Optional[str] = None) -> List[str]:
+        """Return per-pixel glob paths for only the HEALPix partitions that exist on disk.
 
-        hive_partitioning=true tells DuckDB to parse ``hpix32=N`` from the
-        directory names and expose it as a filterable integer column.  When a
-        query contains ``WHERE hpix32 IN (...)``, DuckDB skips all other
-        partition directories without opening them.
+        Passing explicit paths to read_parquet() avoids a full filesystem
+        enumeration of all ~1.7M parquet files on the network filesystem.
+        Only the directories for the requested pixels are opened.
+
+        In per-band mode, ``band`` selects the band subdirectory
+        (``parquet_dir/{band}/hpix32=N/``).
         """
-        glob = str(self.parquet_dir / '**' / '*.parquet')
-        self._con.execute(f"""
-            CREATE OR REPLACE VIEW ps1 AS
-            SELECT * FROM read_parquet('{glob}', hive_partitioning = true)
-        """)
+        base = (self.parquet_dir / band) if (self.per_band and band) else self.parquet_dir
+        paths = []
+        for p in pixels.tolist():
+            part_dir = base / f'hpix32={p}'
+            if part_dir.exists():
+                paths.append(str(part_dir / '*.parquet'))
+        return paths
 
     def _tile_pixels(
         self,
@@ -188,20 +204,36 @@ class PanSTARRSLocal:
         ra_filter_sql: str,
         dec_filter_sql: str,
         extra_where: str = '',
-    ) -> str:
-        """Return a DuckDB SQL query that prunes partitions, filters, and deduplicates.
+    ) -> Optional[str]:
+        """Return a DuckDB SQL query reading only the relevant pixel directories.
 
-        Deduplication pattern
-        ----------------------
-        ROW_NUMBER() OVER (PARTITION BY objID ORDER BY primaryDetection DESC)
-        mirrors a SQL "keep the primary detection" pattern: if any row has
-        primaryDetection = 1, that row gets rn = 1 and is the one selected.
-        If none have primaryDetection = 1, the row with the highest value is
-        kept.  This handles edge cases in the PS1 stacked catalog where some
-        objects have no flagged primary detection.
+        In v1 mode (per_band=False): applies the per-band infoFlag2 filter and
+        ROW_NUMBER dedup at query time.
+
+        In v2 per-band mode (per_band=True): the parquet already contains one
+        row per object with valid band data (filter + dedup were applied at
+        download time), so the query is a direct read with only the RA/Dec box
+        filter applied.
         """
-        pixel_list = ', '.join(map(str, pixels.tolist()))
         select_cols = ', '.join(self._output_cols(band))
+
+        if self.per_band:
+            paths = self._pixel_paths(pixels, band=band)
+            if not paths:
+                return None
+            path_list = ', '.join(f"'{p}'" for p in paths)
+            return f"""
+                SELECT {select_cols}
+                FROM read_parquet([{path_list}])
+                WHERE {ra_filter_sql}
+                  AND {dec_filter_sql}
+                  {extra_where}
+            """
+
+        paths = self._pixel_paths(pixels)
+        if not paths:
+            return None
+        path_list = ', '.join(f"'{p}'" for p in paths)
         return f"""
             WITH ranked AS (
                 SELECT
@@ -213,9 +245,8 @@ class PanSTARRSLocal:
                         PARTITION BY objID
                         ORDER BY primaryDetection DESC
                     ) AS _rn
-                FROM ps1
-                WHERE hpix32 IN ({pixel_list})
-                  AND (nStackDetections > 0 OR nDetections > 1)
+                FROM read_parquet([{path_list}])
+                WHERE (nStackDetections > 0 OR nDetections > 1)
                   AND ({band}infoFlag2 & 4) = 0
                   AND {ra_filter_sql}
                   AND {dec_filter_sql}
@@ -259,7 +290,7 @@ class PanSTARRSLocal:
         pd.DataFrame
             Columns: objID, raMean, decMean, qualityFlag, objInfoFlag,
             {band}KronMag, {band}KronMagErr, {band}PSFMag, {band}PSFMagErr,
-            {band}psfLikelihood, {band}infoFlag, {band}infoFlag2.
+            {band}infoFlag, {band}infoFlag2.
             One row per unique objID (primary detection preferred).
         """
         if band not in VALID_BANDS:
@@ -280,6 +311,8 @@ class PanSTARRSLocal:
         dec_sql = f'decMean BETWEEN {dec_min} AND {dec_max}'
 
         sql = self._build_sql(pixels, band, ra_sql, dec_sql)
+        if sql is None:
+            return pd.DataFrame(columns=self._output_cols(band))
         return self._con.execute(sql).df()
 
     def cone_search(
@@ -337,7 +370,10 @@ class PanSTARRSLocal:
             ra_sql = f'raMean BETWEEN {ra_lo} AND {ra_hi}'
 
         sql = self._build_sql(pixels, band, ra_sql, dec_sql)
-        df  = self._con.execute(sql).df()
+        if sql is None:
+            df = pd.DataFrame(columns=self._output_cols(band))
+        else:
+            df  = self._con.execute(sql).df()
 
         if df.empty:
             df['sep_deg'] = pd.Series(dtype=float)

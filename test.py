@@ -1,14 +1,15 @@
-from ztfquery import lightcurve
-from astropy.table import Table
+from Extracting.utils import get_data_path, load_ecsv
 
-lightcurve_tab = Table.from_pandas(
-    lightcurve.LCQuery.from_position(
-        3.38776,
-        9.22086,
-        1.5,  # example query radius in arcsec, adjust as needed
-        BAD_CATFLAGS_MASK=6141,
-    ).data
-)
+import numpy as np
 
-breakpoint()
-print(lightcurve_tab)
+def check():
+    pstarr_tab = load_ecsv('/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/catalog_results/000373_01_3/PSTARR.hdf5')
+    print(pstarr_tab[np.isclose(pstarr_tab['ra'], 204.87893) & np.isclose(pstarr_tab['dec'], -12.79083)][['gPSFMag', 'rPSFMag', 'iPSFMag']])
+
+    merged_tab = load_ecsv('/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/catalog_results/000373_01_3/r_associated.hdf5')
+    row = merged_tab[np.isclose(merged_tab['ra'], 204.87893) & np.isclose(merged_tab['dec'], -12.79083)]
+    for col in row.colnames:
+        print(f'{col}: {row[col][0]}')
+
+if __name__ == '__main__':
+    check()
