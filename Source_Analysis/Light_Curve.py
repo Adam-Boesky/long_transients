@@ -4,6 +4,7 @@ import traceback
 import numpy as np
 import pandas as pd
 import astropy.units as u
+from pathlib import Path
 
 from typing import List, Iterable, Tuple, Optional
 from ztfquery import lightcurve
@@ -14,8 +15,27 @@ from astroquery.ipac.irsa import Irsa
 from astropy.coordinates import SkyCoord
 from concurrent.futures import ThreadPoolExecutor
 
-from Extracting.utils import get_pstarr_lc_from_coord, get_pstarr_lc_from_id, img_flux_to_ab_mag, get_data_path
+from Extracting.utils import get_pstarr_lc_from_coord, get_pstarr_lc_from_id, img_flux_to_ab_mag, get_data_path, throttled_sdss_query
 from Source_Analysis.ZTF_Local_LC import ZTF_LC
+
+# Diagnostic: log SDSS's raw response body when it fails to parse, so we can see
+# *why* (rate limit, server error, etc.) instead of just the resulting parse exception.
+import astroquery.sdss.core as _sdss_core
+_orig_sdss_parse_result = _sdss_core.SDSSClass._parse_result
+
+
+def _sdss_parse_result_with_diagnostics(self, response, verbose=False):
+    try:
+        return _orig_sdss_parse_result(self, response, verbose=verbose)
+    except Exception:
+        print(
+            f'SDSS response failed to parse (status={response.status_code}). '
+            f'Raw body (first 1000 chars): {response.text[:1000]!r}'
+        )
+        raise
+
+
+_sdss_core.SDSSClass._parse_result = _sdss_parse_result_with_diagnostics
 
 ALL_LC_COLNAMES = ['ptf_id', 'wise_id', 'ztf_id', 'ra', 'dec', 'mjd', 'g_mag', 'g_magerr', 'r_mag', 'r_magerr', 'i_mag',
                    'i_magerr', 'w1_mag', 'w1_magerr', 'w2_mag', 'w2_magerr', 'w3_mag', 'w3_magerr', 'w4_mag',
@@ -27,6 +47,8 @@ LC_MARKER_INFO = {
     'panstarrs': '3',
     'gaia': 'X',
     'custom': '.',
+    'ztforce': 's',
+    'zubercal': 'D',
 }
 LC_COLOR_INFO = {
     'u': 'black',
@@ -62,6 +84,12 @@ ALL_BAND_DF = pd.DataFrame(
         'custom_r_mag': ['r', 'custom'],
         'custom_i_mag': ['i', 'custom'],
         'custom_z_mag': ['z', 'custom'],
+        'ztforce_g_mag': ['g', 'ztforce'],
+        'ztforce_r_mag': ['r', 'ztforce'],
+        'ztforce_i_mag': ['i', 'ztforce'],
+        'zubercal_g_mag': ['g', 'zubercal'],
+        'zubercal_r_mag': ['r', 'zubercal'],
+        'zubercal_i_mag': ['i', 'zubercal'],
     },
     index=['band', 'survey'],
 )
@@ -108,8 +136,120 @@ class Light_Curve:
             self._lc = self.get_lc()
         return self._lc
 
+    @staticmethod
+    def _cluster_by_gap(sorted_mjd: np.ndarray, max_gap: float = 5.0) -> np.ndarray:
+        """Group already-time-sorted mjds into clusters (e.g. WISE/NEOWISE single-visit
+        exposures) by starting a new cluster wherever the gap to the *previous* point
+        exceeds `max_gap`, rather than measuring a fixed window from the cluster's first
+        point. The latter can split one real visit into pieces if its total span happens
+        to exceed `max_gap` even though every internal gap between exposures is small.
+
+        Returns an integer cluster id per row (0, 0, 1, 1, 1, 2, ...).
+        """
+        if len(sorted_mjd) == 0:
+            return np.array([], dtype=int)
+        starts_new_cluster = np.concatenate(([True], np.diff(sorted_mjd) > max_gap))
+        return np.cumsum(starts_new_cluster) - 1
+
+    @staticmethod
+    def _bin_stack(
+        mag: np.ndarray,
+        magerr: np.ndarray,
+        mjd: np.ndarray,
+        window: float = 365,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Inverse-variance weighted stack into non-overlapping bins of `window` days.
+
+        Returns (mjd_centers, mag_stack, magerr_stack).
+        """
+        flux = 10 ** (-mag / 2.5)
+        flux_err = magerr * flux * np.log(10) / 2.5
+        bin_edges = np.arange(mjd.min(), mjd.max() + window, window)
+        centers, mags, errs = [], [], []
+        for lo, hi in zip(bin_edges[:-1], bin_edges[1:]):
+            mask = (mjd >= lo) & (mjd < hi)
+            if mask.sum() == 0:
+                continue
+            w = 1.0 / flux_err[mask] ** 2
+            f_mean = (w * flux[mask]).sum() / w.sum()
+            f_err = 1.0 / np.sqrt(w.sum())
+            centers.append((lo + hi) / 2)
+            mags.append(-2.5 * np.log10(f_mean))
+            errs.append(2.5 / np.log(10) * f_err / f_mean)
+        return np.array(centers), np.array(mags), np.array(errs)
+
     def get_catalog_lc(self, catalog: str) -> Optional[Table]:
         """Query the IRSA service for the specified catalog and return the light curve data."""
+        if catalog == 'ztforce':
+            from ztforce import run_forced_photometry_batch, build_config
+            OUT_DIR = Path(__file__).resolve().parents[1] / 'Data' / 'followup' / 'ztforce_photometry'
+            config = build_config()
+            all_lcs = run_forced_photometry_batch(
+                targets=[self.skycoord],
+                bands=('g', 'r', 'i'),
+                data_dir=OUT_DIR,
+                config=config,
+            )
+            lcs = all_lcs[0]
+            rows = []
+            for band, lc in lcs.items():
+                det = lc.df[lc.df['detection']]
+                if det.empty:
+                    continue
+                t_centers, mag_stack, magerr_stack = self._bin_stack(
+                    mag=det['mag'].to_numpy(),
+                    magerr=det['mag_err'].to_numpy(),
+                    mjd=det['obsjd'].to_numpy() - 2_400_000.5,
+                )
+                for mjd_c, m, e in zip(t_centers, mag_stack, magerr_stack):
+                    rows.append({'mjd': mjd_c, f'ztforce_{band}_mag': m, f'ztforce_{band}_magerr': e})
+            if not rows:
+                return Table()
+            tab = Table.from_pandas(pd.DataFrame(rows))
+            for col in tab.colnames:
+                if tab[col].dtype.kind in 'f':
+                    tab[col] = np.ma.masked_invalid(tab[col])
+            return tab
+
+        if catalog == 'zubercal':
+            import lsdb
+            import hats.io.file_io.file_io as _hats_fio
+            _orig_fits = _hats_fio.read_fits_image
+            # Skip the 50 MB point_map.fits download that always times out on cold open.
+            # The MOC is only used for query-planning; cone searches work without it.
+            _hats_fio.read_fits_image = lambda p, *a, **kw: (
+                None if 'point_map' in str(p) else _orig_fits(p, *a, **kw)
+            )
+            try:
+                cat = lsdb.open_catalog(
+                    'https://data.lsdb.io/hats/ztf_dr16/zubercal/',
+                    columns=['mjd', 'band', 'mag', 'magerr', 'objectid'],
+                )
+                df = cat.cone_search(self.ra, self.dec, self.query_rad_arcsec).compute()
+            finally:
+                _hats_fio.read_fits_image = _orig_fits
+            if df.empty:
+                return Table()
+            df = df.copy()
+            df['magerr'] = df['magerr'] / 10_000.0
+            rows = []
+            for b in df['band'].unique():
+                bdf = df[df['band'] == b].sort_values('mjd')
+                t_centers, mag_stack, magerr_stack = self._bin_stack(
+                    mag=bdf['mag'].to_numpy(dtype=float),
+                    magerr=bdf['magerr'].to_numpy(dtype=float),
+                    mjd=bdf['mjd'].to_numpy(dtype=float),
+                )
+                for mjd_c, m, e in zip(t_centers, mag_stack, magerr_stack):
+                    rows.append({'mjd': mjd_c, f'zubercal_{b}_mag': m, f'zubercal_{b}_magerr': e})
+            if not rows:
+                return Table()
+            tab = Table.from_pandas(pd.DataFrame(rows))
+            for col in tab.colnames:
+                if tab[col].dtype.kind in 'f':
+                    tab[col] = np.ma.masked_invalid(tab[col])
+            return tab
+
         # Construct the lightcurve
         if catalog == 'ztf':
             if self.ztf_local_dir is not None:
@@ -250,7 +390,8 @@ class Light_Curve:
                             ra, dec = self.pstarr_coord
                         lightcurve_tab = get_pstarr_lc_from_coord(ra, dec, rad_arcsec=0.1)
                 elif catalog == 'sdss':
-                    lightcurve_tab: Table = SDSS.query_crossid(
+                    lightcurve_tab: Table = throttled_sdss_query(
+                        SDSS.query_crossid,
                         SkyCoord(self.ra, self.dec, unit='deg'),
                         photoobj_fields=desired_colnames,
                     )
@@ -443,37 +584,97 @@ class Light_Curve:
         # Ensure mjd column is float dtype
         lightcurve_tab['mjd'] = lightcurve_tab['mjd'].astype(float)
 
-        # For WISE, take the mean of mags for 3-day windows
+        # For WISE, take the mean of mags for same-visit exposure clusters (gap <= 5 days
+        # between consecutive exposures; see _cluster_by_gap). A visit is documented at
+        # ~1.5 days (~12 exposures over ~36 hours), but real per-source clusters can run a
+        # bit longer than that (observed up to ~3.6 days between exposures in the same
+        # visit); 5 days gives margin while staying far below the ~180-day revisit cadence.
         if catalog == 'wise' and len(lightcurve_tab) > 0:
-            # Sort by MJD to ensure time order
             lightcurve_tab.sort('mjd')
-            new_tab = Table(names=lightcurve_tab.colnames, dtype=lightcurve_tab.dtype)
             mjds = np.array(lightcurve_tab['mjd'])
-            used = np.zeros(len(lightcurve_tab), dtype=bool)
-            i = 0
-            while i < len(lightcurve_tab):
-                # Start window at current unprocessed row
-                window_start = mjds[i]
-                in_window_mask = (mjds >= window_start) & (mjds < window_start + 3) & (~used)
-                if not np.any(in_window_mask):
-                    i += 1
-                    continue
-                # Compute the mean for each column manually and create a new row
+            clusters = self._cluster_by_gap(mjds, max_gap=5.0)
+            new_tab = Table(names=lightcurve_tab.colnames, dtype=lightcurve_tab.dtype)
+            for cluster_id in np.unique(clusters):
+                cluster_tab = lightcurve_tab[clusters == cluster_id]
                 mean_row = []
                 for col in lightcurve_tab.colnames:
-                    col_data = np.array(lightcurve_tab[col][in_window_mask], copy=True)
+                    col_data = np.array(cluster_tab[col], copy=True)
                     if np.issubdtype(col_data.dtype, np.number):
                         mean_val = np.nanmean(col_data)
                     else:
                         mean_val = col_data[0] if len(col_data) > 0 else None
                     mean_row.append(mean_val)
                 new_tab.add_row(mean_row)
-                used[in_window_mask] = True
-                # Move to next unused row
-                next_indices = np.where(~used)[0]
-                if len(next_indices) == 0:
-                    break
-                i = next_indices[0]
+            lightcurve_tab = new_tab
+
+        # For NEOWISE, bin epochs into same-visit exposure clusters (gap <= 5 days between
+        # consecutive exposures; see _cluster_by_gap and the WISE block above for why 5,
+        # not the ~1.5-day documented visit span) and take the mean, the same way as WISE
+        # above. Unlike WISE, NEOWISE's w1/w2 magerr can be null per-band (SNR<2 upper
+        # limit; see NEOWISE Explanatory Supplement sec2_1c), so each band is binned
+        # separately: real detections are preferred within a cluster, and upper limits are
+        # only averaged in if a cluster has no real detection for that band.
+        if catalog == 'neowise' and len(lightcurve_tab) > 0:
+            lightcurve_tab.sort('mjd')
+            band_cols = ['w1_mag', 'w1_magerr', 'w1_snr', 'w2_mag', 'w2_magerr', 'w2_snr']
+            mjds = np.array(lightcurve_tab['mjd'])
+            clusters = self._cluster_by_gap(mjds, max_gap=5.0)
+            new_tab = Table(names=lightcurve_tab.colnames, dtype=lightcurve_tab.dtype)
+            for cluster_id in np.unique(clusters):
+                window_tab = lightcurve_tab[clusters == cluster_id]
+
+                row_values = {}
+                for col in lightcurve_tab.colnames:
+                    if col in band_cols:
+                        continue
+                    col_data = np.array(window_tab[col], copy=True)
+                    if np.issubdtype(col_data.dtype, np.number):
+                        row_values[col] = np.nanmean(col_data)
+                    else:
+                        row_values[col] = col_data[0] if len(col_data) > 0 else None
+
+                for band in ('w1', 'w2'):
+                    mag = np.array(window_tab[f'{band}_mag'], dtype=float)
+                    magerr = np.array(window_tab[f'{band}_magerr'], dtype=float)
+                    snr = np.array(window_tab[f'{band}_snr'], dtype=float)
+                    detected = ~np.isnan(magerr)
+                    use = detected if np.any(detected) else ~np.isnan(mag)
+                    row_values[f'{band}_snr'] = np.nanmean(snr[use]) if np.any(use) else np.nan
+
+                    if not np.any(detected):
+                        # No real detection in this window for this band -- nothing to
+                        # inverse-variance weight (upper limits carry no per-point
+                        # uncertainty), so just average the raw upper-limit magnitudes.
+                        row_values[f'{band}_mag'] = np.nanmean(mag[use]) if np.any(use) else np.nan
+                        row_values[f'{band}_magerr'] = np.nan
+                        continue
+
+                    # Inverse-variance-weighted combination in flux space, matching
+                    # AllWISE's own WPRO methodology (AllWISE Explanatory Supplement
+                    # sec2_3b / sec4_4c): averaged single-exposure magnitudes are computed
+                    # from the inverse-variance-weighted profile-fit flux measurements.
+                    m, e = mag[use], magerr[use]
+                    flux = 10 ** (-m / 2.5)
+                    flux_err = e * flux * np.log(10) / 2.5
+                    w = 1.0 / flux_err ** 2
+                    f_mean = np.sum(w * flux) / np.sum(w)
+                    f_err_formal = 1.0 / np.sqrt(np.sum(w))
+
+                    # AllWISE also tracks the empirical scatter across exposures alongside
+                    # the formal error, since the latter alone can understate the true
+                    # uncertainty for a genuinely variable source ("comparison of population
+                    # variance with composite WPRO flux variance may be used to assess time
+                    # variability" -- sec4_4c). We report whichever is larger.
+                    if len(flux) >= 2:
+                        f_err_empirical = np.std(flux, ddof=1) / np.sqrt(len(flux))
+                    else:
+                        f_err_empirical = 0.0
+                    f_err = max(f_err_formal, f_err_empirical)
+
+                    row_values[f'{band}_mag'] = -2.5 * np.log10(f_mean)
+                    row_values[f'{band}_magerr'] = (2.5 / np.log(10)) * f_err / f_mean
+
+                new_tab.add_row([row_values[col] for col in lightcurve_tab.colnames])
             lightcurve_tab = new_tab
 
         return lightcurve_tab
@@ -495,9 +696,16 @@ class Light_Curve:
                     src_coord = SkyCoord(np.nanmean(cat_lc['ra']), np.nanmean(cat_lc['dec']), unit='deg')
                     all_coords = SkyCoord(cat_lc['ra'], cat_lc['dec'], unit='deg')
                     mask = src_coord.separation(all_coords).arcsec < 1.5
-                else:  # otherwise, we can just ensure that the IDs line up
+                    cat_lc = cat_lc[mask]
+                elif catalog_name not in ('ztforce', 'zubercal', 'neowise'):
+                    # ztforce/zubercal already return only the target source's data. NEOWISE
+                    # (neowiser_p1bs_psd) is a single-exposure detection catalog with a unique
+                    # ID per epoch rather than a persistent per-source ID, so filtering to rows
+                    # matching the first epoch's ID silently keeps only ~1 of many real epochs.
+                    # The upstream cone search (query_rad_arcsec, well under WISE's ~6" PSF) is
+                    # already tight enough that every returned row is the same physical source.
                     mask = cat_lc[f'{catalog_name}_id'] == cat_lc[f'{catalog_name}_id'][0]
-                cat_lc = cat_lc[mask]
+                    cat_lc = cat_lc[mask]
                 return cat_lc
             return None
 

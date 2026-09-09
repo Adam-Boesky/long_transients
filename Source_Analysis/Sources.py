@@ -1,6 +1,7 @@
 import os
 import sys
 import ast
+import json
 from glob import glob
 import warnings
 import traceback
@@ -14,7 +15,8 @@ import matplotlib.lines as mlines
 import matplotlib.patches as mpatches
 
 from concurrent import futures
-from typing import List, Tuple, Union, Optional, Iterable, Dict
+from functools import lru_cache
+from typing import Any, List, Tuple, Union, Optional, Iterable, Dict
 from matplotlib.axes._axes import Axes
 
 from astropy.wcs import WCS
@@ -25,6 +27,7 @@ from astropy.visualization import simple_norm, time_support
 from astropy.io.fits import HDUList
 from astroquery.gaia import Gaia
 from astroquery.sdss import SDSS
+from sparcl.client import SparclClient
 
 sys.path.append('/Users/adamboesky/Research/long_transients')
 
@@ -35,7 +38,13 @@ try:
     from Light_Curve import Light_Curve, LC_MARKER_INFO, LC_COLOR_INFO, ALL_BAND_DF
 except ModuleNotFoundError:
     from .Light_Curve import Light_Curve, LC_MARKER_INFO, LC_COLOR_INFO, ALL_BAND_DF
+try:
+    from agn_catalog import cone_search as agn_cone_search
+except ModuleNotFoundError:
+    from .agn_catalog import cone_search as agn_cone_search
 time_support()
+
+_get_sparcl_client = lru_cache(maxsize=1)(lambda: SparclClient(connect_timeout=10))
 
 ACCEPTABLE_PROC_STATUS = [0]
 MANDATORY_SOURCE_COLUMNS = [
@@ -81,6 +90,20 @@ def set_mpl_params(font_size: int = 12):
     mpl.rcParams['font.serif'] = 'cmr10'
     mpl.rcParams['font.size'] = font_size
     mpl.rcParams['axes.formatter.use_mathtext'] = True
+
+
+def format_magerr(err: float) -> str:
+    """Format a magnitude error for a LaTeX ``\\pm`` label.
+
+    Uses ``.2f`` for errors that round to something nonzero; switches to
+    scientific notation (e.g. ``2.0\\times10^{-3}``) for errors small enough
+    that ``.2f`` would otherwise display as a misleading ``0.00``.
+    """
+    if not np.isfinite(err) or err <= 0 or round(err, 2) != 0:
+        return f'{err:.2f}'
+    exponent = int(np.floor(np.log10(err)))
+    mantissa = err / 10 ** exponent
+    return rf'{mantissa:.1f}\times10^{{{exponent}}}'
 
 
 def closest_within_radius(coord: SkyCoord, coords: SkyCoord, max_arcsec: float = 1.0) -> Tuple[int, SkyCoord]:
@@ -391,7 +414,10 @@ class Source():
             merged_field_basedir: str = '/Users/adamboesky/Research/long_transients/Data/catalog_results/field_results',
             ztf_data_dir: Optional[str] = None,
             field_catalogs: Optional[dict[str, Table]] = None,
-            max_arcsec: float = 1.0,
+            # 1.5" matches ZTF's own internal match radius for grouping per-epoch
+            # detections into its Objects/lightcurve catalog (ZTF Explanatory
+            # Supplement), and Light_Curve's own query_rad_arcsec default.
+            max_arcsec: float = 1.5,
             gaia_max_arcsec: float = 5.0,
             verbose: int = 1,
             catch_plotting_exceptions: bool = True,
@@ -433,6 +459,10 @@ class Source():
         self._image_metadata = None
         self._spectrum = None
         self._has_spectrum = True
+        self._desi_spectrum = None
+        self._has_desi_spectrum = True
+        self._agn_match = None
+        self._has_agn_match = True
         self._light_curve = None
 
         # If detected_bands is provided at construction time, pre-populate the in_* cache
@@ -489,6 +519,62 @@ class Source():
                 self._spectrum = SDSS.get_spectra(matches=sdss_res) if len(sdss_res) > 0 else None
 
         return self._spectrum
+
+    @property
+    def desi_spectrum(self) -> Optional[Any]:
+        """The source spectrum record from DESI DR1 (via SPARCL), or None if there's no match."""
+        if self._has_desi_spectrum and self._desi_spectrum is None:
+            print('Getting source spectrum from DESI DR1 (SPARCL)...')
+            client = _get_sparcl_client()
+
+            # SPARCL's find() only supports range constraints (no radius/cone search), so
+            # box around the source and post-filter by true angular separation.
+            dra = (self.max_arcsec * u.arcsec).to(u.deg).value / np.cos(np.radians(self.dec))
+            ddec = (self.max_arcsec * u.arcsec).to(u.deg).value
+            cons = {
+                'ra': [self.ra - dra, self.ra + dra],
+                'dec': [self.dec - ddec, self.dec + ddec],
+                'data_release': ['DESI-DR1'],
+            }
+            found = client.find(outfields=['sparcl_id', 'ra', 'dec', 'spectype', 'redshift'], constraints=cons)
+
+            if len(found.records) == 0:
+                print(f'Source at ({self.ra}, {self.dec}) has no spectrum in DESI DR1.')
+                self._has_desi_spectrum = False
+            else:
+                cat_coord = SkyCoord(
+                    ra=[r.ra for r in found.records],
+                    dec=[r.dec for r in found.records],
+                    unit='deg',
+                )
+                seps = self.coord.separation(cat_coord)
+                best = int(np.argmin(seps.arcsec))
+                if seps.arcsec[best] > self.max_arcsec:
+                    print(f'Source at ({self.ra}, {self.dec}) has no spectrum in DESI DR1.')
+                    self._has_desi_spectrum = False
+                else:
+                    retrieved = client.retrieve(
+                        uuid_list=[found.records[best].sparcl_id],
+                        include=['wavelength', 'flux', 'model', 'spectype', 'redshift'],
+                    )
+                    self._desi_spectrum = retrieved.records[0]
+
+        return self._desi_spectrum
+
+    @property
+    def agn_match(self) -> Optional[pd.Series]:
+        """Closest AGN-DB catalog match within max_arcsec, or None."""
+        if self._has_agn_match and self._agn_match is None:
+            matches = agn_cone_search(
+                self.ra, self.dec, radius_arcsec=self.max_arcsec,
+                columns=['best_class_all', 'best_class_sub_all', 'best_Z_merged', 'star_flag'],
+            )
+            if matches.empty:
+                self._has_agn_match = False
+            else:
+                self._agn_match = matches.iloc[0]
+
+        return self._agn_match
 
     @property
     def image_metadata(self) -> Dict[str, Dict]:
@@ -785,7 +871,7 @@ class Source():
             pstarr_mag_str = 'ND'
             pstarr_kron_mag_str = ''
         else:
-            pstarr_mag_str = rf'PSF: ${self.data[f"PSTARR_{band}PSFMag"][0]:.2f} \pm {self.data[f"PSTARR_{band}PSFMagErr"][0]:.2f}$'
+            pstarr_mag_str = rf'PSF: ${self.data[f"PSTARR_{band}PSFMag"][0]:.2f} \pm {format_magerr(self.data[f"PSTARR_{band}PSFMagErr"][0])}$'
             pstarr_snr = get_snr_from_mag(self.data[f'PSTARR_{band}PSFMag'][0], self.data[f'PSTARR_{band}PSFMagErr'][0], zp=25)
             axes[0].text(
                 0.99,
@@ -797,7 +883,7 @@ class Source():
                 fontsize=15,
                 color='red'
             )
-            pstarr_kron_mag_str = rf'Kron: ${self.data[f"PSTARR_{band}KronMag"][0]:.2f} \pm {self.data[f"PSTARR_{band}KronMagErr"][0]:.2f}$'
+            pstarr_kron_mag_str = rf'Kron: ${self.data[f"PSTARR_{band}KronMag"][0]:.2f} \pm {format_magerr(self.data[f"PSTARR_{band}KronMagErr"][0])}$'
             pstarr_kron_snr = get_snr_from_mag(self.data[f'PSTARR_{band}KronMag'][0], self.data[f'PSTARR_{band}KronMagErr'][0], zp=25)
             axes[0].text(
                 0.99,
@@ -813,7 +899,7 @@ class Source():
             ztf_mag_str = 'ND'
             ztf_kron_mag_str = ''
         else:
-            ztf_mag_str = rf'PSF: ${self.data[f"ZTF_{band}PSFMag"][0]:.2f} \pm {self.data[f"ZTF_{band}PSFMagErr"][0]:.2f}$'
+            ztf_mag_str = rf'PSF: ${self.data[f"ZTF_{band}PSFMag"][0]:.2f} \pm {format_magerr(self.data[f"ZTF_{band}PSFMagErr"][0])}$'
             ztf_snr = get_snr_from_mag(self.data[f'ZTF_{band}PSFMag'][0], self.data[f'ZTF_{band}PSFMagErr'][0], zp=np.nan_to_num(self.data[f'ZTF_{band}_zero_pt_mag'][0], nan=25))
             axes[1].text(
                 0.99,
@@ -825,7 +911,7 @@ class Source():
                 fontsize=15,
                 color='red'
             )
-            ztf_kron_mag_str = rf'Kron: ${self.data[f"ZTF_{band}KronMag"][0]:.2f} \pm {self.data[f"ZTF_{band}KronMagErr"][0]:.2f}$'
+            ztf_kron_mag_str = rf'Kron: ${self.data[f"ZTF_{band}KronMag"][0]:.2f} \pm {format_magerr(self.data[f"ZTF_{band}KronMagErr"][0])}$'
             ztf_kron_snr = get_snr_from_mag(self.data[f'ZTF_{band}KronMag'][0], self.data[f'ZTF_{band}KronMagErr'][0], zp=np.nan_to_num(self.data[f'ZTF_{band}_zero_pt_mag'][0], nan=25))
             axes[1].text(
                 0.99,
@@ -1136,26 +1222,44 @@ class Source():
             wise_ax = ax.twinx()
             wise_ax.set_ylabel('WISE Mag')
 
-            # Plot W1 and W2
-            if 'w1_mag' in self.light_curve.lc.columns:
+            # twinx() draws wise_ax on top of ax by default, regardless of the artists'
+            # own zorder (zorder only orders artists within the same Axes). To put W1/W2
+            # behind the other photometry (ztf/ptf/panstarrs/etc. on ax), lower wise_ax's
+            # own zorder below ax's, and make ax's background transparent so wise_ax's
+            # content is visible through it wherever ax has no artist drawn on top.
+            wise_ax.set_zorder(ax.get_zorder() - 1)
+            ax.patch.set_visible(False)
+
+            # Plot W1 and W2. A null magerr means SNR<2 for that epoch, so the quoted
+            # magnitude is a 95%-confidence flux upper limit rather than a real detection
+            # (NEOWISE Explanatory Supplement, sec2_1c) -- plot those as upside-down
+            # triangles, deemphasized behind the real detections.
+            for band, color in (('w1', 'saddlebrown'), ('w2', 'sandybrown')):
+                mag_col, magerr_col = f'{band}_mag', f'{band}_magerr'
+                if mag_col not in self.light_curve.lc.columns:
+                    continue
+                mag = self.light_curve.lc[mag_col].filled(fill_value=np.nan)
+                magerr = self.light_curve.lc[magerr_col].filled(fill_value=np.nan)
+                has_mag = ~np.isnan(mag)
+                detected_mask = has_mag & (magerr > 0)
+                upperlim_mask = has_mag & ~(magerr > 0)
+
                 wise_ax.errorbar(
-                    x=time,
-                    y=self.light_curve.lc['w1_mag'].filled(fill_value=np.nan),
-                    yerr=self.light_curve.lc[f'w1_magerr'].filled(fill_value=np.nan),
+                    x=time[detected_mask],
+                    y=mag[detected_mask],
+                    yerr=magerr[detected_mask],
                     marker='*',
-                    color='saddlebrown',
+                    color=color,
                     zorder=1,
                     **kwargs,
                 )
-            if 'w2_mag' in self.light_curve.lc.columns:
-                wise_ax.errorbar(
-                    x=time,
-                    y=self.light_curve.lc['w2_mag'].filled(fill_value=np.nan),
-                    yerr=self.light_curve.lc['w2_magerr'].filled(fill_value=np.nan),
-                    marker='*',
-                    color='sandybrown',
-                    zorder=1,
-                    **kwargs,
+                wise_ax.scatter(
+                    x=time[upperlim_mask],
+                    y=mag[upperlim_mask],
+                    marker='v',
+                    color=color,
+                    alpha=0.3,
+                    zorder=0,
                 )
 
             # Make the handles for a legend
@@ -1180,9 +1284,17 @@ class Source():
             wise_ax.invert_yaxis()
 
         # Create legend handles for markers
+        lc_colnames = set(self.light_curve.lc.colnames)
         marker_handles = []
         for label, marker in LC_MARKER_INFO.items():
-            # We use a dummy black marker (or any color you prefer) to represent the marker type.
+            if label in ('ztforce', 'zubercal'):
+                has_data = any(
+                    col in lc_colnames and not np.all(self.light_curve.lc[col].mask)
+                    for col in ALL_BAND_DF.columns
+                    if ALL_BAND_DF.loc['survey', col] == label
+                )
+                if not has_data:
+                    continue
             handle = mlines.Line2D([], [], marker=marker, color='gray', linestyle='None', label=label,
                                    markeredgewidth=2 if marker == '3' else 1)
             marker_handles.append(handle)
@@ -1198,7 +1310,7 @@ class Source():
                 framealpha=0.8,
                 handletextpad=0.3,
                 columnspacing=0.85,
-                ncols=3,
+                ncols=len(marker_handles),
             )
             legend_ax.add_artist(legend_markers).set_zorder(10)
 
@@ -1320,45 +1432,45 @@ class Source():
         return ax
 
     def plot_spectrum(self, ax: Optional[Axes] = None) -> Axes:
-        """Plot the spectrum from SDSS."""
+        """Plot the SDSS and DESI DR1 spectra overlaid on the same panel."""
         if ax is None:
             _, ax = plt.subplots(figsize=(12, 5))
-        
-        # Annotate if no spectrum
-        if self.spectrum is None:
-            ax.text(0.5, 0.5, 'Source has no spectrum from SDSS.', horizontalalignment='center', verticalalignment='center')
-            return ax
 
         # Label axes
-        ax.set_xlabel(r'log(Wavelength [$\rm{\AA}$])')
+        ax.set_xlabel(r'Wavelength [$\rm{\AA}$]')
         ax.set_ylabel(r'$F_\lambda \ [10^{-17} \ \rm{erg} \ \rm{cm}^{-2} \ \rm{s}^{-1} \ \rm{\AA}^{-1}]$')
 
-        # If no spectrum just return ax
-        if self.spectrum is None:
-            print(f'No spectrum for source at ({self.coord.ra.deg}, {self.coord.dec.deg}). Skipping plotting...')
+        has_sdss = self.spectrum is not None
+        has_desi = self.desi_spectrum is not None
+
+        # Annotate if there's no spectrum from either catalog
+        if not has_sdss and not has_desi:
+            ax.text(
+                0.5, 0.5, 'Source has no spectrum from SDSS or DESI DR1.',
+                horizontalalignment='center', verticalalignment='center',
+            )
             return ax
 
-        # Plot
-        ax.plot(
-            self.spectrum[0][1].data['loglam'],
-            self.spectrum[0][1].data['model'],
-            color='k',
-            label='Model',
-            zorder=10,
-        )
+        # SDSS stores wavelength as log10(Angstroms); convert to linear Angstroms to
+        # match DESI so both spectra share the same x-axis.
+        if has_sdss:
+            sdss_wave = 10 ** self.spectrum[0][1].data['loglam']
+            ax.plot(sdss_wave, self.spectrum[0][1].data['model'], color='tab:blue', label='SDSS', zorder=10)
+        if has_desi:
+            ax.plot(self.desi_spectrum.wavelength, self.desi_spectrum.model, color='tab:red', label='DESI DR1', zorder=10)
+
+        # Set ylim off the (smoother) model curves before plotting the noisier data,
+        # so spikes in the raw data don't blow out the y-axis scale. The raw data
+        # is unlabeled context for the model line, not its own legend entry.
         ylims = ax.get_ylim()
-        ax.plot(
-            self.spectrum[0][1].data['loglam'],
-            self.spectrum[0][1].data['flux'],
-            color='gray',
-            label='Data',
-            zorder=-1,
-            alpha=0.75,
-        )
+        if has_sdss:
+            ax.plot(sdss_wave, self.spectrum[0][1].data['flux'], color='tab:blue', zorder=-1, alpha=0.3)
+        if has_desi:
+            ax.plot(self.desi_spectrum.wavelength, self.desi_spectrum.flux, color='tab:red', zorder=-1, alpha=0.3)
         ax.set_ylim(ylims)
 
         # Add legend
-        ax.legend(loc='upper right')
+        ax.legend(loc='upper right', fontsize='small')
 
         return ax
 
@@ -1457,7 +1569,31 @@ class Source():
         if self.spectrum is None:
             info_string += '\nNo SDSS Source Classification.'
         else:
-            info_string += f'\nSDSS Class: {self.spectrum[0][2].data["CLASS"]}'
+            sdss_class = self.spectrum[0][2].data["CLASS"]
+            # SUBCLASS carries the emission-line-ratio-based AGN/Seyfert/LINER call that
+            # CLASS alone doesn't: a source can be CLASS='GALAXY' and SUBCLASS='AGN'.
+            sdss_subclass = self.spectrum[0][2].data["SUBCLASS"]
+            info_string += f'\nSDSS Class: {sdss_class}' + (f' ({sdss_subclass})' if sdss_subclass else '')
+        if self.desi_spectrum is None:
+            info_string += '\nNo DESI DR1 Source Classification.'
+        else:
+            info_string += f'\nDESI Class: {self.desi_spectrum.spectype}'
+        if self.agn_match is None:
+            # AGN-DB is a merge of pre-selected AGN/quasar catalogs, not a complete
+            # spectroscopic galaxy census (Peca et al. 2026, arXiv:2609.04322) — this is
+            # not a confirmed non-AGN determination.
+            info_string += '\nSource not in AGN-DB.'
+        else:
+            agn_class = json.loads(self.agn_match['best_class_all'])[0]
+            sub_class_all = self.agn_match['best_class_sub_all']
+            # best_class_sub_all can carry >1 entry (one per catalog agreeing on the
+            # winning tier) and blank strings for catalogs with no sub-type detail.
+            sub_classes = [s for s in json.loads(sub_class_all)] if pd.notna(sub_class_all) else []
+            sub_classes = list(dict.fromkeys(s for s in sub_classes if s))  # dedupe, drop blanks, keep order
+            show_sub = sub_classes and agn_class != 'unknown'
+            info_string += f'\nAGN-DB Class: {agn_class}' + (f' ({"/".join(sub_classes)})' if show_sub else '')
+            if pd.notna(self.agn_match['best_Z_merged']):
+                info_string += f'\nAGN-DB Redshift: {self.agn_match["best_Z_merged"]:.4f}'
         if 'w1_magerr' in self.light_curve.lc.columns and 'w2_magerr' in self.light_curve.lc.columns:
             w1_err = self.light_curve.lc['w1_magerr'].filled(fill_value=np.nan)
             w2_err = self.light_curve.lc['w2_magerr'].filled(fill_value=np.nan)
