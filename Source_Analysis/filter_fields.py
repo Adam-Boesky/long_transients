@@ -38,7 +38,7 @@ CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Co
 GAIA_OBS_EPOCH = 2021.0  # representative epoch of ZTF detections, used to propagate Gaia positions forward from ref_epoch (J2016.0) before crossmatching
 PSTARR_UPPER_LIM = {'g': 23.3, 'r': 23.2, 'i': 23.1}
 EXTRACTED_CATALOG_DIR = 'catalog_results/field_results' # 'debugging'
-FILTER_RESULT_DIR = 'filter_results_7_30_2026_gaia_propagation'  # 'filter_results_kde_sep_flag'  # 'debugging/filter_results'  # 'filter_results_gemini'
+FILTER_RESULT_DIR = 'filter_results_9_13_2026_full_catalog'  # 'filter_results_kde_sep_flag'  # 'debugging/filter_results'  # 'filter_results_gemini'
 
 def _is_flag(flags: np.ndarray, flag: Union[int, Iterable[int]]) -> np.ndarray:
     """
@@ -135,6 +135,71 @@ def get_merged_tab_coords(tabs: Dict[str, Table], max_arcsec: float = 1.0) -> Ta
     })
 
 
+def get_ra_bounds(
+    ras: np.ndarray,
+    padding_deg: float = 0.1,
+    gap_split_deg: float = 1.0,
+    min_island_frac: float = 1e-3,
+    field_name: str = '',
+) -> Tuple[float, float, bool]:
+    """Return (ra_lo, ra_hi, wraps) bounding the RA extent of *ras*, in degrees.
+
+    A field straddling RA=0 has sources at both ~0 and ~360, so a plain min/max
+    spans the whole sky and yields a degenerate query box. We instead work in a
+    frame centred on the field (via the circular mean, which the bulk of the
+    sources dominates), so wrapped and unwrapped fields are handled identically.
+
+    Extraction occasionally emits a degenerate astrometric solution -- e.g. a
+    single source with ra pinned to exactly 180 in an otherwise RA~0 field --
+    and one such row would inflate the query box to half the sky. So the sources
+    are split into contiguous islands at gaps far wider than any real chip gap,
+    and islands holding a negligible share of the field are dropped with a
+    warning rather than silently stretching the box.
+
+    When *wraps* is True the footprint runs ra_lo -> 360 -> ra_hi (so ra_lo >
+    ra_hi) and must be selected with `ra >= ra_lo OR ra <= ra_hi` rather than a
+    BETWEEN. Padding is applied modulo 360, so a footprint sitting just inside
+    RA=0 can itself become wrapped once padded.
+    """
+    ra = np.asarray(ras, dtype=float) % 360.0
+    n = len(ra)
+    if n == 0:
+        raise ValueError('get_ra_bounds received no coordinates')
+
+    # Circular mean -> a centre that is meaningful even across the RA=0 seam.
+    angles = np.deg2rad(ra)
+    center = np.rad2deg(np.arctan2(np.sin(angles).mean(), np.cos(angles).mean())) % 360.0
+    rel = np.sort((ra - center + 180.0) % 360.0 - 180.0)
+
+    # Contiguous islands, split at gaps much wider than a real detector gap.
+    split = np.flatnonzero(np.diff(rel) > gap_split_deg)
+    starts = np.concatenate(([0], split + 1))
+    ends = np.concatenate((split, [n - 1]))
+    sizes = ends - starts + 1
+
+    keep = sizes >= max(min_island_frac * n, 1.0)
+    if not keep.any():          # pathological: keep the largest island
+        keep[int(np.argmax(sizes))] = True
+
+    n_dropped = int(n - sizes[keep].sum())
+    if n_dropped > 0:
+        label = f'{field_name} ' if field_name else ''
+        print(f'WARNING: {label}dropping {n_dropped} source(s) with outlier RA '
+              f'when computing the Gaia query box (likely bad astrometry).')
+
+    lo_rel = float(rel[starts[keep]].min())
+    hi_rel = float(rel[ends[keep]].max())
+
+    # No RA cut can narrow a footprint that already spans the full circle.
+    if (hi_rel - lo_rel) + 2 * padding_deg >= 360.0:
+        return 0.0, 360.0, False
+
+    ra_lo = (center + lo_rel - padding_deg) % 360.0
+    ra_hi = (center + hi_rel + padding_deg) % 360.0
+
+    return ra_lo, ra_hi, ra_lo > ra_hi
+
+
 def query_gaia_for_field(
     field_name: str,
     ras: np.ndarray,
@@ -160,16 +225,14 @@ def query_gaia_for_field(
     if Gaia._TapPlus__user is None:
         Gaia.login(user=username, password=password)
 
-    ra_min  = float(np.min(ras))  - padding_deg
-    ra_max  = float(np.max(ras))  + padding_deg
-    dec_min = float(np.min(decs)) - padding_deg
-    dec_max = float(np.max(decs)) + padding_deg
+    ra_lo, ra_hi, ra_wraps = get_ra_bounds(ras, padding_deg=padding_deg, field_name=field_name)
+    dec_min = max(float(np.min(decs)) - padding_deg, -90.0)
+    dec_max = min(float(np.max(decs)) + padding_deg,  90.0)
 
-    # Mirror the wrapping logic from Source_Extractor.get_coord_range / PSTARR_Catalog._get_band_query
-    if float(np.min(ras)) < 10.0 and float(np.max(ras)) > 350.0:
-        ra_clause = (f"(ra BETWEEN {ra_max} AND 360 OR ra BETWEEN 0 AND {ra_min})")
+    if ra_wraps:
+        ra_clause = f"(ra >= {ra_lo} OR ra <= {ra_hi})"
     else:
-        ra_clause = f"ra BETWEEN {ra_min} AND {ra_max}"
+        ra_clause = f"ra BETWEEN {ra_lo} AND {ra_hi}"
 
     query = f"""
         SELECT ra, dec, parallax_over_error, pm, pmra, pmdec, pmra_error, pmdec_error,
@@ -178,7 +241,8 @@ def query_gaia_for_field(
         WHERE {ra_clause}
         AND   dec BETWEEN {dec_min} AND {dec_max}
     """
-    print(f'Querying Gaia (box {ra_min:.2f}-{ra_max:.2f} RA, {dec_min:.2f}-{dec_max:.2f} dec) — result will be cached at {cache_path}')
+    wrap_note = ' (wraps through RA=0)' if ra_wraps else ''
+    print(f'Querying Gaia (box {ra_lo:.2f}-{ra_hi:.2f} RA{wrap_note}, {dec_min:.2f}-{dec_max:.2f} dec) — result will be cached at {cache_path}')
     for attempt in range(3):
         try:
             job = Gaia.launch_job_async(query)
@@ -275,7 +339,7 @@ class Envelope_KDE:
 def build_kde_envelopes(
     tabs: Dict[str, Table],
     mag_grid: np.ndarray = np.arange(14, 24, 0.25),
-    dmag_grid: np.ndarray = np.linspace(-5, 5, 1000),
+    dmag_grid: np.ndarray = np.linspace(-5, 5, 500),
     half_bin_width: float = 0.5,
     min_dmagerr: float = 0.01,
 ) -> Dict[str, Envelope_KDE]:
@@ -1584,7 +1648,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     filters = Filters(filter_stat_fname=os.path.join(filter_result_dirpath, '0_filter_stats.csv'))
     print(f'Building flowchart for {CATALOG_KEY[0]} graph...')
     min_dec = -29.5
-    tabs = {band: tab.copy()[tab['Catalog_Flag'] == 0] for band, tab in tables.items()}
+    tabs = {band: tab[tab['Catalog_Flag'] == 0] for band, tab in tables.items()}
 
     # Build a quality-filtered version of all sources (all catalog types) for use as field_catalogs.
     # Uses a throwaway Filters instance so stats are not polluted.
@@ -1603,6 +1667,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         if band not in all_quality_source_tabs.keys():
             all_quality_source_tabs[band] = tabs[band][:0].copy()
     all_quality_source_tabs = {band: vstack([all_quality_source_tabs[band], all_q_ztf_tabs_low_snr[band], all_q_pstarr_tabs_low_snr[band]]) for band in tabs.keys()}
+    del all_q_ztf_tabs_low_snr, all_q_pstarr_tabs_low_snr
     all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'shape_filter')
     all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'pstarr_not_saturated')
     all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'psf_fit_filter')
@@ -1611,6 +1676,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Build (or load cached) KDE envelopes from quality-filtered sources
     in_both_quality_tabs = {band: tab[tab['Catalog_Flag'] == 0] for band, tab in all_quality_source_tabs.items()}
     envelopes = load_or_build_kde_envelopes(field_name, in_both_quality_tabs)
+    del in_both_quality_tabs
     sigma_boundary = 3.0
 
     #---------------------------------------------------------------#
@@ -1663,6 +1729,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 
     # Save the filtered out tables
     filters.save_filtered_out(filter_result_dirpath, 0)
+    del tabs
 
     ################################################################################
     ################################################################################
@@ -1671,8 +1738,8 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     ################################################################################
     filters = Filters(filter_stat_fname=os.path.join(filter_result_dirpath, '1_filter_stats.csv'))
     print(f'Building flowchart for {CATALOG_KEY[1]} graph...')
-    in_ztf_tabs = {band: tab.copy()[tab['Catalog_Flag'] == 1] for band, tab in tables.items()}
-    in_pstarr_tabs = {band: tab.copy()[tab['Catalog_Flag'] == 2] for band, tab in tables.items()}
+    in_ztf_tabs = {band: tab[tab['Catalog_Flag'] == 1] for band, tab in tables.items()}
+    in_pstarr_tabs = {band: tab[tab['Catalog_Flag'] == 2] for band, tab in tables.items()}
 
     # Concat SNR < 5 non-detections
     in_ztf_tabs = {band: vstack([in_ztf_tabs[band], ztf_tabs_low_snr[band]]) for band in in_ztf_tabs.keys()}
@@ -1779,6 +1846,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 
     # Save the filtered out tables
     filters.save_filtered_out(filter_result_dirpath, 1)
+    del in_ztf_tabs, in_pstarr_tabs, in_both_tabs, sources_in_both, sources_in_ztf
 
     ################################################################################
     ################################################################################
@@ -1787,12 +1855,13 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     ################################################################################
     filters = Filters(filter_stat_fname=os.path.join(filter_result_dirpath, '2_filter_stats.csv'))
     print(f'Building flowchart for {CATALOG_KEY[2]} graph...')
-    in_ztf_tabs = {band: tab.copy()[tab['Catalog_Flag'] == 1] for band, tab in tables.items()}
-    in_pstarr_tabs = {band: tab.copy()[tab['Catalog_Flag'] == 2] for band, tab in tables.items()}
+    in_ztf_tabs = {band: tab[tab['Catalog_Flag'] == 1] for band, tab in tables.items()}
+    in_pstarr_tabs = {band: tab[tab['Catalog_Flag'] == 2] for band, tab in tables.items()}
 
     # Concat SNR < 5 non-detections
     in_ztf_tabs = {band: vstack([in_ztf_tabs[band], ztf_tabs_low_snr[band]]) for band in in_ztf_tabs.keys()}
     in_pstarr_tabs = {band: vstack([in_pstarr_tabs[band], pstarr_tabs_low_snr[band]]) for band in in_ztf_tabs.keys()}
+    del ztf_tabs_low_snr, pstarr_tabs_low_snr
 
     # Set the Catalog_Flag columns now that we added the low SNR sources
     for band in in_ztf_tabs.keys():
@@ -1921,29 +1990,18 @@ def _filter_field_wrapper(field):
 
 def filter_fields():
     """Filter fields!"""
-    # field_results_dirpath = os.path.join(get_data_path(), EXTRACTED_CATALOG_DIR)
-    # fields = os.listdir(field_results_dirpath)
-    # fields = [f.split('_')[0] for f in fields]
-    # fields = np.unique(fields)
+    # Fields imaged in all three bands — intersect the per-band npy lists so that
+    # we only run on gri fields and avoid KeyErrors in the i-band envelope lookup.
+    data_path = get_data_path()
+    g_fields = np.load(os.path.join(data_path, 'g_imaged_fields.npy'))
+    r_fields = np.load(os.path.join(data_path, 'r_imaged_fields.npy'))
+    i_fields = np.load(os.path.join(data_path, 'i_imaged_fields.npy'))
+    gri_fields = np.intersect1d(np.intersect1d(g_fields, r_fields), i_fields)
+    fields = [str(f).zfill(6) for f in sorted(gri_fields)]
 
-    # Complete fields (all 64 quadrants have been fully-extracted)
-    fields = ['000616', '000617', '000619', '000303', '000304', '000373',
-       '000374', '000375', '000377', '000363', '000368', '000339',
-       '000516', '000517', '000518', '000324', '000326', '000337',
-       '000338', '000567', '000568', '000569', '000305', '000313',
-       '000315', '000318']
+    fields = [f for f in fields if not os.path.exists(os.path.join(data_path, FILTER_RESULT_DIR, f, '2_flowchart.pdf'))]
 
-    # # Gemini fields
-    # north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
-    # south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
-    # gemini_fields = np.concatenate([north_fields, south_fields])
-    # gemini_fields = [str(f).zfill(6) for f in gemini_fields]
-    # fields = np.intersect1d(ar1=fields, ar2=gemini_fields)
-
-    # fields = [f for f in fields if f not in os.listdir(os.path.join(get_data_path(), f'{FILTER_RESULT_DIR}'))]
-    fields = [f for f in fields if not os.path.exists(os.path.join(get_data_path(), FILTER_RESULT_DIR, f, '2_flowchart.pdf'))]
-
-    with ProcessPoolExecutor(max_workers=1) as executor:
+    with ProcessPoolExecutor(max_workers=2) as executor:
         futures = {executor.submit(_filter_field_wrapper, f): f for f in fields}
         for future in as_completed(futures):
             field = futures[future]
