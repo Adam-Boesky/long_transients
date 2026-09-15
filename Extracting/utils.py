@@ -1,9 +1,11 @@
 import os
 import pathlib
 import subprocess
+import time
+import warnings
 from contextlib import nullcontext
 
-from astropy.io import ascii
+from astropy.io import ascii, fits
 from astropy.table import Table, MaskedColumn
 from functools import lru_cache
 from mastcasjobs import MastCasJobs
@@ -17,13 +19,24 @@ print(f'CasJobs will use the credentials from {MAST_CREDENTIAL_FNAME}')
 
 
 def fitscheck_valid(fpath: str) -> bool:
-    """Return True if fitscheck exits 0 (file is a valid, non-corrupt FITS file)."""
+    """Return True if the FITS file passes fitscheck and is not truncated."""
     result = subprocess.run(
         ["fitscheck", "--ignore-missing", "--compliance", fpath],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+    # fitscheck doesn't catch partial downloads; opening with astropy fires a
+    # warning when the file is shorter than the size declared in the header.
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        try:
+            with fits.open(fpath, memmap=True) as hdul:
+                _ = hdul[0].header
+        except Exception:
+            return False
+    return not any('truncated' in str(x.message).lower() for x in w)
 
 
 def get_credentials(fname: str) -> Union[Tuple[str, str], str]:
@@ -101,7 +114,7 @@ def nan_nearby(row: int, column: int, radius: int, arr: np.ndarray) -> bool:
     return true_nearby(row, column, radius, np.isnan(arr))
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=16)
 def load_cached_table(table_path: str) -> Table:
     """Load a table from disk and cache it in memory."""
     return load_ecsv(table_path)
@@ -227,6 +240,37 @@ def init_worker_lock(lock) -> None:
 def casjobs_query_lock():
     """Return the active CasJobs lock, or a no-op context if none was set."""
     return _casjobs_lock if _casjobs_lock is not None else nullcontext()
+
+
+# Per-process SDSS rate-limit lock (set by init_worker_sdss_lock in parallel contexts).
+# SDSS SkyServer enforces a hard cap of 60 queries/minute (>=1 second between queries) and
+# blocks with an HTTP 403 if that's exceeded:
+# https://skyserver.sdss.org/dr14/en/help/docs/limits.aspx
+SDSS_MIN_QUERY_INTERVAL_SEC = 1.1
+_sdss_lock = None
+_sdss_last_call_time = None
+
+
+def init_worker_sdss_lock(lock, last_call_time) -> None:
+    """Initializer for Pool/ProcessPoolExecutor workers — stores the shared SDSS rate-limit lock."""
+    global _sdss_lock, _sdss_last_call_time
+    _sdss_lock = lock
+    _sdss_last_call_time = last_call_time
+
+
+def throttled_sdss_query(query_fn, *args, **kwargs):
+    """Call query_fn (an SDSS query), pausing as needed so calls across all worker processes
+    stay under SDSS's rate limit."""
+    if _sdss_lock is None:
+        return query_fn(*args, **kwargs)
+    with _sdss_lock:
+        wait = SDSS_MIN_QUERY_INTERVAL_SEC - (time.time() - _sdss_last_call_time.value)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            return query_fn(*args, **kwargs)
+        finally:
+            _sdss_last_call_time.value = time.time()
 
 
 def _add_pstarr_mag_cols(tab: Table) -> Table:
