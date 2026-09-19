@@ -1,7 +1,9 @@
+import io
 import os
 import sys
 import ast
 import json
+import requests
 from glob import glob
 import warnings
 import traceback
@@ -24,9 +26,9 @@ from astropy.time import Time
 from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from astropy.visualization import simple_norm, time_support
+from astropy.io import fits
 from astropy.io.fits import HDUList
 from astroquery.gaia import Gaia
-from astroquery.sdss import SDSS
 from sparcl.client import SparclClient
 
 sys.path.append('/Users/adamboesky/Research/long_transients')
@@ -38,10 +40,8 @@ try:
     from Light_Curve import Light_Curve, LC_MARKER_INFO, LC_COLOR_INFO, ALL_BAND_DF
 except ModuleNotFoundError:
     from .Light_Curve import Light_Curve, LC_MARKER_INFO, LC_COLOR_INFO, ALL_BAND_DF
-try:
-    from agn_catalog import cone_search as agn_cone_search
-except ModuleNotFoundError:
-    from .agn_catalog import cone_search as agn_cone_search
+from Source_Analysis.catalogs.agn import cone_search as agn_cone_search, CATALOG_ID_TO_NAME
+from Source_Analysis.catalogs import sdss as sdss_catalog, simbad as simbad_catalog, tns as tns_catalog
 time_support()
 
 _get_sparcl_client = lru_cache(maxsize=1)(lambda: SparclClient(connect_timeout=10))
@@ -90,6 +90,19 @@ def set_mpl_params(font_size: int = 12):
     mpl.rcParams['font.serif'] = 'cmr10'
     mpl.rcParams['font.size'] = font_size
     mpl.rcParams['axes.formatter.use_mathtext'] = True
+
+
+def latex_escape(s: str) -> str:
+    """Escape a plain string for literal display under matplotlib's usetex renderer.
+
+    LaTeX treats `\\`, `_`, `{`, `}`, `&`, `%`, and `#` as special (e.g. `_` triggers a
+    subscript, `{`/`}` are grouping delimiters that render invisibly) -- needed for any
+    data-derived string (catalog names, class labels, ...) embedded in a plotted label.
+    """
+    s = s.replace('\\', r'\textbackslash{}')
+    for char in ('_', '{', '}', '&', '%', '#'):
+        s = s.replace(char, f'\\{char}')
+    return s
 
 
 def format_magerr(err: float) -> str:
@@ -463,6 +476,10 @@ class Source():
         self._has_desi_spectrum = True
         self._agn_match = None
         self._has_agn_match = True
+        self._tns_match = None
+        self._has_tns_match = True
+        self._simbad_match = None
+        self._has_simbad_match = True
         self._light_curve = None
 
         # If detected_bands is provided at construction time, pre-populate the in_* cache
@@ -501,22 +518,26 @@ class Source():
 
     @property
     def spectrum(self) -> Union[List[HDUList], None]:
+        """The SDSS DR17 spectrum as a one-element list of HDULists, or None.
+
+        The match is found in the local specObj catalog and the spectrum is
+        pulled straight from the Science Archive Server, rather than going
+        through astroquery's SkyServer endpoint. Same data release and the same
+        file -- verified bit-identical in HDU1 (loglam/flux/model) and HDU2
+        (CLASS/SUBCLASS/Z) -- but SkyServer's query interface is frequently
+        unreachable while the SAS is not.
+        """
         if self._has_spectrum and self._spectrum is None:
-            # The source spectrum
-            print('Getting source spectrum from SDSS...')
-            sdss_res = SDSS.query_region(self.coord, radius=self.max_arcsec*u.arcsec, spectro=True)
-
-            # query_region can return an HTML error page (e.g. 503) parsed as a table;
-            # detect this by checking for an expected column and treat as no result.
-            if sdss_res is not None and 'run2d' not in sdss_res.colnames:
-                print(f'SDSS query_region returned unexpected columns {sdss_res.colnames} — treating as no result.')
-                sdss_res = None
-
-            if sdss_res is None:
-                print(f'Source at ({self.coord.ra.deg}, {self.coord.dec.deg}) has no spectrum in SDSS.')
+            match = sdss_catalog.cone_search(self.ra, self.dec, radius_arcsec=self.max_arcsec)
+            if match.empty:
+                print(f'Source at ({self.ra}, {self.dec}) has no spectrum in SDSS.')
                 self._has_spectrum = False
             else:
-                self._spectrum = SDSS.get_spectra(matches=sdss_res) if len(sdss_res) > 0 else None
+                url = sdss_catalog.spectrum_url(match.iloc[0])
+                print(f'Getting source spectrum from SDSS ({url.rsplit("/", 1)[-1]})...')
+                resp = requests.get(url, timeout=120)
+                resp.raise_for_status()
+                self._spectrum = [fits.open(io.BytesIO(resp.content))]
 
         return self._spectrum
 
@@ -567,7 +588,10 @@ class Source():
         if self._has_agn_match and self._agn_match is None:
             matches = agn_cone_search(
                 self.ra, self.dec, radius_arcsec=self.max_arcsec,
-                columns=['best_class_all', 'best_class_sub_all', 'best_Z_merged', 'star_flag'],
+                columns=[
+                    'best_class_all', 'best_class_origin', 'best_class_sub_all',
+                    'best_Z_merged', 'star_flag',
+                ],
             )
             if matches.empty:
                 self._has_agn_match = False
@@ -575,6 +599,30 @@ class Source():
                 self._agn_match = matches.iloc[0]
 
         return self._agn_match
+
+    @property
+    def simbad_match(self) -> Optional[pd.Series]:
+        """Closest SIMBAD object within max_arcsec, or None.
+
+        Columns keep the prefixed names `catalogs.simbad` returns
+        (`simbad_main_id`, `simbad_otype`, ...), matching the crossmatch columns
+        `enrich_combined_tabs.py` writes for the same catalog.
+        """
+        if self._has_simbad_match and self._simbad_match is None:
+            matches = simbad_catalog.cone_search(
+                self.ra, self.dec, radius_arcsec=self.max_arcsec,
+                columns=[
+                    'simbad_main_id', 'simbad_otype', 'simbad_otype_label',
+                    'simbad_otype_path', 'simbad_is_candidate', 'simbad_z',
+                    'simbad_nbref',
+                ],
+            )
+            if matches.empty:
+                self._has_simbad_match = False
+            else:
+                self._simbad_match = matches.iloc[0]
+
+        return self._simbad_match
 
     @property
     def image_metadata(self) -> Dict[str, Dict]:
@@ -1098,11 +1146,11 @@ class Source():
         # Plot
         for band, ax_col in zip(self.bands, axes.T):
             self.plot_postage_stamps(band=band, axes=ax_col, add_labels=False, **kwargs)
-            ax_col[1].set_xlabel(band, fontsize=15)
+            ax_col[1].set_xlabel(rf'\textbf{{{band}}}', fontsize=15)
 
         # Formatting
-        axes[0, 0].set_ylabel('Pan-STARRS', fontsize=15)
-        axes[1, 0].set_ylabel('ZTF', fontsize=15)
+        axes[0, 0].set_ylabel(r'\textbf{Pan-STARRS}', fontsize=15)
+        axes[1, 0].set_ylabel(r'\textbf{ZTF}', fontsize=15)
 
         return axes
 
@@ -1152,15 +1200,21 @@ class Source():
             time_as_str: bool = True,
             xlab_kwags: dict = {'rotation': 45, 'ha': 'right'},
             include_legend: bool = True,
-            include_wise: bool = True,
             time_since_peak: bool = False,
             **kwargs,
         ) -> Axes:
-        """Plot lightcurve for all bands specified in 'bands', or all bands if bands is None."""
+        """Plot lightcurve for all bands specified in 'bands', or all bands if bands is None.
+
+        WISE (W1/W2) is not included here -- see plot_wise_lc for a dedicated panel.
+        """
         if ax is None:
             fig, ax = plt.subplots(figsize=(10, 4))
         elif fig is None:
             fig = plt.gcf()
+
+        # Label the axes up front so they're present even if there's no data to plot below.
+        ax.set_ylabel(r'\textbf{Mag}')
+        ax.set_xlabel(r'\textbf{Time [mjd]}', labelpad=2)
 
         # Annotate if no light curve present
         if self.light_curve.lc is None:
@@ -1212,76 +1266,6 @@ class Source():
 
         # Format
         ax.invert_yaxis()
-        ax.set_ylabel(r'\textbf{Mag}')
-        ax.set_xlabel(r'\textbf{Time [mjd]}')
-
-        # Add WISE mags if requested
-        if include_wise:
-
-            # Create axis and label it
-            wise_ax = ax.twinx()
-            wise_ax.set_ylabel('WISE Mag')
-
-            # twinx() draws wise_ax on top of ax by default, regardless of the artists'
-            # own zorder (zorder only orders artists within the same Axes). To put W1/W2
-            # behind the other photometry (ztf/ptf/panstarrs/etc. on ax), lower wise_ax's
-            # own zorder below ax's, and make ax's background transparent so wise_ax's
-            # content is visible through it wherever ax has no artist drawn on top.
-            wise_ax.set_zorder(ax.get_zorder() - 1)
-            ax.patch.set_visible(False)
-
-            # Plot W1 and W2. A null magerr means SNR<2 for that epoch, so the quoted
-            # magnitude is a 95%-confidence flux upper limit rather than a real detection
-            # (NEOWISE Explanatory Supplement, sec2_1c) -- plot those as upside-down
-            # triangles, deemphasized behind the real detections.
-            for band, color in (('w1', 'saddlebrown'), ('w2', 'sandybrown')):
-                mag_col, magerr_col = f'{band}_mag', f'{band}_magerr'
-                if mag_col not in self.light_curve.lc.columns:
-                    continue
-                mag = self.light_curve.lc[mag_col].filled(fill_value=np.nan)
-                magerr = self.light_curve.lc[magerr_col].filled(fill_value=np.nan)
-                has_mag = ~np.isnan(mag)
-                detected_mask = has_mag & (magerr > 0)
-                upperlim_mask = has_mag & ~(magerr > 0)
-
-                wise_ax.errorbar(
-                    x=time[detected_mask],
-                    y=mag[detected_mask],
-                    yerr=magerr[detected_mask],
-                    marker='*',
-                    color=color,
-                    zorder=1,
-                    **kwargs,
-                )
-                wise_ax.scatter(
-                    x=time[upperlim_mask],
-                    y=mag[upperlim_mask],
-                    marker='v',
-                    color=color,
-                    alpha=0.3,
-                    zorder=0,
-                )
-
-            # Make the handles for a legend
-            w1_handle = mlines.Line2D(
-                [],
-                [],
-                marker='*',
-                color='saddlebrown',
-                linestyle='None',
-                markersize=8,
-                label='W1'
-            )
-            w2_handle = mlines.Line2D(
-                [],
-                [],
-                marker='*',
-                color='sandybrown',
-                linestyle='None',
-                markersize=8,
-                label='W2'
-            )
-            wise_ax.invert_yaxis()
 
         # Create legend handles for markers
         lc_colnames = set(self.light_curve.lc.colnames)
@@ -1299,12 +1283,9 @@ class Source():
                                    markeredgewidth=2 if marker == '3' else 1)
             marker_handles.append(handle)
 
-        # Decide on which axes to add the legends for markers and colors.
-        legend_ax = wise_ax if include_wise else ax
-
         # Create the first legend for markers and add it to the axis
         if include_legend:
-            legend_markers = legend_ax.legend(
+            legend_markers = ax.legend(
                 handles=marker_handles,
                 loc='upper right',
                 framealpha=0.8,
@@ -1312,7 +1293,7 @@ class Source():
                 columnspacing=0.85,
                 ncols=len(marker_handles),
             )
-            legend_ax.add_artist(legend_markers).set_zorder(10)
+            ax.add_artist(legend_markers).set_zorder(10)
 
         # Create legend handles for colors
         color_handles = []
@@ -1323,7 +1304,7 @@ class Source():
 
         # Create the second legend for colors and add it to the axis
         if include_legend:
-            legend_colors = legend_ax.legend(
+            legend_colors = ax.legend(
                 handles=color_handles,
                 ncols=4,
                 loc='upper left',
@@ -1332,7 +1313,7 @@ class Source():
                 handlelength=0.8,
                 handletextpad=0.3,
             )
-            legend_ax.add_artist(legend_colors).set_zorder(10)
+            ax.add_artist(legend_colors).set_zorder(10)
 
         # If requested, make time into date strings
         if time_as_str:
@@ -1342,33 +1323,6 @@ class Source():
                 ticks_as_time.strftime('%m-%d-%Y'),
                 **xlab_kwags,
             )
-    
-        # Add wise legend and adjust y bounds a little
-        if include_wise:
-
-            if include_legend:
-                # Get x anchor
-                renderer = fig.canvas.get_renderer()
-                bbox_disp = legend_colors.get_window_extent(renderer=renderer)
-                bbox_axes = legend_ax.transAxes.inverted().transform(bbox_disp)
-                x_anchor = bbox_axes[1, 0]  # the right edge (x1) of the first legend in axes coordinates
-
-                # Make the legend and add it to the axes
-                wise_legend = legend_ax.legend(
-                    handles=[w1_handle, w2_handle],
-                    loc='upper left',
-                    bbox_to_anchor=(x_anchor, 1),
-                    framealpha=0.8,
-                    handletextpad=0.3,
-                )
-                legend_ax.add_artist(wise_legend).set_zorder(10)
-
-            # Increase ylim a little for the wise legend
-            wise_ylim = wise_ax.get_ylim()
-            wise_ax.set_ylim((
-                wise_ylim[0],
-                wise_ylim[0] - 1.1 * (wise_ylim[0] - wise_ylim[1]),
-            ))
 
         if include_legend:
             # Increase ylim a little for the legends
@@ -1378,8 +1332,99 @@ class Source():
                 ylim[0] - 1.1 * (ylim[0] - ylim[1]),
             ))
 
-        if include_wise:
-            return ax, wise_ax
+        return ax
+
+    def plot_wise_lc(
+            self,
+            ax: Optional[Axes] = None,
+            fig: Optional[Axes] = None,
+            time_as_str: bool = True,
+            xlab_kwags: dict = {'rotation': 45, 'ha': 'right'},
+            include_legend: bool = True,
+            **kwargs,
+        ) -> Axes:
+        """Plot the WISE (W1/W2) light curve in its own dedicated panel.
+
+        A null magerr means SNR<2 for that epoch, so the quoted magnitude is a
+        95%-confidence flux upper limit rather than a real detection (NEOWISE
+        Explanatory Supplement, sec2_1c) -- plot those as deemphasized, upside-down
+        triangles behind the real detections.
+        """
+        if ax is None:
+            fig, ax = plt.subplots(figsize=(10, 4))
+        elif fig is None:
+            fig = plt.gcf()
+
+        # Label the axes up front so they're present even if there's no data to plot below.
+        ax.set_ylabel(r'\textbf{Mag}', labelpad=2)
+        ax.set_xlabel(r'\textbf{Time [mjd]}', labelpad=2)
+
+        if self.light_curve.lc is None:
+            ax.text(0.5, 0.5, 'Source has no light curve.', horizontalalignment='center', verticalalignment='center')
+            return ax
+
+        if 'w1_mag' not in self.light_curve.lc.columns and 'w2_mag' not in self.light_curve.lc.columns:
+            ax.text(0.5, 0.5, 'Source has no WISE data.', horizontalalignment='center', verticalalignment='center')
+            return ax
+
+        time = Time(self.light_curve.lc['mjd'], format='mjd').mjd
+
+        default_params = {
+            'ecolor': 'k',
+            'lw': 0.5,
+            'capsize': 2.0,
+            'fmt': 'o'
+        }
+        for key, value in default_params.items():
+            kwargs.setdefault(key, value)
+
+        for band, color in (('w1', 'saddlebrown'), ('w2', 'sandybrown')):
+            mag_col, magerr_col = f'{band}_mag', f'{band}_magerr'
+            if mag_col not in self.light_curve.lc.columns:
+                continue
+            mag = self.light_curve.lc[mag_col].filled(fill_value=np.nan)
+            magerr = self.light_curve.lc[magerr_col].filled(fill_value=np.nan)
+            has_mag = ~np.isnan(mag)
+            detected_mask = has_mag & (magerr > 0)
+            upperlim_mask = has_mag & ~(magerr > 0)
+
+            ax.errorbar(
+                x=time[detected_mask],
+                y=mag[detected_mask],
+                yerr=magerr[detected_mask],
+                marker='*',
+                color=color,
+                zorder=1,
+                **kwargs,
+            )
+            ax.scatter(
+                x=time[upperlim_mask],
+                y=mag[upperlim_mask],
+                marker='v',
+                color=color,
+                alpha=0.3,
+                zorder=0,
+            )
+
+        w1_handle = mlines.Line2D([], [], marker='*', color='saddlebrown', linestyle='None', markersize=8, label='W1')
+        w2_handle = mlines.Line2D([], [], marker='*', color='sandybrown', linestyle='None', markersize=8, label='W2')
+
+        ax.invert_yaxis()
+
+        if include_legend:
+            legend = ax.legend(handles=[w1_handle, w2_handle], loc='upper right', framealpha=0.8, handletextpad=0.3)
+            ax.add_artist(legend).set_zorder(10)
+            ylim = ax.get_ylim()
+            ax.set_ylim((ylim[0], ylim[0] - 1.1 * (ylim[0] - ylim[1])))
+
+        if time_as_str:
+            ticks_as_time = Time(ax.get_xticks(), format='mjd')
+            ax.set_xticks(
+                ticks_as_time.mjd,
+                ticks_as_time.strftime('%m-%d-%Y'),
+                **xlab_kwags,
+            )
+
         return ax
 
     def plot_wise_mag_hist(self, ax: Optional[Axes] = None, color_err_thresh: float = 0.5, **kwargs) -> Axes:
@@ -1388,6 +1433,10 @@ class Source():
         """
         if ax is None:
             _, ax = plt.subplots()
+
+        # Label the axes up front so they're present even if there's no data to plot below.
+        ax.set_xlabel(r'\textbf{W1 - W2}', labelpad=2)
+        ax.set_ylabel(r'\textbf{Number}', labelpad=2)
 
         # Annotate if no data
         if 'w1_magerr' not in self.light_curve.lc.columns or 'w2_magerr' not in self.light_curve.lc.columns:
@@ -1425,8 +1474,6 @@ class Source():
         ax.axvline(median_dmag, label=f'Median ({median_dmag:.2f})', color='green', linestyle='--')
 
         # Format
-        ax.set_xlabel('W1 - W2')
-        ax.set_ylabel('Number')
         ax.legend()
 
         return ax
@@ -1437,8 +1484,8 @@ class Source():
             _, ax = plt.subplots(figsize=(12, 5))
 
         # Label axes
-        ax.set_xlabel(r'Wavelength [$\rm{\AA}$]')
-        ax.set_ylabel(r'$F_\lambda \ [10^{-17} \ \rm{erg} \ \rm{cm}^{-2} \ \rm{s}^{-1} \ \rm{\AA}^{-1}]$')
+        ax.set_xlabel(r'\textbf{Wavelength [\AA]}', labelpad=2)
+        ax.set_ylabel(r'\boldmath$F_\lambda \ [10^{-17} \ \rm{erg} \ \rm{cm}^{-2} \ \rm{s}^{-1} \ \rm{\AA}^{-1}]$')
 
         has_sdss = self.spectrum is not None
         has_desi = self.desi_spectrum is not None
@@ -1474,18 +1521,20 @@ class Source():
 
         return ax
 
-    def get_TNS_info(self, tns_df: Optional[pd.DataFrame] = None, tns_coords: Optional[SkyCoord] = None) -> bool:
-        # Load TNS if it is not given
-        if tns_df is None:
-            tns_df = pd.read_csv(os.path.join(get_data_path(), 'tns_public_objects.csv'))
-        if tns_coords is None:
-            tns_coords = SkyCoord(tns_df['ra'], tns_df['declination'], unit='deg')
+    def get_TNS_info(self) -> Optional[pd.DataFrame]:
+        """Closest TNS object within max_arcsec as a one-row frame, or None.
 
-        # Get info from TNS
-        idx, sep2d, _ = match_coordinates_sky(self.coord, tns_coords)
-        if sep2d.arcsec > self.max_arcsec:
-            return None
-        return tns_df.iloc[[idx]]
+        Columns keep TNS's own names (`name`, `type`, ...) rather than the
+        prefixed forms `catalogs.tns` returns, since callers here predate it.
+        """
+        if self._has_tns_match and self._tns_match is None:
+            match = tns_catalog.cone_search(self.ra, self.dec, radius_arcsec=self.max_arcsec)
+            if match.empty:
+                self._has_tns_match = False
+            else:
+                self._tns_match = match.head(1).rename(columns=tns_catalog.NATIVE_NAMES)
+
+        return self._tns_match
 
     def get_filtered_out_info(
         self, filtering_dirpath: Optional[str] = None
@@ -1559,7 +1608,7 @@ class Source():
         if tns_info is None:
             info_string += '\nSource not in TNS.'
         else:
-            tns_info = self.get_TNS_info().iloc[0]
+            tns_info = tns_info.iloc[0]
             info_string += (
                 f'\nTNS Name: {tns_info["name_prefix"]} {tns_info["name"]}'
                 f'\nTNS Discovery date: {tns_info["discoverydate"]}'
@@ -1584,16 +1633,41 @@ class Source():
             # not a confirmed non-AGN determination.
             info_string += '\nSource not in AGN-DB.'
         else:
-            agn_class = json.loads(self.agn_match['best_class_all'])[0]
-            sub_class_all = self.agn_match['best_class_sub_all']
-            # best_class_sub_all can carry >1 entry (one per catalog agreeing on the
-            # winning tier) and blank strings for catalogs with no sub-type detail.
-            sub_classes = [s for s in json.loads(sub_class_all)] if pd.notna(sub_class_all) else []
-            sub_classes = list(dict.fromkeys(s for s in sub_classes if s))  # dedupe, drop blanks, keep order
-            show_sub = sub_classes and agn_class != 'unknown'
-            info_string += f'\nAGN-DB Class: {agn_class}' + (f' ({"/".join(sub_classes)})' if show_sub else '')
+            # best_class_all is a JSON array of one entry per contributing catalog at the
+            # winning tier (spec > SED > xray > image > gen) -- these can genuinely disagree
+            # (e.g. one catalog says type1, another says type2), so show all of them keyed
+            # by catalog name (via best_class_origin) rather than silently picking index 0.
+            classes = json.loads(self.agn_match['best_class_all'])
+            origins = json.loads(self.agn_match['best_class_origin'])
+            class_by_catalog = {}
+            for origin_id, cls in zip(origins, classes):
+                catalog_name = CATALOG_ID_TO_NAME.get(str(origin_id), f'cat{origin_id}')
+                class_by_catalog[catalog_name] = cls
+            agn_class_str = ', '.join(
+                f'{latex_escape(name)}: {latex_escape(cls)}' for name, cls in class_by_catalog.items()
+            )
+            info_string += '\nAGN-DB Class: \\{' + agn_class_str + '\\}'
             if pd.notna(self.agn_match['best_Z_merged']):
                 info_string += f'\nAGN-DB Redshift: {self.agn_match["best_Z_merged"]:.4f}'
+        if self.simbad_match is None:
+            info_string += '\nSource not in SIMBAD.'
+        else:
+            simbad_info = self.simbad_match
+            # main_id routinely contains '_' and '&' (e.g. survey designations), which
+            # LaTeX would otherwise read as a subscript and an alignment tab.
+            info_string += f'\nSIMBAD Name: {latex_escape(str(simbad_info["simbad_main_id"]))}'
+            # otype_label already spells out candidacy ('Active Galaxy Nucleus
+            # Candidate'), so the terse code is shown alongside only for reference.
+            if pd.notna(simbad_info['simbad_otype']):
+                otype = str(simbad_info['simbad_otype'])
+                label = (str(simbad_info['simbad_otype_label'])
+                         if pd.notna(simbad_info['simbad_otype_label']) else otype)
+                info_string += (f'\nSIMBAD Type: {latex_escape(label)} '
+                                f'({latex_escape(otype)})')
+            if pd.notna(simbad_info['simbad_z']):
+                info_string += f'\nSIMBAD Redshift: {simbad_info["simbad_z"]:.4f}'
+            if pd.notna(simbad_info['simbad_nbref']):
+                info_string += f'\nSIMBAD References: {int(simbad_info["simbad_nbref"])}'
         if 'w1_magerr' in self.light_curve.lc.columns and 'w2_magerr' in self.light_curve.lc.columns:
             w1_err = self.light_curve.lc['w1_magerr'].filled(fill_value=np.nan)
             w2_err = self.light_curve.lc['w2_magerr'].filled(fill_value=np.nan)
@@ -1622,40 +1696,58 @@ class Source():
             cellText=cell_text,
             colLabels=[''] + catalog_names,
             colWidths=col_widths,
-            loc='center',
+            # Explicit bbox at the table's own natural height (measured empirically for
+            # this content: loc='upper center' renders it at y=[0.74, 0.98]), just shifted
+            # down -- bbox stretches a table to fill whatever height it's given, so it must
+            # match the natural height, not some arbitrary fraction, or the table balloons.
+            bbox=[0.0, 0.55, 1.0, 0.24],
             cellLoc='center',
         )
         tbl.auto_set_font_size(False)
         tbl.set_fontsize(8)
-        ax.set_title('Filtering', fontsize=9)
+        # ax.set_title() sat inconsistently relative to the table above; use ax.text (same
+        # approach as the "Source Information:" panel) for a title anchored directly to a
+        # known axes-fraction position instead.
+        ax.text(0.5, 0.80, r'\textbf{Filtering}', ha='center', va='bottom', fontsize='large')
         ax.axis('off')
 
     def plot_everything(self) -> Axes:
         """Function that plots everything on one page!"""
-        # Set up the layout
+        # Set up the layout. Left half (cols 0-2): cutouts + main light curve, stacked as
+        # before. Right half (cols 3-5): what used to be the next three full-width rows
+        # (spectrum, WISE lc + WISE color, info text + filtering table), folded sideways
+        # into the same 3 rows instead of stacking further down the page.
         set_mpl_params()
-        fig = plt.figure(figsize=(12, 18))
-        ax0 = plt.subplot2grid((5, 3), (0, 0))
-        ax1 = plt.subplot2grid((5, 3), (0, 1))
-        ax2 = plt.subplot2grid((5, 3), (0, 2))
-        ax3 = plt.subplot2grid((5, 3), (1, 0))
-        ax4 = plt.subplot2grid((5, 3), (1, 1))
-        ax5 = plt.subplot2grid((5, 3), (1, 2))
-        lc_ax = plt.subplot2grid((5, 3), (2, 0), colspan=3)
-        spec_ax = plt.subplot2grid((5, 3), (3, 0), colspan=2)
-        filter_table_ax = plt.subplot2grid((5, 3), (3, 2))
-        wise_ax = plt.subplot2grid((5, 3), (4, 2))
+        # 26 columns: the left block (cutouts + main lc) is 12 columns, then a 1-column
+        # gutter, then a 13-column right block. Within the right block, the spectrum spans
+        # the full 13 columns, while the row below (WISE lc + WISE color) and the row below
+        # that (info text + filter table) each reserve their own 1-column gutter between
+        # their two sub-panels, so none of their y-axis labels crowd their neighbor.
+        fig = plt.figure(figsize=(26, 10.8))
+        ax0 = plt.subplot2grid((3, 26), (0, 0), colspan=4)
+        ax1 = plt.subplot2grid((3, 26), (0, 4), colspan=4)
+        ax2 = plt.subplot2grid((3, 26), (0, 8), colspan=4)
+        ax3 = plt.subplot2grid((3, 26), (1, 0), colspan=4)
+        ax4 = plt.subplot2grid((3, 26), (1, 4), colspan=4)
+        ax5 = plt.subplot2grid((3, 26), (1, 8), colspan=4)
+        lc_ax = plt.subplot2grid((3, 26), (2, 0), colspan=12)
+        # column 12 intentionally left empty as the left/right block gutter
+        spec_ax = plt.subplot2grid((3, 26), (0, 13), colspan=13)
+        wise_lc_ax = plt.subplot2grid((3, 26), (1, 13), colspan=8)
+        # column 21 intentionally left empty as the WISE lc / WISE color gutter
+        wise_hist_ax = plt.subplot2grid((3, 26), (1, 22), colspan=4)
+        text_ax = plt.subplot2grid((3, 26), (2, 13), colspan=5)
+        # column 18 intentionally left empty as the text / filter-table gutter
+        filter_table_ax = plt.subplot2grid((3, 26), (2, 19), colspan=7)
         cutout_axes = np.array([[ax0, ax1, ax2], [ax3, ax4, ax5]])
-        axes = np.array([cutout_axes, lc_ax, spec_ax, wise_ax], dtype=object)
-
-        # Axis for text info
-        text_ax = plt.subplot2grid((5, 3), (4, 0), colspan=2)
+        axes = np.array([cutout_axes, lc_ax, spec_ax, wise_lc_ax, wise_hist_ax], dtype=object)
 
         # Plot
         self.plot_all_cutouts(axes=cutout_axes)
         self.plot_lc(ax=lc_ax, fig=fig, xlab_kwags={})
         self.plot_spectrum(ax=spec_ax)
-        self.plot_wise_mag_hist(ax=wise_ax)
+        self.plot_wise_lc(ax=wise_lc_ax, fig=fig, xlab_kwags={})
+        self.plot_wise_mag_hist(ax=wise_hist_ax)
         self.plot_filtered_out_table(ax=filter_table_ax)
 
         # Annotate text info at the bottom
@@ -1793,18 +1885,22 @@ class Sources:
                 return Table(data={k: [] for k in MANDATORY_SOURCE_COLUMNS}, masked=False)
 
             # Pre-compute closest catalog index per band for all sources at once (one KD-tree
-            # query per band instead of one O(K) linear scan per source per band)
-            source_coords = self.coords
-            ref = self.sources[0]
-            for band, cat in ref.field_catalogs.items():
-                cat_coords = SkyCoord(ra=cat['ra'], dec=cat['dec'], unit='deg')
-                idx, sep2d, _ = match_coordinates_sky(source_coords, cat_coords)
-                for i, src in enumerate(self.sources):
-                    if src._precomputed_cat_indices is None:
-                        src._precomputed_cat_indices = {}
-                    src._precomputed_cat_indices[band] = (
-                        idx[i] if sep2d[i].arcsecond <= src.max_arcsec else None
-                    )
+            # query per band instead of one O(K) linear scan per source per band). Only the
+            # sources that still have to build their row need this, and reaching for
+            # field_catalogs loads a per-band HDF5 catalog off disk -- so skip it entirely
+            # when every source already carries its data (e.g. loaded via from_file).
+            if any(src._data is None for src in self.sources):
+                source_coords = self.coords
+                ref = self.sources[0]
+                for band, cat in ref.field_catalogs.items():
+                    cat_coords = SkyCoord(ra=cat['ra'], dec=cat['dec'], unit='deg')
+                    idx, sep2d, _ = match_coordinates_sky(source_coords, cat_coords)
+                    for i, src in enumerate(self.sources):
+                        if src._precomputed_cat_indices is None:
+                            src._precomputed_cat_indices = {}
+                        src._precomputed_cat_indices[band] = (
+                            idx[i] if sep2d[i].arcsecond <= src.max_arcsec else None
+                        )
 
             self._data = vstack([src.data for src in self.sources])
             self._data = Table(self._data, masked=False)
@@ -1871,11 +1967,17 @@ class Sources:
 
 
     def inTNS(self):
-        # Load TNS if it is not given
-        tns_df = pd.read_csv(os.path.join(get_data_path(), 'tns_public_objects.csv'))
-        tns_coords = SkyCoord(tns_df['ra'], tns_df['declination'], unit='deg')
+        """Boolean array: does each source have a TNS object within its match radius?"""
+        if len(self.sources) == 0:
+            return np.array([], dtype=bool)
 
-        return np.array(
-            [src.get_TNS_info(tns_df=tns_df, tns_coords=tns_coords) is not None for src in self.sources],
-            dtype=bool,
+        # One vectorised query at the widest radius any source uses, then cut
+        # each source back to its own -- they can differ per source.
+        per_source = np.array([src.max_arcsec for src in self.sources], dtype=float)
+        matches = tns_catalog.cone_search_many(
+            [src.ra for src in self.sources],
+            [src.dec for src in self.sources],
+            radius_arcsec=float(per_source.max()),
         )
+        sep = matches['tns_sep_arcsec'].to_numpy(dtype=float)
+        return np.isfinite(sep) & (sep <= per_source)
