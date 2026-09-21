@@ -1081,12 +1081,12 @@ class Filters():
                 row = gaia_table[idx[i]]
                 pm, pmra_e, pmdec_e = row['pm'], row['pmra_error'], row['pmdec_error']
                 if np.ma.is_masked(pm) or np.ma.is_masked(pmra_e) or np.ma.is_masked(pmdec_e):
-                    # No 5/6p solution -> fell back to a 2p (position-only) fit,
-                    # which disproportionately happens for fast movers whose
-                    # transits don't cross-match cleanly (Lindegren et al. 2021,
-                    # Sect. 4.4, arXiv:2012.03380). Treat as a likely mover.
-                    if row['astrometric_params_solved'] != 31:
-                        mask[i] = False
+                    # 2p (position-only) solutions have no pm published at all, so there is
+                    # nothing to threshold. 2p is a data-quality fallback, not a kinematic
+                    # one -- Lindegren et al. 2021 Eq. 21 keys on G, N_vpu and sigma5d_max,
+                    # with no pm term. Missing pm is no evidence of motion, so keep, as
+                    # parallax_filter already does for the NULL parallax on these sources.
+                    continue
                 elif pm / (pmra_e + pmdec_e) >= 5.0:
                     mask[i] = False
         else:
@@ -1594,6 +1594,24 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         print(f'Field {field_name} already exists. Use `overwrite=True` to overwrite it.')
         return
 
+    # Claim the field before doing any work. An exists() check alone is not enough when two
+    # jobs share an output directory: loading the tables below takes minutes, so both would
+    # pass the check above before either created the directory and would then write over
+    # each other. os.makedirs without exist_ok is atomic, so exactly one job wins the race.
+    # NOTE: a field that crashes mid-run leaves its directory behind and will be skipped on
+    # a later pass -- delete the directory to retry it.
+    if overwrite and os.path.exists(filter_result_dirpath):
+        print(f'Overwriting {filter_result_dirpath}/')
+        shutil.rmtree(filter_result_dirpath)
+    elif os.path.exists(filter_result_dirpath):
+        print(f'Field {field_name} already exists; skipping.')
+        return
+    try:
+        os.makedirs(filter_result_dirpath)
+    except FileExistsError:  # lost the race between the check above and here
+        print(f'Field {field_name} was claimed by another job; skipping.')
+        return
+
     # Load in the tables
     print('Loading tables...')
     tables = {}
@@ -1633,11 +1651,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     field_gaia_table = query_gaia_for_field(field_name, all_ras, all_decs)
     print(f'Gaia query returned {len(field_gaia_table)} sources for field {field_name}.')
 
-    # Delete and recreate field filter directory
-    if os.path.exists(filter_result_dirpath):
-        print(f'Overwriting {filter_result_dirpath}/')
-        shutil.rmtree(filter_result_dirpath)
-    os.makedirs(filter_result_dirpath, exist_ok=True)
+    # Output directory was already created (and claimed) at the top of this function.
 
 
     ################################################################################
@@ -1982,14 +1996,19 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 
 def _filter_field_wrapper(field):
     print(f'Filtering field {field}...')
+    # overwrite=False so a field whose output dir already exists is skipped rather than
+    # rmtree'd. The check happens at field start, not from the list frozen at launch, so
+    # two jobs working the list from opposite ends keep skipping each other's finished
+    # fields instead of redoing them.
     filter_field(
         field,
-        overwrite=True,
+        overwrite=False,
         store_pre_gaia=False,
     )
 
-def filter_fields():
-    """Filter fields!"""
+def filter_fields(descending: bool = False):
+    """Filter fields! Pass descending=True to work the list from the far end, so a second
+    job can be run alongside an ascending one and meet it in the middle."""
     # Fields imaged in all three bands — intersect the per-band npy lists so that
     # we only run on gri fields and avoid KeyErrors in the i-band envelope lookup.
     data_path = get_data_path()
@@ -2000,6 +2019,10 @@ def filter_fields():
     fields = [str(f).zfill(6) for f in sorted(gri_fields)]
 
     fields = [f for f in fields if not os.path.exists(os.path.join(data_path, FILTER_RESULT_DIR, f, '2_flowchart.pdf'))]
+    if descending:
+        fields = fields[::-1]
+    print(f'{len(fields)} fields to filter, {"descending" if descending else "ascending"} '
+          f'from {fields[0]} to {fields[-1]}' if fields else 'nothing to do', flush=True)
 
     with ProcessPoolExecutor(max_workers=2) as executor:
         futures = {executor.submit(_filter_field_wrapper, f): f for f in fields}
@@ -2016,4 +2039,4 @@ def filter_fields():
 
 
 if __name__ == '__main__':
-    filter_fields()
+    filter_fields(descending='--descending' in sys.argv)

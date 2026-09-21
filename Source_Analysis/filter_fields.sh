@@ -23,4 +23,6 @@ module load python/3.12.5-fasrc01
 source activate long_transients2
 
 cd /n/home04/aboesky/berger/long_transients
-python3 -u -m Source_Analysis.filter_fields
+# Args are forwarded, so `sbatch Source_Analysis/filter_fields.sh --descending` runs a
+# second job from the far end of the field list to meet an ascending one in the middle.
+python3 -u -m Source_Analysis.filter_fields "$@"
