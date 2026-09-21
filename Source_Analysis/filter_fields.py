@@ -1081,12 +1081,12 @@ class Filters():
                 row = gaia_table[idx[i]]
                 pm, pmra_e, pmdec_e = row['pm'], row['pmra_error'], row['pmdec_error']
                 if np.ma.is_masked(pm) or np.ma.is_masked(pmra_e) or np.ma.is_masked(pmdec_e):
-                    # No 5/6p solution -> fell back to a 2p (position-only) fit,
-                    # which disproportionately happens for fast movers whose
-                    # transits don't cross-match cleanly (Lindegren et al. 2021,
-                    # Sect. 4.4, arXiv:2012.03380). Treat as a likely mover.
-                    if row['astrometric_params_solved'] != 31:
-                        mask[i] = False
+                    # 2p (position-only) solutions have no pm published at all, so there is
+                    # nothing to threshold. 2p is a data-quality fallback, not a kinematic
+                    # one -- Lindegren et al. 2021 Eq. 21 keys on G, N_vpu and sigma5d_max,
+                    # with no pm term. Missing pm is no evidence of motion, so keep, as
+                    # parallax_filter already does for the NULL parallax on these sources.
+                    continue
                 elif pm / (pmra_e + pmdec_e) >= 5.0:
                     mask[i] = False
         else:
