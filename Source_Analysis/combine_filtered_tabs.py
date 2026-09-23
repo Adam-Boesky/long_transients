@@ -31,7 +31,10 @@ def _field_reasons(field_name: str, run_dirname: str, max_arcsec: float):
     out = {}
     for cat in (0, 1):   # TODO: add 2 back with pstarr extraction
         path = os.path.join(base, f'{cat}.ecsv')
-        if not os.path.exists(path):
+        # `load_ecsv` silently prefers a .hdf5 sibling, and the cluster runs
+        # write only .hdf5 -- so existence must be checked on both, or every
+        # field is skipped and the columns come back empty.
+        if not os.path.exists(path) and not os.path.exists(path[:-5] + '.hdf5'):
             continue
         tab = load_ecsv(path)
         if len(tab) == 0:
@@ -43,7 +46,8 @@ def _field_reasons(field_name: str, run_dirname: str, max_arcsec: float):
 
 def combine_filtered_tabs(add_filtered_out: bool = False,
                           processes: int = 1,
-                          max_arcsec: float = filtered_out_summary.DEFAULT_MATCH_ARCSEC):
+                          max_arcsec: float = filtered_out_summary.DEFAULT_MATCH_ARCSEC,
+                          out_subdir: str = 'combined'):
     """Combine the per-field outputs into `combined/`.
 
     With `add_filtered_out`, also reduce the per-field reject tables to nine
@@ -148,23 +152,24 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
         else:
             tabs_wide[cat] = Table()
 
-    # Save everything to a new directory
-    if not os.path.exists(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, 'combined')):
-        os.makedirs(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, 'combined'))
+    # Save everything to a new directory. `out_subdir` lets a validation run
+    # write alongside an existing `combined/` instead of overwriting it.
+    if not os.path.exists(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir)):
+        os.makedirs(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir))
     for cat in (0, 1, 2):
-        stat_dfs[cat].to_csv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, 'combined', f'{cat}_filter_stats.csv'))
+        stat_dfs[cat].to_csv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}_filter_stats.csv'))
         if cat != 2:  # TODO: temporary for bad pstarr extraction
-            tabs[cat].write(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, 'combined', f'{cat}.ecsv'), overwrite=True)
+            tabs[cat].write(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}.ecsv'), overwrite=True)
 
     for cat in (1, 2):
         if cat != 2:  # TODO: temporary for bad pstarr extraction
-            tabs_wide[cat].write(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, 'combined', f'{cat}_wide_association.ecsv'), overwrite=True)
+            tabs_wide[cat].write(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}_wide_association.ecsv'), overwrite=True)
 
     for cat in (0, 1, 2):
         # get_data_path() rather than a hardcoded local path: this script runs
         # on the cluster, where that directory does not exist.
         create_filter_flowchart(stat_dfs[cat]).save(
-            os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, 'combined',
+            os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir,
                          f'{cat}_flowchart.pdf'))
 
 
@@ -177,12 +182,16 @@ def main():
     ap.add_argument('--processes', type=int, default=1,
                     help='parallelism for the filtered-out pass; the field '
                          'loop is independent so this scales nearly linearly')
+    ap.add_argument('--out-subdir', default='combined',
+                    help="output directory under the run (default 'combined'); "
+                         'set it to write a validation run alongside the real one')
     ap.add_argument('--max-arcsec', type=float,
                     default=filtered_out_summary.DEFAULT_MATCH_ARCSEC,
                     help='match radius, matching Source.max_arcsec')
     a = ap.parse_args()
     combine_filtered_tabs(add_filtered_out=a.filtered_out,
-                          processes=a.processes, max_arcsec=a.max_arcsec)
+                          processes=a.processes, max_arcsec=a.max_arcsec,
+                          out_subdir=a.out_subdir)
 
 
 if __name__ == '__main__':
