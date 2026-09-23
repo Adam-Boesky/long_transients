@@ -29,8 +29,12 @@ def _field_reasons(field_name: str, run_dirname: str, max_arcsec: float):
     """
     base = os.path.join(get_data_path(), run_dirname, field_name)
     out = {}
-    for cat in (0, 1):   # TODO: add 2 back with pstarr extraction
-        path = os.path.join(base, f'{cat}.ecsv')
+    # Both the ordinary survivors and the wide-association ones: they end up
+    # in the same database table, so they must carry the same columns.
+    targets = [(cat, f'{cat}.ecsv') for cat in (0, 1)]
+    targets += [(f'wide{cat}', f'{cat}_wide_association.ecsv') for cat in (1,)]
+    for key, fname in targets:
+        path = os.path.join(base, fname)
         # `load_ecsv` silently prefers a .hdf5 sibling, and the cluster runs
         # write only .hdf5 -- so existence must be checked on both, or every
         # field is skipped and the columns come back empty.
@@ -39,7 +43,7 @@ def _field_reasons(field_name: str, run_dirname: str, max_arcsec: float):
         tab = load_ecsv(path)
         if len(tab) == 0:
             continue
-        out[cat] = filtered_out_summary.reasons_for(
+        out[key] = filtered_out_summary.reasons_for(
             tab['ra'], tab['dec'], base, max_arcsec)
     return field_name, out
 
@@ -64,6 +68,7 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
     # Which field each entry of tabs[cat] came from, so the filtered-out
     # columns are attached by name rather than by relying on list order.
     tab_fields = {0: [], 1: [], 2: []}
+    tab_wide_fields = {1: [], 2: []}
 
     # Combine everything
     fnames = os.listdir(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME))
@@ -91,6 +96,7 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
             # Load the tabs_wide
             if cat != 2:  # TODO: temporary for bad pstarr extraction
                 tabs_wide[cat].append(load_ecsv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, field_name, f'{cat}_wide_association.ecsv')))
+                tab_wide_fields[cat].append(field_name)
 
     # Filter reasons, computed per field while the reject tables are still
     # next to the survivors. Attached before the vstack so the columns simply
@@ -109,15 +115,20 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
             results = [worker(f) for f in field_names]
         by_field = dict(results)
 
-        for cat in (0, 1):
-            assert len(tab_fields[cat]) == len(tabs[cat])
-            for field_name, tab in zip(tab_fields[cat], tabs[cat]):
-                cols = by_field.get(field_name, {}).get(cat)
+        def _attach(field_list, tab_list, key):
+            assert len(field_list) == len(tab_list)
+            for field_name, tab in zip(field_list, tab_list):
+                cols = by_field.get(field_name, {}).get(key)
                 if cols is None:
                     cols = {c: np.full(len(tab), filtered_out_summary.NO_TABLE)
                             for c in filtered_out_summary.ALL_COLUMNS}
                 for name, values in cols.items():
                     tab[name] = np.asarray(values, dtype=str)
+
+        for cat in (0, 1):
+            _attach(tab_fields[cat], tabs[cat], cat)
+        for cat in (1,):
+            _attach(tab_wide_fields[cat], tabs_wide[cat], f'wide{cat}')
 
     # Drop length 0 tabs
     for cat in (0, 1, 2):
