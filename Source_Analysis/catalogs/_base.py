@@ -90,6 +90,48 @@ def text_column_names(table: Table) -> list[str]:
     return [c for c in table.colnames if table[c].dtype.kind in ('U', 'S')]
 
 
+def to_pandas_array(col) -> pd.Series:
+    """Convert one astropy column to a nullable pandas array.
+
+    The inverse of `to_astropy_table`, and subject to the same hazard from the
+    other direction: `Table.to_pandas()` routes a *masked* integer column
+    through float64 before producing nullable Int64, which silently rounds
+    anything above 2**53 -- 98.9% of DESI TARGETIDs, by a few counts each. So
+    the mask is applied by hand here rather than relying on `to_pandas`, and
+    integers go straight from the int64 buffer to pandas `Int64`.
+
+    This matters for anything reading the enriched tables back into pandas;
+    `scripts/build_classify_manifest.py` and `source_db/catalog_tier.py`
+    both do, and both must use this rather than `Table.to_pandas()`.
+    """
+    mask = getattr(col, 'mask', None)
+    mask = None if mask is None or np.ndim(mask) == 0 else np.asarray(mask, dtype=bool)
+    values = np.ma.getdata(col.data) if mask is not None else np.asarray(col)
+    if values.ndim != 1:
+        raise ValueError(f'column {getattr(col.info, "name", "?")!r} is {values.ndim}-dimensional')
+
+    kind = values.dtype.kind
+    if kind == 'b':
+        out = pd.Series(pd.array(values.astype(bool), dtype='boolean'))
+    elif kind in 'iu':
+        out = pd.Series(pd.array(values.astype('int64'), dtype='Int64'))
+    elif kind in 'fc':
+        # Plain float64/NaN, not nullable Float64: floats already arrive as NaN
+        # from the enrichment step, and NaN compares and filters predictably.
+        out = pd.Series(values.astype('float64'))
+    else:
+        # 'S' columns (e.g. filter_info) decode to str; everything else stringifies.
+        out = pd.Series(pd.array(
+            [None if v is None else (v.decode() if isinstance(v, bytes) else str(v))
+             for v in values], dtype='string'))
+
+    if mask is not None and mask.any():
+        # `None` blanks correctly in every dtype above: NaN for float64, pd.NA
+        # for the nullable extension dtypes.
+        out[mask] = None
+    return out
+
+
 class LocalCatalog:
     """A slim parquet catalog with cached coordinates for cone searching.
 
