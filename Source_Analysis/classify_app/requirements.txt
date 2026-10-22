@@ -1,0 +1,13 @@
+# Pinned for reproducible deploys. The app deliberately does NOT depend on
+# astropy or the rest of the repo: everything it needs is precomputed into
+# manifest.parquet by scripts/build_classify_manifest.py.
+streamlit==1.59.2
+pandas==2.2.3
+pyarrow==21.0.0
+pymupdf==1.28.0
+
+# Local development only. Gives Streamlit native filesystem events instead of
+# polling, which is what makes `runOnSave` (see .streamlit/config.toml) pick up
+# edited modules -- including the CCv2 components in lib/components.py -- and
+# push them to the open browser. Harmless in a deploy, where code never changes.
+watchdog==6.0.0

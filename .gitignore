@@ -142,6 +142,7 @@ cython_debug/
 Data/
 *.fits
 *.txt
+!requirements.txt
 training_logs/
 extraction_logs/
 test.py
