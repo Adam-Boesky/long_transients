@@ -36,6 +36,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
 
 BANDS = ['g', 'r', 'i']
+SIGMA_CAP = 8.0  # |Δmag sigma| beyond what the envelope grid resolves is reported as the cap, with a flag
 CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Coverage'}
 GAIA_OBS_EPOCH = 2021.0  # representative epoch of ZTF detections, used to propagate Gaia positions forward from ref_epoch (J2016.0) before crossmatching
 EXTRACTED_CATALOG_DIR = 'catalog_results/field_results' # 'debugging'
@@ -383,6 +384,53 @@ class Envelope_KDE:
         ])
 
         return results[0] if scalar else results
+
+    def sigma(self, mag: np.ndarray, dmag: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Signed sigma of each (mag, Δmag): Φ^-1 of the Δmag CDF at mag, bilinear on the grid; NaN where undefined.
+
+        Returns (sigma, capped). Negative = brighter in ZTF than PS1. |sigma| beyond what the grid resolves is
+        reported as ±SIGMA_CAP with capped=True.
+        """
+        mag, dmag = np.asarray(mag, float), np.asarray(dmag, float)
+        ys = np.nan_to_num(self.kde_ys, nan=0.0)
+        tot = ys.sum(axis=1, keepdims=True)
+        cdf = np.divide(np.cumsum(ys, axis=1), tot, out=np.full_like(ys, np.nan), where=tot > 0)
+        mg, dg = self.mag_grid, self.dmag_grid
+        fi = np.clip((mag - mg[0]) / (mg[1] - mg[0]), 0, len(mg) - 1 - 1e-9)
+        fj = np.clip((dmag - dg[0]) / (dg[1] - dg[0]), 0, len(dg) - 1 - 1e-9)
+        bad = ~np.isfinite(mag) | ~np.isfinite(dmag)
+        fi, fj = np.nan_to_num(fi), np.nan_to_num(fj)
+        i0, j0 = fi.astype(int), fj.astype(int)
+        w, u = fi - i0, fj - j0
+        c = ((1 - w) * ((1 - u) * cdf[i0, j0] + u * cdf[i0, j0 + 1]) +
+             w * ((1 - u) * cdf[i0 + 1, j0] + u * cdf[i0 + 1, j0 + 1]))
+        p_cap = norm.cdf(-SIGMA_CAP)
+        capped = ((c < p_cap) | (c > 1 - p_cap) | (dmag < dg[0]) | (dmag > dg[-1])) & ~bad & np.isfinite(c)
+        z = norm.ppf(np.clip(c, p_cap, 1 - p_cap))
+        z[bad | ~np.isfinite(c)] = np.nan
+        return z, capped
+
+
+def annotate_dmag_sigma(tabs: Dict[str, Table], envelopes: Dict[str, 'Envelope_KDE']) -> Dict[str, Table]:
+    """Write {band}_dmag, {band}_dmag_sigma and {band}_dmag_sigma_capped onto each band's table, in place.
+
+    One-sided rows use the other catalogue's limit (flag 1: PS1 upper limit; flag 2: ZTF limiting mag). sigma is NaN
+    where Δmag can't be evaluated from the row itself (no PS1 mag, PS1 mag <= 14, or no envelope for the band).
+    """
+    for band, tab in tabs.items():
+        if band not in envelopes or len(tab) == 0:
+            continue
+        flag_col = f'{band}_Catalog_Flag' if f'{band}_Catalog_Flag' in tab.colnames else 'Catalog_Flag'
+        flag = np.asarray(tab[flag_col], float)
+        pstarr = np.where(flag == 1, PSTARR_UPPER_LIM[band], np.asarray(tab[f'PSTARR_{band}PSFMag'], float))
+        ztf = np.where(flag == 2, np.asarray(tab[f'ZTF_{band}_mag_limit'], float), np.asarray(tab[f'ZTF_{band}PSFMag'], float))
+        dmag = ztf - pstarr
+        z, capped = envelopes[band].sigma((pstarr + ztf) / 2, dmag)
+        z[(pstarr <= 14.0) | (pstarr == -999) | ~np.isfinite(pstarr)] = np.nan
+        tab[f'{band}_dmag'] = dmag
+        tab[f'{band}_dmag_sigma'] = z
+        tab[f'{band}_dmag_sigma_capped'] = capped & np.isfinite(z)
+    return tabs
 
 
 def build_kde_envelopes(
@@ -889,39 +937,20 @@ class Filters():
             *args,
             **kwargs,
         ) -> Tuple[Table, Table, Dict[str, Envelope_KDE]]:
-        """Keep sources whose Δmag lies outside the KDE sigma envelope."""
+        """Keep detections whose Δmag is more than sigma_boundary from the field's envelope (|Δmag sigma| > sigma_boundary).
+
+        Annotates each table with {band}_dmag / _dmag_sigma / _dmag_sigma_capped first (plan_filter_review.md #14).
+        """
         if len(tabs) == 0:
             return {}, {}, {}
 
+        annotate_dmag_sigma(tabs, envelopes)
         good_tabs = {}
         bad_tabs = {}
-        percentiles = [norm.cdf(-sigma_boundary), norm.cdf(sigma_boundary)]
-        min_mag = 14.0  # matches the KDE grid start
-
-        for band in tabs.keys():
-            tab = tabs[band]
-
-            # Resolve catalog-flag-aware mag columns
-            if f'{band}_Catalog_Flag' in tab.colnames:
-                pstarr_mags = np.where(tab[f'{band}_Catalog_Flag'] == 1, PSTARR_UPPER_LIM[band], tab[f'PSTARR_{band}PSFMag'])
-                ztf_mags = np.where(tab[f'{band}_Catalog_Flag'] == 2, tab[f'ZTF_{band}_mag_limit'], tab[f'ZTF_{band}PSFMag'])
-            else:
-                pstarr_mags = np.where(tab['Catalog_Flag'] == 1, PSTARR_UPPER_LIM[band], tab[f'PSTARR_{band}PSFMag'])
-                ztf_mags = np.where(tab['Catalog_Flag'] == 2, tab[f'ZTF_{band}_mag_limit'], tab[f'ZTF_{band}PSFMag'])
-
-            upper_lims = pstarr_mags == -999
-
-            mag = np.mean([pstarr_mags, ztf_mags], axis=0)
-            dmag = ztf_mags - pstarr_mags
-
-            # Evaluate per-source KDE percentile bounds
-            vals = envelopes[band].get_percentile(mag, percentiles)
-            outside_mask = (dmag < vals[0]) | (dmag > vals[1])
-
-            # Only consider sources with valid mags above the KDE grid floor
-            outside_mask &= pstarr_mags > min_mag
-            outside_mask &= ~upper_lims
-
+        for band, tab in tabs.items():
+            col = f'{band}_dmag_sigma'
+            z = np.asarray(tab[col], float) if col in tab.colnames else np.full(len(tab), np.nan)
+            outside_mask = np.abs(z) > sigma_boundary  # NaN (not evaluable) compares False
             good_tabs[band] = tab[outside_mask]
             bad_tabs[band] = tab[~outside_mask]
 
@@ -1030,29 +1059,23 @@ class Filters():
             *args,
             **kwargs,
         ) -> Tuple[Sources, Sources]:
-        """Keep sources with a significant delta mag in at least n bands.
-        Reuses only_big_dmag to evaluate per-band significance from source data."""
+        """Keep sources with |Δmag sigma| > sigma_boundary in at least n bands.
+
+        Reads each band's {band}_dmag_sigma, which comes from that band's own row (annotated on the all-quality
+        tables before the sources are built), so a band is never judged on values borrowed from another band's row.
+        """
         good_sources = {}
         bad_sources = {}
         for key in sources.keys():
             srcs = sources[key]
-
-            # Tag rows with their index so we can recover the per-band masks after filtering
-            data = srcs.data.copy()
-            data['_row_idx'] = np.arange(len(data))
-
-            # Run only_big_dmag on all bands using the same source data table
-            # (each band reads its own band-prefixed columns, e.g. ZTF_gPSFMag)
-            good_tabs, _, _ = self.only_big_dmag(
-                {band: data for band in BANDS if band in envelopes},  # g+r fields have no i envelope
-                sigma_boundary=sigma_boundary,
-                envelopes=envelopes,
-            )
+            data = srcs.data
 
             # Count how many bands each source has big dmag in
             n_big_dmag = np.zeros(len(data), dtype=int)
-            for gtab in good_tabs.values():
-                n_big_dmag[gtab['_row_idx']] += 1
+            for band in BANDS:
+                col = f'{band}_dmag_sigma'
+                if col in data.colnames:
+                    n_big_dmag += np.abs(np.asarray(data[col], float)) > sigma_boundary
 
             mask = n_big_dmag >= n
 
@@ -1689,6 +1712,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Build (or load cached) KDE envelopes from quality-filtered sources
     in_both_quality_tabs = {band: tab[tab['Catalog_Flag'] == 0] for band, tab in all_quality_source_tabs.items()}
     envelopes = load_or_build_kde_envelopes(field_name, in_both_quality_tabs)
+    annotate_dmag_sigma(all_quality_source_tabs, envelopes)  # candidate rows take each band's sigma from these (#14)
     del in_both_quality_tabs
     sigma_boundary = 3.0
 
