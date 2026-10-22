@@ -11,7 +11,7 @@ Issue numbers are the ones used during the review.
 
 | Step | Issue | Change | Where |
 |---|---|---|---|
-| 1 | #12 | Rebuild every quadrant's PS1 list over the union of the g/r/i footprints (code + validation done); re-run association + merge | `rebuild_ps1_catalogs.py`; `cross_match -aq -ow`, `-mf -ow` |
+| 1 | #12 | ✅ Rebuild every quadrant's PS1 list over the union of the g/r/i footprints; re-run association + merge (done, validated 10/22) | `rebuild_ps1_catalogs.py`; `cross_match -aq -ow`, `-mf -ow` |
 | 2 | #4 | Remove the wide-association evaluation; keep the 1–3″ diversion | `filter_fields.py` |
 | 3 | #5 | Support g+r-only fields | `filter_fields.py` |
 | 4 | #8 | SNR routing tie-break on PSF SNR | `filter_fields.py` (`snr_filter`) |
@@ -24,7 +24,7 @@ Issue numbers are the ones used during the review.
 
 ## Fixes
 
-### 12. [ ] PS1 query box covers only the first band's image
+### 12. [x] PS1 query box covers only the first band's image
 - **Problem:**
   - Each quadrant has one `PSTARR.hdf5`, queried from the corners of the first band's image (usually g; `Extracting/Tile.py:61`) and shared by r and i.
   - The g/r/i deep stacks are offset from each other. Where an r or i image reaches past the g box, its detections have no PS1 objects to match, so they are flagged ZTF-only (flag 1).
@@ -55,7 +55,19 @@ Issue numbers are the ones used during the review.
       - in r/i, 5–17 ZTF detections per band go 1 → 0 (false ZTF-only fixed) and 89–189 go 3 → 0 (strips more than 1′ from any PS1 object, previously excluded);
       - the field 683 and 466 test detections are now matched to the PS1 object found earlier;
       - the extra PS1 rows outside the images are flag 3, so they are ignored by filtering.
-  - To run: rebuild all quadrants, then association (`-aq -ow`) and merge (`-mf -ow`) for all 485 fields, with the old `field_results` moved aside.
+  - **Done (10/22):**
+    - PS1 rebuilt for all 30,659 quadrants (0 failures). Spot checks of 80 random quadrants: no objects lost, every box covers every band image, local-era photometry identical. CasJobs era: 1–7 objects per quadrant (~0.01%) take a different PS1 stack measurement near skycell boundaries.
+    - Re-associated and re-merged all 485 fields (`Extracting/cross_match_fields.sh`, 8 jobs, ~3.5 h); old merged tables are in `catalog_results/field_results_pre_ps1_rebuild/`.
+    - Validated against the old tables:
+      - identical ZTF detections (1.81B over g/r/i);
+      - flag changes ZTF-only → matched: 3.0k g / 30.9k r / 21.6k i;
+      - excluded strip (3) → matched: 3.9k / 76.6k / 65.5k;
+      - 3 → 1: 106 / 452 / 99, now near PS1 coverage but unmatched;
+      - 1 → 3: 31 in total;
+      - no matched detection lost its match;
+      - the field 683 test detections are now matched.
+    - Found and fixed a pre-existing merge bug (`d09db85`): a quadrant lacking one band was dropped for all later bands (5 i-only quadrant-bands in fields 623 and 624); both fields re-merged.
+    - Harmless: 1–3 PS1 rows per field at the RA=0 seam store RA as 360.0 or a tiny negative value (pre-existing; no ZTF detections).
 - **Follow-ups after the rebuild:**
   - One quadrant has a broken WCS (offset ~1.3 million ″ in the header scan).
   - 4 of the 21 ZTF-only candidates carrying a PS1 object lie inside their quadrant's PS1 box; recheck them.
@@ -172,3 +184,5 @@ Recorded for the paper.
 3. [ ] Delete the validation leftovers: the `PSTARR_rebuilt.hdf5` side copies in 000683_06_4, 000683_06_1, 000466_09_2, 000400_01_1, 000694_16_1, and the scratch folders `ps1_rebuild_test/`, `fill_fix_test/`, `gr_field_test/` and `wide_assoc_experiment/`.
 4. [ ] Cluster one-off scripts (untracked; also in `~/backup_cluster_tree_10_22/working_tree_before.tgz`): `Extracting/cross_match_stage2.sh`, `Notebooks/tune_kdes.sh`, `determinism_test.py/.sh`, `scripts/compare_quad_495.sh`, `scripts/filter_two_fields.py/.sh`, `scripts/prefetch_kde_one_field.sh`, `scripts/repair_000788_000859.py/.sh`, `scripts/submit_kde_array.sh`, `test_ztf_local_lc.py`, `validate_combined.py`.
 5. [ ] Cluster switch-over backup: `~/backup_cluster_tree_10_22/` and `git stash@{0}`. Drop after stage 3 validates. They hold the uncommitted KDE-prefetcher rewrite (`scripts/prefetch_kde_envelopes.py/.sh`).
+6. [ ] Old merged tables `catalog_results/field_results_pre_ps1_rebuild/` (after stage 3 validates), and the October 2025 `.ecsv` leftovers in `catalog_results/field_results/` (77 files; filtering reads only `.hdf5`).
+7. [ ] Cross-match scratch: `Extracting/cross_match_fields.sh` (commit if we keep it), `xmatch_lists/`.
