@@ -324,7 +324,10 @@ def merge_field(field_name: str, quad_dirs: List[str], field_subdir: str = 'fiel
         return
 
     print(f'Merging quadrant results for field {field_name}')
+    all_field_quad_dirs = field_quad_dirs
     for band in BANDS:
+        # Fresh copy per band: quadrants dropped below for lacking this band must stay available to the others
+        field_quad_dirs = list(all_field_quad_dirs)
 
         # Check if the merged file already exists
         if OVERWRITE is False:
