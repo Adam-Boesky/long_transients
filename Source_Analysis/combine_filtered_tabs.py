@@ -126,7 +126,7 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
     # Combine everything
     # Only field folders (e.g. 000400); leftover copies like combined_pre_filtered_out/ are skipped
     fnames = sorted(f for f in os.listdir(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME)) if f.isdigit())
-    for cat in (0, 1, 2):
+    for cat in (0, 1):  # PS1-only branch (2) disabled
         for field_name in fnames:
             # Load the stats
             stat_df = pd.read_csv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, field_name, f'{cat}_filter_stats.csv'))
@@ -179,13 +179,13 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
         #     _attach(tab_wide_fields[cat], tabs_wide[cat], f'wide{cat}')
 
     # Drop length 0 tabs
-    for cat in (0, 1, 2):
+    for cat in (0, 1):  # PS1-only branch (2) disabled
         tabs[cat] = [tab for tab in tabs[cat] if len(tab) > 0]
     for cat in (1, 2):
         tabs_wide[cat] = [tab for tab in tabs_wide[cat] if len(tab) > 0]
 
     # Combine the stats
-    stat_dfs = {cat: combine_stats(stat_dfs[cat]) for cat in (0, 1, 2)}
+    stat_dfs = {cat: combine_stats(stat_dfs[cat]) for cat in (0, 1)}  # PS1-only branch (2) disabled
 
     # Combine the tabs
     for cat in (0, 1):  # TODO: add 2 back
@@ -221,7 +221,7 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
     # write alongside an existing `combined/` instead of overwriting it.
     if not os.path.exists(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir)):
         os.makedirs(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir))
-    for cat in (0, 1, 2):
+    for cat in (0, 1):  # PS1-only branch (2) disabled
         stat_dfs[cat].to_csv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}_filter_stats.csv'))
         if cat != 2:  # TODO: temporary for bad pstarr extraction
             prepare_table_for_write(tabs[cat]).write(
@@ -234,7 +234,7 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
     #             os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}_wide_association.hdf5'),
     #             path='data', serialize_meta=True, overwrite=True)
 
-    for cat in (0, 1, 2):
+    for cat in (0, 1):  # PS1-only branch (2) disabled
         # get_data_path() rather than a hardcoded local path: this script runs
         # on the cluster, where that directory does not exist.
         create_filter_flowchart(stat_dfs[cat]).save(
