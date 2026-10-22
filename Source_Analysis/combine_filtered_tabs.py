@@ -32,7 +32,7 @@ def _field_reasons(field_name: str, run_dirname: str, max_arcsec: float):
     # Both the ordinary survivors and the wide-association ones: they end up
     # in the same database table, so they must carry the same columns.
     targets = [(cat, f'{cat}.ecsv') for cat in (0, 1)]
-    targets += [(f'wide{cat}', f'{cat}_wide_association.ecsv') for cat in (1,)]
+    # targets += [(f'wide{cat}', f'{cat}_wide_association.ecsv') for cat in (1,)]  # wide-association tables disabled (#4)
     for key, fname in targets:
         path = os.path.join(base, fname)
         # `load_ecsv` silently prefers a .hdf5 sibling, and the cluster runs
@@ -85,13 +85,14 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
                 tabs[cat].append(load_ecsv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, field_name, f'{cat}.ecsv')))
                 tab_fields[cat].append(field_name)
 
-    # Deal with wide associations
-    for cat in (1, 2):
-        for field_name in fnames:
-            # Load the tabs_wide
-            if cat != 2:  # TODO: temporary for bad pstarr extraction
-                tabs_wide[cat].append(load_ecsv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, field_name, f'{cat}_wide_association.ecsv')))
-                tab_wide_fields[cat].append(field_name)
+    # Wide-association tables disabled (plan_filter_review.md #4): filtering no longer writes them.
+    # # Deal with wide associations
+    # for cat in (1, 2):
+    #     for field_name in fnames:
+    #         # Load the tabs_wide
+    #         if cat != 2:  # TODO: temporary for bad pstarr extraction
+    #             tabs_wide[cat].append(load_ecsv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, field_name, f'{cat}_wide_association.ecsv')))
+    #             tab_wide_fields[cat].append(field_name)
 
     # Filter reasons, computed per field while the reject tables are still
     # next to the survivors. Attached before the vstack so the columns simply
@@ -121,8 +122,8 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
 
         for cat in (0, 1):
             _attach(tab_fields[cat], tabs[cat], cat)
-        for cat in (1,):
-            _attach(tab_wide_fields[cat], tabs_wide[cat], f'wide{cat}')
+        # for cat in (1,):  # wide-association tables disabled (#4)
+        #     _attach(tab_wide_fields[cat], tabs_wide[cat], f'wide{cat}')
 
     # Drop length 0 tabs
     for cat in (0, 1, 2):
@@ -168,11 +169,11 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
                 os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}.hdf5'),
                 path='data', serialize_meta=True, overwrite=True)
 
-    for cat in (1, 2):
-        if cat != 2:  # TODO: temporary for bad pstarr extraction
-            prepare_table_for_write(tabs_wide[cat]).write(
-                os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}_wide_association.hdf5'),
-                path='data', serialize_meta=True, overwrite=True)
+    # for cat in (1, 2):  # wide-association tables disabled (#4)
+    #     if cat != 2:  # TODO: temporary for bad pstarr extraction
+    #         prepare_table_for_write(tabs_wide[cat]).write(
+    #             os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}_wide_association.hdf5'),
+    #             path='data', serialize_meta=True, overwrite=True)
 
     for cat in (0, 1, 2):
         # get_data_path() rather than a hardcoded local path: this script runs

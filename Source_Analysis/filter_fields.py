@@ -1781,40 +1781,41 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     min_sep, max_sep = 1.0, 3.0
     in_both_tabs = {}
     for band, tab in in_ztf_tabs.items():
-        in_both_tabs[band], in_ztf_tabs[band] = associate_in_btwn_distance(in_ztf_tabs[band], in_pstarr_tabs[band], min_sep=min_sep, max_sep=max_sep)
+        in_both_tabs[band], in_ztf_tabs[band] = associate_in_btwn_distance(in_ztf_tabs[band], in_pstarr_tabs[band], min_sep=min_sep, max_sep=max_sep)  # in_both: diverted, not evaluated
         print(f'Associated {len(in_both_tabs[band])} / {len(in_ztf_tabs[band]) + len(in_both_tabs[band])} more sources in {band} band between {min_sep} and {max_sep} from eachother.')
 
-    ######################################################################
-    ##### DEAL WITH THE SOURCES THAT ARE POTENTIALLY IN BOTH CATALOGS#####
-    ######################################################################
-    branch = 'in_both'        
+    # Wide-association evaluation disabled (plan_filter_review.md #4): it never worked and only found extended, offset or otherwise uninteresting objects. The 1-3" diversion above stays.
+    # ######################################################################
+    # ##### DEAL WITH THE SOURCES THAT ARE POTENTIALLY IN BOTH CATALOGS#####
+    # ######################################################################
+    # branch = 'in_both'        
 
-    # Drop all sources with snr < 5
-    in_both_tabs = filters.filter(in_both_tabs, 'snr_filter', snr_min=5, branch=branch)
+    # # Drop all sources with snr < 5
+    # in_both_tabs = filters.filter(in_both_tabs, 'snr_filter', snr_min=5, branch=branch)
     
-    # Delta mag > n sigma
-    for band in in_both_tabs.keys():
-        in_both_tabs[band]['Catalog_Flag'] = 0
-    in_both_tabs, _ = filters.filter(in_both_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
+    # # Delta mag > n sigma
+    # for band in in_both_tabs.keys():
+    #     in_both_tabs[band]['Catalog_Flag'] = 0
+    # in_both_tabs, _ = filters.filter(in_both_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
-    # Converting to sources
-    merged_coords_in_both = get_merged_tab_coords(in_both_tabs, max_arcsec=3.0)
-    sources_in_both = Sources(ras=merged_coords_in_both['ra'], decs=merged_coords_in_both['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
-    sources_in_both = annotate_gaia(sources_in_both, field_gaia_table)
+    # # Converting to sources
+    # merged_coords_in_both = get_merged_tab_coords(in_both_tabs, max_arcsec=3.0)
+    # sources_in_both = Sources(ras=merged_coords_in_both['ra'], decs=merged_coords_in_both['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
+    # sources_in_both = annotate_gaia(sources_in_both, field_gaia_table)
 
-    # Check for big dmag in >1 bands
-    sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
+    # # Check for big dmag in >1 bands
+    # sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
-    # Store pre-gaia filteration if requested
-    if store_pre_gaia:
-        sources_in_both.save(os.path.join(filter_result_dirpath, f'1_in_both_pre_gaia.ecsv'))
+    # # Store pre-gaia filteration if requested
+    # if store_pre_gaia:
+    #     sources_in_both.save(os.path.join(filter_result_dirpath, f'1_in_both_pre_gaia.ecsv'))
 
-    # Check for proper motion
-    sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch)
+    # # Check for proper motion
+    # sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch)
 
-    # Check for parallax
-    sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch)
-    sources_in_both.save(os.path.join(filter_result_dirpath, f'1_wide_association.ecsv'))
+    # # Check for parallax
+    # sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch)
+    # sources_in_both.save(os.path.join(filter_result_dirpath, f'1_wide_association.ecsv'))
 
     ######################################################################
     ##### DEAL WITH THE SOURCES THAT ARE NOT IN BOTH CATALOGS#####
@@ -1853,7 +1854,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 
     # Save the filtered out tables
     filters.save_filtered_out(filter_result_dirpath, 1)
-    del in_ztf_tabs, in_pstarr_tabs, in_both_tabs, sources_in_both, sources_in_ztf
+    del in_ztf_tabs, in_pstarr_tabs, in_both_tabs, sources_in_ztf
 
     ################################################################################
     ################################################################################
@@ -1902,47 +1903,48 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         in_both_tabs[band], in_pstarr_tabs[band] = associate_in_btwn_distance(in_pstarr_tabs[band], in_ztf_tabs[band], min_sep=min_sep, max_sep=max_sep)
         print(f'Associated {len(in_both_tabs[band])} / {len(in_pstarr_tabs[band]) + len(in_both_tabs[band])} more sources in {band} band between {min_sep} and {max_sep} from eachother.')
 
-    ######################################################################
-    ##### DEAL WITH THE SOURCES THAT ARE POTENTIALLY IN BOTH CATALOGS#####
-    branch = 'in_both'
+    # Wide-association evaluation disabled (plan_filter_review.md #4): it never worked and only found extended, offset or otherwise uninteresting objects. The 1-3" diversion above stays.
+    # ######################################################################
+    # ##### DEAL WITH THE SOURCES THAT ARE POTENTIALLY IN BOTH CATALOGS#####
+    # branch = 'in_both'
 
-    for band in in_pstarr_tabs.keys():
-        in_both_tabs[band]['Catalog_Flag'] = 0
+    # for band in in_pstarr_tabs.keys():
+    #     in_both_tabs[band]['Catalog_Flag'] = 0
 
-    # Drop all sources with bad SEP extraction flags
-    in_both_tabs = filters.filter(in_both_tabs, 'sep_extraction_filter', branch=branch)
+    # # Drop all sources with bad SEP extraction flags
+    # in_both_tabs = filters.filter(in_both_tabs, 'sep_extraction_filter', branch=branch)
 
-    # Drop all sources with snr < 5
-    in_both_tabs = filters.filter(in_both_tabs, 'snr_filter', snr_min=5, branch=branch)
+    # # Drop all sources with snr < 5
+    # in_both_tabs = filters.filter(in_both_tabs, 'snr_filter', snr_min=5, branch=branch)
 
-    # Axis ratio filter
-    in_both_tabs = filters.filter(in_both_tabs, 'shape_filter', branch=branch)
+    # # Axis ratio filter
+    # in_both_tabs = filters.filter(in_both_tabs, 'shape_filter', branch=branch)
 
-    # Drop bad PSF fits
-    in_both_tabs = filters.filter(in_both_tabs, 'psf_fit_filter', branch=branch)
+    # # Drop bad PSF fits
+    # in_both_tabs = filters.filter(in_both_tabs, 'psf_fit_filter', branch=branch)
 
-    # Delta mag > n sigma
-    in_both_tabs, _ = filters.filter(in_both_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
+    # # Delta mag > n sigma
+    # in_both_tabs, _ = filters.filter(in_both_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
-    # Converting to sources
-    merged_coords_in_both = get_merged_tab_coords(in_both_tabs, max_arcsec=3.0)
-    sources_in_both = Sources(ras=merged_coords_in_both['ra'], decs=merged_coords_in_both['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
-    sources_in_both = annotate_gaia(sources_in_both, field_gaia_table)
+    # # Converting to sources
+    # merged_coords_in_both = get_merged_tab_coords(in_both_tabs, max_arcsec=3.0)
+    # sources_in_both = Sources(ras=merged_coords_in_both['ra'], decs=merged_coords_in_both['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
+    # sources_in_both = annotate_gaia(sources_in_both, field_gaia_table)
 
-    # Check for big dmag in >1 bands
-    sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
+    # # Check for big dmag in >1 bands
+    # sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
-    # Store pre-gaia filtration if requested
-    if store_pre_gaia:
-        sources_in_both.save(os.path.join(filter_result_dirpath, f'2_in_both_pre_gaia.ecsv'))
+    # # Store pre-gaia filtration if requested
+    # if store_pre_gaia:
+    #     sources_in_both.save(os.path.join(filter_result_dirpath, f'2_in_both_pre_gaia.ecsv'))
 
-    # Check for proper motion
-    sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch)
+    # # Check for proper motion
+    # sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch)
 
-    # Check for parallax
-    sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch)
+    # # Check for parallax
+    # sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch)
 
-    sources_in_both.save(os.path.join(filter_result_dirpath, f'2_wide_association.ecsv'))
+    # sources_in_both.save(os.path.join(filter_result_dirpath, f'2_wide_association.ecsv'))
 
     ######################################################################
     ##### DEAL WITH THE SOURCES THAT ARE NOT IN BOTH CATALOGS#####
