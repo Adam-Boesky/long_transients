@@ -17,6 +17,7 @@ Issue numbers are the ones used during the review.
 | 4 | #8 | SNR routing tie-break on PSF SNR | `filter_fields.py` (`snr_filter`) |
 | 5 | #9 | Per-band PS1 values; position from the first matched band | `Sources.py` (`Sources.data`) |
 | 5b | #13 | Remove the Dec > −29.5 cut (applied by hand afterwards) | `filter_fields.py` |
+| 5c | #14 | Annotate every detection with its Δmag sigma; filter on it | `filter_fields.py` |
 | 6 | – | Move stale KDE caches aside; stage-3 filtering of all 485 fields into a new results directory | cluster run |
 | 7 | #1, #11 | `group_id`; read only field folders | combine script |
 | 8 | – | Enrichment, then website database update (annotations carried over by identity) | stage 5 |
@@ -154,6 +155,19 @@ Issue numbers are the ones used during the review.
   - the PS1-only branch.
 - **Why:** the declination limit will be applied by hand to the final candidates, so filtering keeps everything.
 - **Effect:** candidates below −29.5° now appear in the outputs. Envelopes in the southernmost fields include those sources (they are rebuilt for stage 3 anyway).
+
+### 14. [x] Δmag sigma for every detection
+- **Change:** each detection gets a signed Δmag sigma from its field's KDE envelope, z = Φ⁻¹(CDF of Δmag at its magnitude), negative = brighter in ZTF. The envelope's cumulative distribution is interpolated bilinearly on the grid; |z| beyond what the grid resolves is reported as ±8 with a flag.
+- **Columns:** `{band}_dmag`, `{band}_dmag_sigma`, `{band}_dmag_sigma_capped`.
+  - Written onto the all-quality tables right after the envelopes are built, so candidate rows carry each band's own sigma.
+  - Also written in `only_big_dmag` on each branch's tables, whose flags may differ.
+- **Selection** reads the column: `only_big_dmag` keeps |z| > 3; `at_least_n_big_dmag_bands` counts bands with |z| > 3. Cost ~0.2 s per band per field.
+- **Tested** side by side on fields 247 (g+r), 313 (gri) and 400 (mixed):
+  - every candidate found by both versions is unchanged;
+  - all 27 that differ are explained, 0 unexplained:
+    - 20 are borderline (|z| within 0.03 of 3, where interpolating the boundaries and interpolating the CDF disagree);
+    - 7 had only passed by comparing a neighbour row's ZTF limit with a PS1 magnitude borrowed from another band's row (e.g. field 400: the real ZTF g detection had failed the shape cut).
+  - The committed code reproduces the tested patch exactly.
 
 ### 1. [ ] Duplicate candidates across overlapping fields
 - **Problem:** neighbouring fields overlap, and the combine step stacks per-field outputs with no deduplication, so an object in the overlap appears once per field.
