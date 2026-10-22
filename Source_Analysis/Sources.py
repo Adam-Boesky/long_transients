@@ -37,9 +37,9 @@ from Extracting.utils import get_data_path, load_cached_table, load_ecsv, get_sn
 from Extracting.Catalogs import ZTF_Catalog, ZTF_CUTOUT_HALFWIDTH, get_ztf_metadata_from_coords, get_ztf_metadata_from_metadata, get_pstarr_cutout
 from ztf_fp_query.forced_photometry import ForcedPhotometry
 try:
-    from Light_Curve import Light_Curve, LC_MARKER_INFO, LC_COLOR_INFO, ALL_BAND_DF
+    from Light_Curve import Light_Curve, LC_MARKER_INFO, LC_COLOR_INFO, ALL_BAND_DF, wise_colors
 except ModuleNotFoundError:
-    from .Light_Curve import Light_Curve, LC_MARKER_INFO, LC_COLOR_INFO, ALL_BAND_DF
+    from .Light_Curve import Light_Curve, LC_MARKER_INFO, LC_COLOR_INFO, ALL_BAND_DF, wise_colors
 from Source_Analysis.catalogs.agn import cone_search as agn_cone_search, CATALOG_ID_TO_NAME
 from Source_Analysis.catalogs import sdss as sdss_catalog, simbad as simbad_catalog, tns as tns_catalog
 time_support()
@@ -438,6 +438,7 @@ class Source():
             ztf_lc_dir: Optional[str] = None,
             detected_bands: Optional[tuple] = None,
             filtering_dirpath: Optional[str] = None,
+            store=None,
         ):
         self.ra = ra
         self.dec = dec
@@ -459,11 +460,21 @@ class Source():
         self.max_arcsec = max_arcsec
         self.gaia_max_arcsec = gaia_max_arcsec
         self.filtering_dirpath = filtering_dirpath
+        # A `local_store.LocalStore`, or None to query the services live.
+        # One decision, made here, rather than a flag tested inside every
+        # property -- and it leaves 'local light curves, live TNS' sayable.
+        self.store = store
 
         # Properties
         self._field_catalogs = field_catalogs
         self._precomputed_cat_indices = None  # {band: ind_closest} pre-set by Sources for bulk efficiency
         self._data = None
+        # Set by Sources.from_table so the row is sliced out of the shared parent table on
+        # first access instead of up front. Building a 1-row Table per source costs ~24 ms
+        # at 300 columns, which is minutes for a whole combined catalog, and most callers
+        # only ever touch a handful of sources.
+        self._parent_table = None
+        self._parent_row = None
         self._postage_stamps = None
         self._ztf_lightcurve = None
         self._paddedfield = None
@@ -512,7 +523,15 @@ class Source():
                     ))
                 ) else None,
                 ztf_local_dir=self.ztf_lc_dir,
+                store=self.store,
             )
+            # Hand over the release's own identifier when the row carries
+            # one, so the store looks the source up by key instead of
+            # repeating a positional match the build already did.
+            if self.store is not None and 'source_uuid' in self.data.colnames:
+                uuid = self.data['source_uuid'][0]
+                if not np.ma.is_masked(uuid):
+                    self._light_curve.source_uuid = str(uuid)
 
         return self._light_curve
 
@@ -582,9 +601,47 @@ class Source():
 
         return self._desi_spectrum
 
+    def _match_from_row(self, prefix: str, columns: dict) -> Optional[pd.Series]:
+        """A crossmatch read off the catalog row instead of queried live.
+
+        The cone searches these replace were already run once, by
+        `enrich_combined_tabs.py`, and their results are columns on this very
+        row -- so with a store set there is nothing to ask anyone. This is the
+        cheapest part of local mode and the largest saving: three network
+        round trips per source, gone.
+
+        `columns` maps the name the live path returns to the name the
+        crossmatch wrote. Returns None when the catalog has no match, matching
+        the live path's contract.
+        """
+        row = self.data
+        matched = f'{prefix}_matched'
+        if matched in row.colnames:
+            flag = row[matched][0]
+            if np.ma.is_masked(flag) or not bool(flag):
+                return None
+        values = {}
+        for out_name, col in columns.items():
+            if col not in row.colnames:
+                return None
+            v = row[col][0]
+            values[out_name] = None if np.ma.is_masked(v) else v
+        return pd.Series(values)
+
     @property
     def agn_match(self) -> Optional[pd.Series]:
         """Closest AGN-DB catalog match within max_arcsec, or None."""
+        if self.store is not None and self._agn_match is None:
+            self._agn_match = self._match_from_row('agn_db', {
+                'best_class_all': 'agn_db_best_class_all',
+                'best_class_origin': 'agn_db_best_class_origin',
+                'best_class_sub_all': 'agn_db_best_class_sub_all',
+                'best_Z_merged': 'agn_db_best_z_merged',
+                'star_flag': 'agn_db_star_flag',
+            })
+            self._has_agn_match = self._agn_match is not None
+            return self._agn_match
+
         if self._has_agn_match and self._agn_match is None:
             matches = agn_cone_search(
                 self.ra, self.dec, radius_arcsec=self.max_arcsec,
@@ -608,6 +665,18 @@ class Source():
         (`simbad_main_id`, `simbad_otype`, ...), matching the crossmatch columns
         `enrich_combined_tabs.py` writes for the same catalog.
         """
+        if self.store is not None and self._simbad_match is None:
+            # The live path returns SIMBAD's own prefixed names, which is also
+            # what the crossmatch wrote, so this mapping is the identity.
+            self._simbad_match = self._match_from_row('simbad', {
+                c: c for c in (
+                    'simbad_main_id', 'simbad_otype', 'simbad_otype_label',
+                    'simbad_otype_path', 'simbad_is_candidate', 'simbad_z',
+                    'simbad_nbref',
+                )})
+            self._has_simbad_match = self._simbad_match is not None
+            return self._simbad_match
+
         if self._has_simbad_match and self._simbad_match is None:
             matches = simbad_catalog.cone_search(
                 self.ra, self.dec, radius_arcsec=self.max_arcsec,
@@ -626,7 +695,12 @@ class Source():
 
     @property
     def image_metadata(self) -> Dict[str, Dict]:
-        if self._image_metadata is None and self._data is not None:
+        # A row from `Sources.from_table` counts too, though it is only sliced out
+        # on first access to `self.data`. Checking `_data` alone sent every such
+        # source to the coordinate query below, which can pick a different field
+        # than the one the source was detected in -- one lacking an i-band image.
+        if self._image_metadata is None and (self._data is not None
+                                             or self._parent_table is not None):
 
             # Iterate through bands and get the first metadata that works
             metadata = {}
@@ -731,6 +805,27 @@ class Source():
 
     @property
     def data(self) -> Table:
+        # Row loaded from a table by Sources.from_table: slice it out now rather than
+        # having built a 1-row Table for every source up front. Goes through the setter,
+        # so the mandatory-column and masked-int handling is identical either way.
+        if self._data is None and self._parent_table is not None:
+            self.data = Table(self._parent_table[self._parent_row])
+            self._parent_table = None  # drop the reference once the row is materialized
+            return self._data
+
+        # A store serves the row straight from the release, which is the whole
+        # point of local mode: the fallback below reads the per-field HDF5
+        # catalogs and asks IRSA which field to read, neither of which a
+        # machine with only `Data/db` can do.
+        if self._data is None and self.store is not None:
+            row = self.store.catalog_row(ra=self.ra, dec=self.dec,
+                                         radius_arcsec=self.max_arcsec)
+            if row is not None:
+                self.data = row       # setter applies the shared column handling
+                return self._data
+            print('Local store has no row for this position; '
+                  'falling back to the field catalogs.')
+
         if self._data is None:
 
             # Get the unique columns
@@ -1439,18 +1534,13 @@ class Source():
         ax.set_ylabel(r'\textbf{Number}', labelpad=2)
 
         # Annotate if no data
-        if 'w1_magerr' not in self.light_curve.lc.columns or 'w2_magerr' not in self.light_curve.lc.columns:
+        delta_mag = wise_colors(self.light_curve.lc, color_err_thresh)
+        if delta_mag is None:
             ax.text(0.5, 0.5, 'Source has no WISE data.', verticalalignment='center', horizontalalignment='center')
             return ax
 
-        # Mask on propagated color uncertainty: sigma(W1-W2) = sqrt(sigma_W1^2 + sigma_W2^2)
-        w1_err = self.light_curve.lc['w1_magerr'].filled(fill_value=np.nan)
-        w2_err = self.light_curve.lc['w2_magerr'].filled(fill_value=np.nan)
-        color_err = np.sqrt(w1_err**2 + w2_err**2)
-        color_mask = color_err < color_err_thresh
-
         # Annotate if nothing passes the cut
-        if np.sum(color_mask) == 0:
+        if len(delta_mag) == 0:
             ax.text(
                 0.5,
                 0.5,
@@ -1459,10 +1549,6 @@ class Source():
                 horizontalalignment='center',
             )
             return ax
-
-        # Get the delta mags
-        delta_mag = self.light_curve.lc['w1_mag'] - self.light_curve.lc['w2_mag']
-        delta_mag = delta_mag[color_mask]
 
         # Plot
         ax.hist(delta_mag, color='k', bins=10)
@@ -1668,14 +1754,9 @@ class Source():
                 info_string += f'\nSIMBAD Redshift: {simbad_info["simbad_z"]:.4f}'
             if pd.notna(simbad_info['simbad_nbref']):
                 info_string += f'\nSIMBAD References: {int(simbad_info["simbad_nbref"])}'
-        if 'w1_magerr' in self.light_curve.lc.columns and 'w2_magerr' in self.light_curve.lc.columns:
-            w1_err = self.light_curve.lc['w1_magerr'].filled(fill_value=np.nan)
-            w2_err = self.light_curve.lc['w2_magerr'].filled(fill_value=np.nan)
-            color_err = np.sqrt(w1_err**2 + w2_err**2)
-            color_mask = color_err < wise_color_err_thresh
-            if np.sum(color_mask) > 0:
-                delta_mag = self.light_curve.lc['w1_mag'] - self.light_curve.lc['w2_mag']
-                delta_mag = delta_mag[color_mask]
+        delta_mag = wise_colors(self.light_curve.lc, wise_color_err_thresh)
+        if delta_mag is not None:
+            if len(delta_mag) > 0:
                 info_string += (
                     f'\nWISE W1-W2 Mean ($\\sigma_{{W1-W2}} < {wise_color_err_thresh}$) $=$ {np.mean(delta_mag):.2f}'
                     f'\nWISE W1-W2 Median ($\\sigma_{{W1-W2}} < {wise_color_err_thresh}$) $=$ {np.median(delta_mag):.2f}'
@@ -1806,10 +1887,17 @@ class Sources:
             for col in [c for c in MANDATORY_SOURCE_COLUMNS if c not in table.columns]:
                 table[col] = [np.nan] * len(table)
 
-        # Create Source objects for each row
-        sources = [Source(row['ra'], row['dec'], **kwargs) for row in table]
-        for i, row in enumerate(table):
-            sources[i].data = Table(row)
+        # Create Source objects for each row. The row itself is not materialized here --
+        # each Source keeps a reference to the shared table and slices its own row on the
+        # first `.data` access. Building the 1-row Table up front costs ~24 ms per source
+        # at 300 columns (~4 min for a combined cat-1 table, ~75 min for cat 0), and most
+        # callers only touch a few of them.
+        ras = np.asarray(table['ra'], dtype=float)
+        decs = np.asarray(table['dec'], dtype=float)
+        sources = [Source(ra, dec, **kwargs) for ra, dec in zip(ras, decs)]
+        for i, src in enumerate(sources):
+            src._parent_table = table
+            src._parent_row = i
 
         return cls(sources=sources, **kwargs)
 
@@ -1888,8 +1976,28 @@ class Sources:
             # query per band instead of one O(K) linear scan per source per band). Only the
             # sources that still have to build their row need this, and reaching for
             # field_catalogs loads a per-band HDF5 catalog off disk -- so skip it entirely
-            # when every source already carries its data (e.g. loaded via from_file).
-            if any(src._data is None for src in self.sources):
+            # when every source already carries its data (e.g. loaded via from_file), or
+            # is only waiting to slice it out of a parent table.
+            # Fast path: every source is still an unmaterialized row of one shared parent
+            # table, so the answer is simply those rows of it. Going the long way round
+            # would build a 1-row Table per source and vstack them, ~30 ms each -- over an
+            # hour for a full combined catalog -- to reconstruct a table we already hold.
+            parent = self.sources[0]._parent_table
+            if parent is not None and all(
+                src._data is None and src._parent_table is parent for src in self.sources
+            ):
+                rows = [src._parent_row for src in self.sources]
+                self._data = Table(parent[rows], masked=False)
+                for colname in _INT64_COLUMNS:
+                    if colname in self._data.colnames:
+                        col = parent[colname][rows]
+                        if np.ma.is_masked(col):
+                            vals = np.array(self._data[colname], dtype=object)
+                            vals[np.ma.getmaskarray(col)] = None
+                            self._data[colname] = vals
+                return self._data
+
+            if any(src._data is None and src._parent_table is None for src in self.sources):
                 source_coords = self.coords
                 ref = self.sources[0]
                 for band, cat in ref.field_catalogs.items():

@@ -1,4 +1,6 @@
 import os
+
+from source_db.constants import PSTARR_UPPER_LIM
 import sys
 import shutil
 import requests
@@ -36,9 +38,8 @@ Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
 BANDS = ['g', 'r', 'i']
 CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Coverage'}
 GAIA_OBS_EPOCH = 2021.0  # representative epoch of ZTF detections, used to propagate Gaia positions forward from ref_epoch (J2016.0) before crossmatching
-PSTARR_UPPER_LIM = {'g': 23.3, 'r': 23.2, 'i': 23.1}
 EXTRACTED_CATALOG_DIR = 'catalog_results/field_results' # 'debugging'
-FILTER_RESULT_DIR = 'filter_results_9_13_2026_full_catalog'  # 'filter_results_kde_sep_flag'  # 'debugging/filter_results'  # 'filter_results_gemini'
+FILTER_RESULT_DIR = 'filter_results_9_21_2026_full_catalog_fixed_pm' # 'filter_results_9_13_2026_full_catalog'
 
 def _is_flag(flags: np.ndarray, flag: Union[int, Iterable[int]]) -> np.ndarray:
     """
@@ -262,7 +263,8 @@ def _match_sources_to_gaia(
     gaia_table: Table,
     max_arcsec: float = 5.0,
     obs_epoch: float = GAIA_OBS_EPOCH,
-) -> np.ndarray:
+    return_sep: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """Match srcs to gaia_table by sky position.
 
     Gaia positions are given at ref_epoch (J2016.0) and drift by pmra/pmdec
@@ -275,7 +277,8 @@ def _match_sources_to_gaia(
     with and are matched at their static ref_epoch position.
 
     Returns an array of row indices into gaia_table (length = len(srcs)).
-    Entries are -1 where no match exists within max_arcsec.
+    Entries are -1 where no match exists within max_arcsec. With return_sep,
+    also returns the separation to the nearest Gaia source in arcsec.
     """
     src_coords = srcs.coords
 
@@ -298,7 +301,53 @@ def _match_sources_to_gaia(
     idx, sep2d, _ = match_coordinates_sky(src_coords, gaia_coords)
     idx = idx.copy()
     idx[sep2d.arcsec > max_arcsec] = -1
+    if return_sep:
+        return idx, sep2d.arcsec
     return idx
+
+
+def annotate_gaia(srcs: Sources, gaia_table: Table, max_arcsec: float = 5.0) -> Sources:
+    """Write each source's nearest Gaia match onto its data row; the Gaia filters read these columns.
+
+    gaia_has_astrometry is False for a match with no published pm/parallax (a 2p solution).
+    The value columns are NaN wherever there is nothing to report.
+    """
+    if len(srcs) == 0:
+        return srcs
+    idx, sep = _match_sources_to_gaia(srcs, gaia_table, max_arcsec=max_arcsec, return_sep=True)
+    matched = idx >= 0
+    rows = gaia_table[np.where(matched, idx, 0)]
+
+    def _value(col):
+        c = rows[col]
+        vals = np.ma.filled(np.ma.asarray(c, dtype=float), np.nan)
+        return np.where(matched, vals, np.nan)
+
+    pm_sig = _value('pm') / (_value('pmra_error') + _value('pmdec_error'))
+    poe = _value('parallax_over_error')
+    cols = {
+        'gaia_matched': matched,
+        'gaia_sep_arcsec': np.where(matched, sep, np.nan),
+        'gaia_astrometric_params_solved': _value('astrometric_params_solved'),
+        'gaia_has_astrometry': matched & np.isfinite(pm_sig) & np.isfinite(poe),
+        'gaia_parallax_over_error': poe,
+        'gaia_pm_sig': pm_sig,
+    }
+
+    # Build the rows in bulk first; Sources slicing rebuilds .data from each Source's row,
+    # so the columns have to land on the per-source rows as well
+    data = srcs.data
+    for col, vals in cols.items():
+        data[col] = vals
+        for src, v in zip(srcs.sources, vals):
+            src.data[col] = [v]
+    return srcs
+
+
+def _gaia_column(srcs: Sources, col: str) -> np.ndarray:
+    if col not in srcs.data.colnames:
+        raise KeyError(f'{col} missing from the source table; run annotate_gaia on these sources first.')
+    return np.asarray(srcs.data[col], dtype=float)
 
 
 class Envelope_KDE:
@@ -653,17 +702,12 @@ class Filters():
         return good_tabs, bad_tabs
 
     def sep_extraction_filter(self, tabs: Dict[str, Table], copy: bool = True, *args, **kwargs) -> Table:
-        # flags here: https://sextractor.readthedocs.io/en/latest/Flagging.html
-        # Flag 1 (neighbour biases aperture photometry) is no longer rejected here;
-        # extended_source_artifact_filter uses PSF-Kron magnitude to distinguish genuine
-        # artifacts from real sources near bright neighbours.
-        # Flag 2 (deblended) is also allowed.
+        # SEP object flags (not SExtractor's), see sep.h: 1 OBJ_MERGED (deblended), 2 OBJ_TRUNC
+        # (touches array edge), 4 OBJ_DOVERFLOW, 8 OBJ_SINGU (deblended core one pixel wide).
+        # Only 8 ever fires here: borders are NaN so 2 can't, 4 aborts extraction instead, and
+        # 16-128 are aperture flags that sep.extract never sets (they live in ZTF_{band}KronFlag).
         good_tabs = {}
         bad_tabs = {}
-        # Reject sources with truly bad extraction flags (saturation, truncation,
-        # aperture/isophotal corruption, memory overflow).  Flags 1 (has neighbours)
-        # and 2 (originally blended) are NOT rejected — those can legitimately arise
-        # for transients near host-galaxy flux or in moderately crowded fields.
         bad_flags = [4, 8, 16, 32, 64, 128]
         for band in tabs.keys():
             tab = tabs[band]
@@ -674,11 +718,9 @@ class Filters():
         return good_tabs, bad_tabs
 
     def extended_source_artifact_filter(self, tabs: Dict[str, Table], copy: bool = True, *args, **kwargs) -> Table:
-        # Rejects spurious detections near bright extended halos: SEP flag bit 0 set
-        # (aperture contaminated by a neighbour's NaN-masked pixels) AND
-        # PSFMag − KronMag > 1.5 (Kron aperture integrates into the bright halo,
-        # making KronMag >> PSFMag).  Validated: 17/17 artifacts caught, 0/87 real
-        # sources rejected.
+        # Rejects spurious detections near bright extended halos: SEP flag 1 set (OBJ_MERGED,
+        # i.e. deblended from a neighbour) AND PSFMag − KronMag > 1.5 (Kron aperture integrates
+        # into the bright halo).  Validated: 17/17 artifacts caught, 0/87 real sources rejected.
         PSF_KRON_THRESH = 1.5
         good_tabs = {}
         bad_tabs = {}
@@ -1023,28 +1065,11 @@ class Filters():
 
         return good_sources, bad_sources
 
-    def _parallax_in_srcs(
-        self,
-        srcs: Sources,
-        gaia_table: Optional[Table] = None,
-    ) -> Tuple[Sources, Sources]:
+    def _parallax_in_srcs(self, srcs: Sources) -> Tuple[Sources, Sources]:
+        # NaN (no Gaia match, or no published parallax) compares False, so those are kept
         mask = np.ones(len(srcs), dtype=bool)
-
-        if gaia_table is not None and len(srcs) > 0:
-            idx = _match_sources_to_gaia(srcs, gaia_table)
-            for i in range(len(srcs)):
-                if idx[i] == -1:
-                    continue
-                poe = gaia_table[idx[i]]['parallax_over_error']
-                if not np.ma.is_masked(poe) and poe >= 5.0:
-                    mask[i] = False
-        else:
-            for i, src in enumerate(srcs):
-                if len(src.GAIA_info) > 0:
-                    mask[i] = (
-                        src.GAIA_info[0]['parallax_over_error'] < 5.0
-                        or src.GAIA_info['parallax_over_error'].mask[0]
-                    )
+        if len(srcs) > 0:
+            mask = ~(_gaia_column(srcs, 'gaia_parallax_over_error') >= 5.0)
 
         return srcs[mask], srcs[~mask]
 
@@ -1052,55 +1077,23 @@ class Filters():
         self,
         sources: Union[Sources, Dict[str, Sources]],
         *args,
-        gaia_table: Optional[Table] = None,
         **kwargs,
     ) -> Union[Tuple[Dict[str, Sources], Dict[str, Sources]], Tuple[Sources, Sources]]:
         if isinstance(sources, Dict):
             good_sources = {}
             bad_sources = {}
             for band in sources.keys():
-                good_sources[band], bad_sources[band] = self._parallax_in_srcs(
-                    sources[band], gaia_table=gaia_table
-                )
+                good_sources[band], bad_sources[band] = self._parallax_in_srcs(sources[band])
             return good_sources, bad_sources
         else:
-            return self._parallax_in_srcs(sources, gaia_table=gaia_table)
+            return self._parallax_in_srcs(sources)
 
-    def _proper_motion_in_srcs(
-        self,
-        srcs: Sources,
-        gaia_table: Optional[Table] = None,
-    ) -> Tuple[Sources, Sources]:
+    def _proper_motion_in_srcs(self, srcs: Sources) -> Tuple[Sources, Sources]:
+        # 2p (position-only) solutions publish no pm, so gaia_pm_sig is NaN and the source is kept:
+        # missing pm is no evidence of motion (Lindegren et al. 2021 Eq. 21 has no pm term)
         mask = np.ones(len(srcs), dtype=bool)
-
-        if gaia_table is not None and len(srcs) > 0:
-            idx = _match_sources_to_gaia(srcs, gaia_table)
-            for i in range(len(srcs)):
-                if idx[i] == -1:
-                    continue
-                row = gaia_table[idx[i]]
-                pm, pmra_e, pmdec_e = row['pm'], row['pmra_error'], row['pmdec_error']
-                if np.ma.is_masked(pm) or np.ma.is_masked(pmra_e) or np.ma.is_masked(pmdec_e):
-                    # 2p (position-only) solutions have no pm published at all, so there is
-                    # nothing to threshold. 2p is a data-quality fallback, not a kinematic
-                    # one -- Lindegren et al. 2021 Eq. 21 keys on G, N_vpu and sigma5d_max,
-                    # with no pm term. Missing pm is no evidence of motion, so keep, as
-                    # parallax_filter already does for the NULL parallax on these sources.
-                    continue
-                elif pm / (pmra_e + pmdec_e) >= 5.0:
-                    mask[i] = False
-        else:
-            for i, src in enumerate(srcs):
-                if len(src.GAIA_info) > 0:
-                    mask[i] = (
-                        src.GAIA_info[0]['pm'] / (
-                            src.GAIA_info[0]['pmra_error'] + src.GAIA_info[0]['pmdec_error']
-                        ) < 5.0
-                    ) or (
-                        src.GAIA_info['pm'].mask[0]
-                        or src.GAIA_info['pmra_error'].mask[0]
-                        or src.GAIA_info['pmdec_error'].mask[0]
-                    )
+        if len(srcs) > 0:
+            mask = ~(_gaia_column(srcs, 'gaia_pm_sig') >= 5.0)
 
         return srcs[mask], srcs[~mask]
 
@@ -1108,19 +1101,16 @@ class Filters():
             self,
             sources: Union[Sources, Dict[str, Sources]],
             *args,
-            gaia_table: Optional[Table] = None,
             **kwargs,
         ) -> Union[Tuple[Dict[str, Sources], Dict[str, Sources]], Sources]:
         if isinstance(sources, Dict):
             good_sources = {}
             bad_sources = {}
             for band in sources.keys():
-                good_sources[band], bad_sources[band] = self._proper_motion_in_srcs(
-                    sources[band], gaia_table=gaia_table
-                )
+                good_sources[band], bad_sources[band] = self._proper_motion_in_srcs(sources[band])
             return good_sources, bad_sources
         else:
-            return self._proper_motion_in_srcs(sources, gaia_table=gaia_table)
+            return self._proper_motion_in_srcs(sources)
     
     def _no_nearby_source_in_srcs(self, srcs: Sources, n_nearby_max: int) -> Sources:
         all_coords = srcs.coords
@@ -1721,6 +1711,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Converting to sources
     merged_coords = get_merged_tab_coords(tabs)
     sources = Sources(ras=merged_coords['ra'], decs=merged_coords['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
+    sources = annotate_gaia(sources, field_gaia_table)
 
     # Check for big dmag in >1 bands
     sources = filters.filter(sources, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes)
@@ -1730,10 +1721,10 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         sources.save(os.path.join(filter_result_dirpath, f'0_pre_gaia.ecsv'))
 
     # Check for proper motion
-    sources = filters.filter(sources, 'proper_motion_filter', gaia_table=field_gaia_table)
+    sources = filters.filter(sources, 'proper_motion_filter')
 
     # Check for parallax
-    sources = filters.filter(sources, 'parallax_filter', gaia_table=field_gaia_table)
+    sources = filters.filter(sources, 'parallax_filter')
     #---------------------------------------------------------------#
 
     # Save the sources and flowchart figure
@@ -1809,6 +1800,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Converting to sources
     merged_coords_in_both = get_merged_tab_coords(in_both_tabs, max_arcsec=3.0)
     sources_in_both = Sources(ras=merged_coords_in_both['ra'], decs=merged_coords_in_both['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
+    sources_in_both = annotate_gaia(sources_in_both, field_gaia_table)
 
     # Check for big dmag in >1 bands
     sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
@@ -1818,10 +1810,10 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         sources_in_both.save(os.path.join(filter_result_dirpath, f'1_in_both_pre_gaia.ecsv'))
 
     # Check for proper motion
-    sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch, gaia_table=field_gaia_table)
+    sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch)
 
     # Check for parallax
-    sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch, gaia_table=field_gaia_table)
+    sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch)
     sources_in_both.save(os.path.join(filter_result_dirpath, f'1_wide_association.ecsv'))
 
     ######################################################################
@@ -1835,6 +1827,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Converting to sources
     merged_coords_in_ztf = get_merged_tab_coords(in_ztf_tabs, max_arcsec=3.0)
     sources_in_ztf = Sources(ras=merged_coords_in_ztf['ra'], decs=merged_coords_in_ztf['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
+    sources_in_ztf = annotate_gaia(sources_in_ztf, field_gaia_table)
 
     # Check for big dmag in >1 bands
     sources_in_ztf = filters.filter(sources_in_ztf, 'at_least_n_big_dmag_bands', catalog='in_ztf', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
@@ -1847,10 +1840,10 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         sources_in_ztf.save(os.path.join(filter_result_dirpath, f'1_pre_gaia.ecsv'))
 
     # Check for proper motion
-    sources_in_ztf = filters.filter(sources_in_ztf, 'proper_motion_filter', branch=branch, gaia_table=field_gaia_table)
+    sources_in_ztf = filters.filter(sources_in_ztf, 'proper_motion_filter', branch=branch)
 
     # Check for parallax
-    sources_in_ztf = filters.filter(sources_in_ztf, 'parallax_filter', branch=branch, gaia_table=field_gaia_table)
+    sources_in_ztf = filters.filter(sources_in_ztf, 'parallax_filter', branch=branch)
     #---------------------------------------------------------------#
 
     # Save the sources and flowchart figure
@@ -1934,6 +1927,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Converting to sources
     merged_coords_in_both = get_merged_tab_coords(in_both_tabs, max_arcsec=3.0)
     sources_in_both = Sources(ras=merged_coords_in_both['ra'], decs=merged_coords_in_both['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
+    sources_in_both = annotate_gaia(sources_in_both, field_gaia_table)
 
     # Check for big dmag in >1 bands
     sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
@@ -1943,10 +1937,10 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         sources_in_both.save(os.path.join(filter_result_dirpath, f'2_in_both_pre_gaia.ecsv'))
 
     # Check for proper motion
-    sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch, gaia_table=field_gaia_table)
+    sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch)
 
     # Check for parallax
-    sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch, gaia_table=field_gaia_table)
+    sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch)
 
     sources_in_both.save(os.path.join(filter_result_dirpath, f'2_wide_association.ecsv'))
 

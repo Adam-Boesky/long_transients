@@ -11,13 +11,13 @@ from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from typing import Iterable
 
-sys.path.append('/Users/adamboesky/Research/long_transients')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root, on any machine
 
-from Extracting.utils import load_ecsv, get_data_path
+from Extracting.utils import load_ecsv, get_data_path, prepare_table_for_write
 from Source_Analysis import filtered_out_summary
 from Source_Analysis.filter_fields import combine_stats, create_filter_flowchart
 
-FILTER_RESULTS_DIRNAME = 'filter_results_7_30_2026_gaia_propagation'
+FILTER_RESULTS_DIRNAME = 'filter_results_9_21_2026_full_catalog_fixed_pm'
 
 
 def _field_reasons(field_name: str, run_dirname: str, max_arcsec: float):
@@ -71,12 +71,10 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
     tab_wide_fields = {1: [], 2: []}
 
     # Combine everything
-    fnames = os.listdir(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME))
+    # Only field folders (e.g. 000400); leftover copies like combined_pre_filtered_out/ are skipped
+    fnames = sorted(f for f in os.listdir(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME)) if f.isdigit())
     for cat in (0, 1, 2):
         for field_name in fnames:
-            if field_name in ('combined', 'candidates', '.DS_Store'):
-                continue
-
             # Load the stats
             stat_df = pd.read_csv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, field_name, f'{cat}_filter_stats.csv'))
             stat_df['branch'] = stat_df['branch'].fillna('')
@@ -90,9 +88,6 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
     # Deal with wide associations
     for cat in (1, 2):
         for field_name in fnames:
-            if field_name in ('combined', 'candidates', '.DS_Store'):
-                continue
-
             # Load the tabs_wide
             if cat != 2:  # TODO: temporary for bad pstarr extraction
                 tabs_wide[cat].append(load_ecsv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, field_name, f'{cat}_wide_association.ecsv')))
@@ -102,10 +97,9 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
     # next to the survivors. Attached before the vstack so the columns simply
     # come along.
     if add_filtered_out:
-        field_names = [f for f in fnames
-                       if f not in ('combined', 'candidates', '.DS_Store')]
+        field_names = fnames
         print(f'Summarising filtered-out reasons for {len(field_names)} fields '
-              f'on {processes} process(es)...')
+              f'on {processes} process(es)...', flush=True)
         worker = partial(_field_reasons, run_dirname=FILTER_RESULTS_DIRNAME,
                          max_arcsec=max_arcsec)
         if processes > 1:
@@ -170,11 +164,15 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
     for cat in (0, 1, 2):
         stat_dfs[cat].to_csv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}_filter_stats.csv'))
         if cat != 2:  # TODO: temporary for bad pstarr extraction
-            tabs[cat].write(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}.ecsv'), overwrite=True)
+            prepare_table_for_write(tabs[cat]).write(
+                os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}.hdf5'),
+                path='data', serialize_meta=True, overwrite=True)
 
     for cat in (1, 2):
         if cat != 2:  # TODO: temporary for bad pstarr extraction
-            tabs_wide[cat].write(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}_wide_association.ecsv'), overwrite=True)
+            prepare_table_for_write(tabs_wide[cat]).write(
+                os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}_wide_association.hdf5'),
+                path='data', serialize_meta=True, overwrite=True)
 
     for cat in (0, 1, 2):
         # get_data_path() rather than a hardcoded local path: this script runs
