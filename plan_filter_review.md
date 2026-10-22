@@ -170,3 +170,5 @@ Recorded for the paper.
 1. [ ] Delete the pre-rebuild PS1 files: `catalog_results/*/PSTARR_pre_rebuild.hdf5`.
 2. [ ] Delete the rebuild scripting: `Extracting/rebuild_ps1_catalogs.py`, `Extracting/rebuild_ps1.sh`, `ps1_rebuild_quads_10_22.csv`, and the `ps1_rebuilt.txt` markers.
 3. [ ] Delete the validation leftovers: the `PSTARR_rebuilt.hdf5` side copies in 000683_06_4, 000683_06_1, 000466_09_2, 000400_01_1, 000694_16_1, and the scratch folders `ps1_rebuild_test/`, `fill_fix_test/`, `gr_field_test/` and `wide_assoc_experiment/`.
+4. [ ] Cluster one-off scripts (untracked; also in `~/backup_cluster_tree_10_22/working_tree_before.tgz`): `Extracting/cross_match_stage2.sh`, `Notebooks/tune_kdes.sh`, `determinism_test.py/.sh`, `scripts/compare_quad_495.sh`, `scripts/filter_two_fields.py/.sh`, `scripts/prefetch_kde_one_field.sh`, `scripts/repair_000788_000859.py/.sh`, `scripts/submit_kde_array.sh`, `test_ztf_local_lc.py`, `validate_combined.py`.
+5. [ ] Cluster switch-over backup: `~/backup_cluster_tree_10_22/` and `git stash@{0}`. Drop after stage 3 validates. They hold the uncommitted KDE-prefetcher rewrite (`scripts/prefetch_kde_envelopes.py/.sh`).
