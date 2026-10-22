@@ -1,0 +1,24 @@
+#!/bin/bash
+# Launch the analysis-page labeling UI.
+# Usage: classify_pages <analysis_page_dirpath>
+set -e
+
+if [ -z "$1" ]; then
+    echo "Usage: classify_pages <analysis_page_dirpath>"
+    exit 1
+fi
+
+# Resolve through any symlink chain (e.g. ~/.local/bin/classify_pages) to find
+# this script's real location, since it's invoked bare from PATH.
+src="${BASH_SOURCE[0]}"
+while [ -h "$src" ]; do
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+
+exec conda run --no-capture-output -n long_transients streamlit run \
+    "$REPO_ROOT/Source_Analysis/classify_pages_app.py" \
+    -- "$1"

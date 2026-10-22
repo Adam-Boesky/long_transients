@@ -1,0 +1,28 @@
+[theme]
+primaryColor = "#4c7fd6"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f6fa"
+textColor = "#1c1f26"
+
+[server]
+# Rerun automatically when a source file changes, instead of showing the
+# "Source file changed" prompt in the corner. Development convenience; it has
+# no effect on a deployed app, which only ever sees one version of the code.
+runOnSave = true
+
+# watchdog is installed, so "auto" uses native filesystem events rather than
+# polling. Data/ is excluded because the analysis-page tree holds hundreds of
+# PDFs that never change and would waste file handles.
+fileWatcherType = "auto"
+folderWatchBlacklist = ["Data", ".git", "__pycache__"]
+
+[client]
+# Hide Streamlit's toolbar and options menu (Deploy, rerun, clear cache, print,
+# record, theme toggle). "minimal" shows only options set externally or via
+# st.set_page_config; there are none, so the menu is not rendered at all.
+# Note this applies locally too, so "Clear cache" and "Rerun" are gone from
+# development as well -- runOnSave and a restart cover both.
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false

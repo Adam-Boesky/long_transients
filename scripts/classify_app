@@ -1,0 +1,29 @@
+#!/bin/bash
+# Launch the analysis-page classification app.
+# Usage: classify_app [workspace_dir]     (default: Data/classify_workspace)
+set -e
+
+# Resolve through any symlink chain (e.g. ~/.local/bin/classify_app) to find
+# this script's real location, since it's invoked bare from PATH.
+src="${BASH_SOURCE[0]}"
+while [ -h "$src" ]; do
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$src")" && pwd)"
+REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+APP_DIR="$REPO_ROOT/Source_Analysis/classify_app"
+
+WORKSPACE="${1:-$REPO_ROOT/Data/classify_workspace}"
+WORKSPACE="$(cd -P "$WORKSPACE" 2>/dev/null && pwd)" || {
+    echo "Workspace not found: ${1:-$REPO_ROOT/Data/classify_workspace}"
+    echo "Build it first:"
+    echo "  python -m scripts.build_classify_manifest --pages-dir <pages> --combined-dir <combined>"
+    exit 1
+}
+
+# Run from the app directory so .streamlit/config.toml applies.
+cd "$APP_DIR"
+exec conda run --no-capture-output -n long_transients streamlit run streamlit_app.py \
+    -- --workspace "$WORKSPACE"
