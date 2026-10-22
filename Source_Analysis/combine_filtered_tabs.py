@@ -52,19 +52,12 @@ def _field_reasons(field_name: str, run_dirname: str, max_arcsec: float):
 GROUP_RADIUS_ARCSEC = 1.0
 
 
-def _group_name(ra_deg: float, dec_deg: float) -> str:
-    """IAU-style coordinate name, e.g. J012345.678+123456.78."""
-    c = SkyCoord(ra_deg, dec_deg, unit='deg')
-    ra = c.ra.to_string(unit=u.hourangle, sep='', precision=3, pad=True)
-    dec = c.dec.to_string(sep='', precision=2, alwayssign=True, pad=True)
-    return f'J{ra}{dec}'
-
-
 def add_group_ids(tables: Iterable[Table], radius_arcsec: float = GROUP_RADIUS_ARCSEC) -> None:
     """Link rows within radius_arcsec of each other, across fields and across tables (plan_filter_review.md #1).
 
-    Overlapping fields find the same object more than once. Linked rows (chains included) share a `group_id`
-    named after the group's mean position; a row with no partner gets ''. Rows are never dropped or merged.
+    Overlapping fields find the same object more than once. Linked rows (chains included) share an integer
+    `group_id` (1, 2, ..., numbered by the group's mean RA); a row with no partner gets -1. Rows are never
+    dropped or merged.
     """
     tables = [t for t in tables if len(t) > 0]
     if not tables:
@@ -87,21 +80,24 @@ def add_group_ids(tables: Iterable[Table], radius_arcsec: float = GROUP_RADIUS_A
             parent[max(ra_, rb_)] = min(ra_, rb_)
     roots = np.array([find(x) for x in range(len(ra))])
 
-    group_ids = np.full(len(ra), '', dtype=object)
+    group_ids = np.full(len(ra), -1, dtype=np.int64)
     uniq, inv, counts = np.unique(roots, return_inverse=True, return_counts=True)
     xyz = coords.cartesian.xyz.value.T  # average on the unit sphere, safe across RA=0
     sums = np.zeros((len(uniq), 3))
     np.add.at(sums, inv, xyz)
     multi = np.where(counts > 1)[0]
     if len(multi):
+        # Number groups by mean RA (then Dec) so the ids don't depend on file order
         mean = SkyCoord(*sums[multi].T, representation_type='cartesian').spherical
-        names = {g: _group_name(lo, la) for g, lo, la in zip(multi, mean.lon.deg, mean.lat.deg)}
+        order = np.lexsort((mean.lat.deg, mean.lon.deg))
+        number = np.zeros(len(uniq), dtype=np.int64)
+        number[multi[order]] = np.arange(1, len(multi) + 1)
         in_group = counts[inv] > 1
-        group_ids[in_group] = [names[g] for g in inv[in_group]]
+        group_ids[in_group] = number[inv[in_group]]
 
     start = 0
     for t in tables:
-        t['group_id'] = group_ids[start:start + len(t)].astype(str)
+        t['group_id'] = group_ids[start:start + len(t)]
         start += len(t)
 
 
@@ -206,7 +202,7 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
     # Link duplicates of one object (overlapping fields, or the same object in both tables)
     add_group_ids([tabs[0], tabs[1]])
     for cat in (0, 1):
-        n = int(np.sum(np.asarray(tabs[cat]['group_id']) != '')) if 'group_id' in tabs[cat].colnames else 0
+        n = int(np.sum(np.asarray(tabs[cat]['group_id']) > 0)) if 'group_id' in tabs[cat].colnames else 0
         print(f'Catalog {cat}: {n} of {len(tabs[cat])} rows share a group_id with another row', flush=True)
 
     # Do the same casting for tabs_wide
