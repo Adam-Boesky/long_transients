@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 
 from astropy.table import Table, vstack
-from astropy.coordinates import SkyCoord, match_coordinates_sky
+from astropy.coordinates import SkyCoord, match_coordinates_sky, search_around_sky
+import astropy.units as u
 from typing import Iterable
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # repo root, on any machine
@@ -46,6 +47,62 @@ def _field_reasons(field_name: str, run_dirname: str, max_arcsec: float):
         out[key] = filtered_out_summary.reasons_for(
             tab['ra'], tab['dec'], base, max_arcsec)
     return field_name, out
+
+
+GROUP_RADIUS_ARCSEC = 1.0
+
+
+def _group_name(ra_deg: float, dec_deg: float) -> str:
+    """IAU-style coordinate name, e.g. J012345.678+123456.78."""
+    c = SkyCoord(ra_deg, dec_deg, unit='deg')
+    ra = c.ra.to_string(unit=u.hourangle, sep='', precision=3, pad=True)
+    dec = c.dec.to_string(sep='', precision=2, alwayssign=True, pad=True)
+    return f'J{ra}{dec}'
+
+
+def add_group_ids(tables: Iterable[Table], radius_arcsec: float = GROUP_RADIUS_ARCSEC) -> None:
+    """Link rows within radius_arcsec of each other, across fields and across tables (plan_filter_review.md #1).
+
+    Overlapping fields find the same object more than once. Linked rows (chains included) share a `group_id`
+    named after the group's mean position; a row with no partner gets ''. Rows are never dropped or merged.
+    """
+    tables = [t for t in tables if len(t) > 0]
+    if not tables:
+        return
+    ra = np.concatenate([np.asarray(t['ra'], dtype=float) for t in tables])
+    dec = np.concatenate([np.asarray(t['dec'], dtype=float) for t in tables])
+    coords = SkyCoord(ra, dec, unit='deg')
+    i, j, _, _ = search_around_sky(coords, coords, radius_arcsec * u.arcsec)
+
+    # Union-find over the pairs, so chains A-B-C end up in one group
+    parent = np.arange(len(ra))
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for a, b in zip(i[i < j], j[i < j]):
+        ra_, rb_ = find(a), find(b)
+        if ra_ != rb_:
+            parent[max(ra_, rb_)] = min(ra_, rb_)
+    roots = np.array([find(x) for x in range(len(ra))])
+
+    group_ids = np.full(len(ra), '', dtype=object)
+    uniq, inv, counts = np.unique(roots, return_inverse=True, return_counts=True)
+    xyz = coords.cartesian.xyz.value.T  # average on the unit sphere, safe across RA=0
+    sums = np.zeros((len(uniq), 3))
+    np.add.at(sums, inv, xyz)
+    multi = np.where(counts > 1)[0]
+    if len(multi):
+        mean = SkyCoord(*sums[multi].T, representation_type='cartesian').spherical
+        names = {g: _group_name(lo, la) for g, lo, la in zip(multi, mean.lon.deg, mean.lat.deg)}
+        in_group = counts[inv] > 1
+        group_ids[in_group] = [names[g] for g in inv[in_group]]
+
+    start = 0
+    for t in tables:
+        t['group_id'] = group_ids[start:start + len(t)].astype(str)
+        start += len(t)
 
 
 def combine_filtered_tabs(add_filtered_out: bool = False,
@@ -145,6 +202,12 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
             tabs[cat] = vstack(tabs[cat])
         else:
             tabs[cat] = Table()
+
+    # Link duplicates of one object (overlapping fields, or the same object in both tables)
+    add_group_ids([tabs[0], tabs[1]])
+    for cat in (0, 1):
+        n = int(np.sum(np.asarray(tabs[cat]['group_id']) != '')) if 'group_id' in tabs[cat].colnames else 0
+        print(f'Catalog {cat}: {n} of {len(tabs[cat])} rows share a group_id with another row', flush=True)
 
     # Do the same casting for tabs_wide
     for cat in (1,):  # TODO: add 2 back
