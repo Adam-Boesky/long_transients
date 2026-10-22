@@ -162,7 +162,7 @@ Issue numbers are the ones used during the review.
   - All are across fields; there are none within a field.
 - **Fix:** flag, don't collapse; done at the combine step, the first place all fields meet.
   - Add a `group_id` column. Rows within 1″ of each other, across fields *and* across tables (0, 1), share a value (chains linked); null for single detections. There is no primary; every row stays equal.
-  - `group_id` is a deterministic coordinate string for the group's mean position (e.g. `J012345.678+123456.78`), consistent within a release.
+  - `group_id` is an integer: groups are numbered 1..N by mean RA (then Dec), independent of file order; -1 for single detections.
   - `source_uuid` is unchanged, so all labels stay attached.
 - **Downstream:**
   - Website: group by `group_id`, show all members together, label them as one.
