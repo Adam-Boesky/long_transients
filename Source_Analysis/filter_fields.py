@@ -809,6 +809,12 @@ class Filters():
                 pstarr_kron_mask = (pstarr_kron_snr > snr_min) & np.logical_not(kron_mask)
                 pstarr_mask = np.logical_or(pstarr_psf_mask, pstarr_kron_mask) & np.logical_not(both_mask)
 
+                # Each catalogue detected the row, but in different photometry types (PSF vs Kron): send it only to
+                # the side with PSF SNR > 5, since Δmag uses PSF mags (plan_filter_review.md #8)
+                in_both_sets = ztf_mask & pstarr_mask
+                ztf_mask &= ~in_both_sets | (ztf_psf_snr > snr_min)
+                pstarr_mask &= ~in_both_sets | (pstarr_psf_snr > snr_min)
+
                 # Fill in tabs
                 ztf_tabs[band] = tab[ztf_mask]
                 pstarr_tabs[band] = tab[pstarr_mask]
