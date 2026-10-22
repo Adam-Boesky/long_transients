@@ -2,6 +2,7 @@ import io
 import os
 import sys
 import ast
+import re
 import json
 import requests
 from glob import glob
@@ -47,6 +48,9 @@ time_support()
 _get_sparcl_client = lru_cache(maxsize=1)(lambda: SparclClient(connect_timeout=10))
 
 ACCEPTABLE_PROC_STATUS = [0]
+# Per-band PS1 photometry columns, e.g. PSTARR_rPSFMag; group(1) is the band
+_BAND_PS1_COL = re.compile(r'^PSTARR_([gri])(PSFMag|PSFMagErr|KronMag|KronMagErr|infoFlag|infoFlag2|psfLikelihood)$')
+
 MANDATORY_SOURCE_COLUMNS = [
     'ra', 'dec', 'PSTARR_rPSFMag', 'PSTARR_iKronMagErr', 'PSTARR_primaryDetection',
     'PSTARR_rinfoFlag2', 'PSTARR_gPSFMagErr',
@@ -854,7 +858,7 @@ class Source():
 
             # Add the mandatory columns and make sure they're unique
             unique_colnames += MANDATORY_SOURCE_COLUMNS
-            unique_colnames = set(unique_colnames)
+            unique_colnames = sorted(set(unique_colnames))  # sorted: a set's order changes between runs
 
             # Make the empty table to fill in
             data_dict = {k: [np.nan] for k in unique_colnames}
@@ -871,15 +875,42 @@ class Source():
                 if _cat_col in self._data.colnames:
                     self._data[_cat_col] = self._data[_cat_col].astype('S10')
 
+            # Each band's nearest row within max_arcsec (None if there isn't one)
+            band_rows = {}
             for band, cat in self.field_catalogs.items():
-
-                # Get the source from each catalog
                 if self._precomputed_cat_indices is not None and band in self._precomputed_cat_indices:
-                    ind_closest = self._precomputed_cat_indices[band]
+                    band_rows[band] = self._precomputed_cat_indices[band]
                 else:
                     if self.verbose > 0: print(f'Searching {band} catalog for source...')
                     coords = SkyCoord(ra=cat['ra'], dec=cat['dec'], unit='deg')
-                    ind_closest, _ = closest_within_radius(self.coord, coords, max_arcsec=self.max_arcsec)
+                    band_rows[band], _ = closest_within_radius(self.coord, coords, max_arcsec=self.max_arcsec)
+
+            # Pass 1 (plan_filter_review.md #9): a band's own PS1 photometry comes from that band's row, and the
+            # position and shared PS1 columns from the first band matched to PS1 (flag 0). Otherwise, when bands
+            # matched different PS1 objects, the row mixed them and Δmag used a neighbour's magnitude.
+            primary = next((b for b, ic in band_rows.items()
+                            if ic is not None and self.field_catalogs[b][f'{b}_Catalog_Flag'][ic] == 0), None)
+            for band, ind_closest in band_rows.items():
+                if ind_closest is None:
+                    continue
+                cat = self.field_catalogs[band]
+                for cname in cat.colnames:
+                    m = _BAND_PS1_COL.match(cname)
+                    own = m is not None and m.group(1) == band
+                    shared = band == primary and m is None and (cname in ('ra', 'dec') or cname.startswith('PSTARR_'))
+                    if not (own or shared):
+                        continue
+                    value = cat[cname][ind_closest]
+                    try:
+                        if np.isnan(value):
+                            continue
+                    except TypeError:
+                        pass
+                    self._data[cname][0] = float(value) if isinstance(value, (bool, np.bool_)) else value
+
+            # Pass 2: everything still empty, first non-empty value in band order
+            for band, cat in self.field_catalogs.items():
+                ind_closest = band_rows[band]
 
                 # If a coord was found, join the tables
                 if ind_closest is not None:
