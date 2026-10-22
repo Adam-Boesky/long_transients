@@ -1470,8 +1470,11 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
     )
 
     # Try to automatically detect a decision structure in the graph
+    all_branches = stats_df.index.get_level_values('branch')
+    if decision is None and 'in_both' not in all_branches:
+        # No 1-3" re-evaluation branch (wide association disabled, #4): draw the filters as one chain
+        decision = {'text': None, 'yes': None, 'no': None}
     if decision is None:
-        all_branches = stats_df.index.get_level_values('branch')
         no_branch = all_branches[~all_branches.isin(['in_both', ''])]
         if len(no_branch) == 0:
             no_branch = None
