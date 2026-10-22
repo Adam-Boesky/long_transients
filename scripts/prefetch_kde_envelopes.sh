@@ -1,9 +1,9 @@
 #!/bin/bash
 
 #SBATCH -p shared
-#SBATCH -c 16
-#SBATCH --mem=80G
-#SBATCH -t 0-06:00
+#SBATCH -c 4
+#SBATCH --mem=160G
+#SBATCH -t 0-12:00
 #SBATCH -o /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/filtering_logs/kde_prefetch_%j.out
 #SBATCH -e /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/filtering_logs/kde_prefetch_%j.err
 #SBATCH --mail-type=END,FAIL

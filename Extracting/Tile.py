@@ -8,10 +8,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 try:
     from Catalogs import (PSTARR_Catalog, PSTARR_Local_Catalog, ZTF_Catalog, associate_tables_by_coordinates)
-    from utils import prepare_table_for_write
+    from utils import prepare_table_for_write, union_coord_range
 except ModuleNotFoundError:
     from .Catalogs import (PSTARR_Catalog, PSTARR_Local_Catalog, ZTF_Catalog, associate_tables_by_coordinates)
-    from .utils import prepare_table_for_write
+    from .utils import prepare_table_for_write, union_coord_range
 
 
 class Tile():
@@ -58,7 +58,10 @@ class Tile():
 
         # Load PSTARR catalog
         if self.n_bands > 0:
-            self.ra_range, self.dec_range = self.ztf_catalogs[self.bands[0]].get_coordinate_range()
+            # PS1 box: union of all bands' images (the deep stacks are offset from each other), padded
+            self.ra_range, self.dec_range = union_coord_range(
+                [self.ztf_catalogs[b].get_coordinate_range() for b in self.bands]
+            )
 
             # Get the PanSTARRS catalog for the tile
             if local_ps1:

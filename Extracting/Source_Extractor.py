@@ -17,7 +17,7 @@ from astropy.visualization import simple_norm
 from matplotlib.patches import Ellipse
 from photutils.psf import PSFPhotometry, EPSFBuilder, EPSFFitter, EPSFStars, extract_stars
 
-from Extracting.utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
+from Extracting.utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME, coord_range_from_wcs
 # try:
 #     from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
 # except ModuleNotFoundError:
@@ -461,22 +461,7 @@ class Source_Extractor():
 
     def get_coord_range(self) -> Tuple[Tuple[float, float], Tuple[float, float]]:
         """Get the RA and DEC range of the image."""
-        corners = [
-            self.wcs.pixel_to_world(0, 0),
-            self.wcs.pixel_to_world(self.image_data.shape[1], 0),
-            self.wcs.pixel_to_world(self.image_data.shape[1], self.image_data.shape[0]),
-            self.wcs.pixel_to_world(0, self.image_data.shape[0]),
-        ]
-        corner_ras = np.array([c.ra.deg for c in corners])
-        corner_decs = np.array([c.dec.deg for c in corners])
-        ra_range = (np.min(corner_ras), np.max(corner_ras))
-        dec_range = (np.min(corner_decs), np.max(corner_decs))
-
-        # Account for wrapping at 360 deg
-        if ra_range[0] < 10.0 and ra_range[1] > 350.0:
-            ra_range = (ra_range[1], ra_range[0] + 360.0)
-
-        return ra_range, dec_range
+        return coord_range_from_wcs(self.wcs, self.image_data.shape)
 
     def get_data_table(self, include_kron: bool = True, include_psf: bool = True) -> Table:
         """

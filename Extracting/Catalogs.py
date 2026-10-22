@@ -4,6 +4,7 @@ import random
 import os
 import sys
 import tempfile
+import time
 import traceback
 from io import StringIO
 from typing import Dict, Iterable, Optional, Tuple, List, Union
@@ -479,21 +480,35 @@ class ZTF_Catalog(Catalog):
             print(f"{file_path.split('/')[-1]} is not valid. Deleting and re-downloading...")
             os.remove(file_path)
 
-        # Try downloading 3 times, validating each attempt
-        for attempt in range(3):
-            response = requests.get(image_url, auth=(username, password), stream=True)
-            if response.status_code == 200:
-                with open(file_path, 'wb') as file:
-                    for chunk in response.iter_content(chunk_size=1024):
-                        if chunk:
-                            file.write(chunk)
-                if fitscheck_valid(file_path):
-                    print(f"Image downloaded and saved at {file_path}")
-                    return file_path
-                print(f"Downloaded file is not valid (attempt {attempt + 1}/3). Deleting and retrying...")
-                os.remove(file_path)
+        # Retry with backoff. Non-200s used to be silent, so an IRSA outage (31 Aug - 1 Sep) dropped
+        # ~19k images as "no image found"; only a 404 means the reference truly doesn't exist.
+        n_attempts = 7
+        for attempt in range(n_attempts):
+            try:
+                response = requests.get(image_url, auth=(username, password), stream=True, timeout=(10, 60))
+                if response.status_code == 200:
+                    with open(file_path, 'wb') as file:
+                        for chunk in response.iter_content(chunk_size=1024):
+                            if chunk:
+                                file.write(chunk)
+                    if fitscheck_valid(file_path):
+                        print(f"Image downloaded and saved at {file_path}")
+                        return file_path
+                    print(f"DOWNLOAD_RETRY invalid file (attempt {attempt + 1}/{n_attempts}): {image_url}")
+                    os.remove(file_path)
+                elif response.status_code == 404:
+                    print(f"DOWNLOAD_FAIL HTTP 404: {image_url}")
+                    return None
+                else:
+                    print(f"DOWNLOAD_RETRY HTTP {response.status_code} (attempt {attempt + 1}/{n_attempts}): {image_url}")
+            except requests.exceptions.RequestException as e:
+                print(f"DOWNLOAD_RETRY {type(e).__name__} (attempt {attempt + 1}/{n_attempts}): {image_url}")
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            if attempt < n_attempts - 1:
+                time.sleep(min(30 * 2 ** attempt, 900) * random.uniform(0.8, 1.2))  # 30 s ... 15 min, jittered
 
-        print(f"Failed to download a valid image from {image_url} after 3 attempts.")
+        print(f"DOWNLOAD_FAIL gave up after {n_attempts} attempts: {image_url}")
         return None
 
 
@@ -642,11 +657,20 @@ def get_ztf_metadata_from_metadata(
 
     metadata_url = metadata_url[:-5]  # delete the +AND+ from the end of the url
 
-    # Query
+    # Query with retry logic for transient IRSA errors
     if verbose > 0:
         print(f"Querying metadata from {metadata_url}")
-    metadata_response = requests.get(metadata_url, auth=(username, password), params={'ct': 'csv'})
-    metadata_table = pd.read_csv(StringIO(metadata_response.content.decode("utf-8")))
+    for attempt in range(3):
+        try:
+            metadata_response = requests.get(metadata_url, auth=(username, password), params={'ct': 'csv'}, timeout=60)
+            metadata_table = pd.read_csv(StringIO(metadata_response.content.decode("utf-8")))
+            if 'nframes' not in metadata_table.columns:
+                raise ValueError(f"Unexpected response from IRSA (missing nframes column): {metadata_response.content[:200]}")
+            break
+        except Exception as e:
+            if attempt == 2:
+                raise
+            print(f"WARNING: metadata query attempt {attempt + 1}/3 failed: {e}. Retrying...")
     if len(metadata_table) > 1:
         metadata_table.sort_values(by=['nframes'], ascending=False, inplace=True, ignore_index=True)
 

@@ -320,3 +320,50 @@ INNER JOIN Detection d on d.objID = nb.objID
     tab = _add_pstarr_mag_cols(tab)
 
     return tab
+
+
+# PS1 query box padding beyond the union of a quadrant's band images; covers the 1" match and the 1-3" diversion
+PS1_QUERY_PAD_DEG = 30.0 / 3600.0
+
+
+def coord_range_from_wcs(wcs, shape: Tuple[int, int]) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """RA/Dec range of an image's corners. An image straddling RA=0 is returned as (lo, hi + 360)."""
+    ny, nx = shape
+    corners = [wcs.pixel_to_world(0, 0), wcs.pixel_to_world(nx, 0), wcs.pixel_to_world(nx, ny), wcs.pixel_to_world(0, ny)]
+    corner_ras = np.array([c.ra.deg for c in corners])
+    corner_decs = np.array([c.dec.deg for c in corners])
+    ra_range = (np.min(corner_ras), np.max(corner_ras))
+    dec_range = (np.min(corner_decs), np.max(corner_decs))
+
+    # Straddles RA=0: span the outer corners, as (lo, hi + 360)
+    if ra_range[1] - ra_range[0] > 180.0:
+        ra_range = (np.min(corner_ras[corner_ras > 180.0]), np.max(corner_ras[corner_ras < 180.0]) + 360.0)
+
+    return ra_range, dec_range
+
+
+def union_coord_range(
+        ranges, pad_deg: float = PS1_QUERY_PAD_DEG,
+    ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """Padded union of (ra_range, dec_range) boxes, e.g. one per band image of a quadrant.
+
+    The band deep stacks are offset from each other, so a PS1 box from one band misses strips of the others.
+    RA follows coord_range_from_wcs: a box straddling RA=0 is returned as (lo, hi + 360).
+    """
+    ras = [tuple(r) for r, _ in ranges]
+    if any(hi > 360.0 for _, hi in ras) or max(hi for _, hi in ras) - min(lo for lo, _ in ras) > 180.0:  # same side of RA=0
+        ras = [(lo + 360.0, hi + 360.0) if lo < 180.0 else (lo, hi) for lo, hi in ras]
+    ra_lo, ra_hi = min(lo for lo, _ in ras), max(hi for _, hi in ras)
+    dec_lo = max(-90.0, min(d[0] for _, d in ranges) - pad_deg)
+    dec_hi = min(90.0, max(d[1] for _, d in ranges) + pad_deg)
+
+    max_abs_dec = max(abs(dec_lo), abs(dec_hi))
+    if max_abs_dec > 89.5:
+        return (0.0, 360.0), (dec_lo, dec_hi)
+    ra_pad = pad_deg / np.cos(np.radians(max_abs_dec))
+    ra_lo, ra_hi = ra_lo - ra_pad, ra_hi + ra_pad
+    if ra_hi - ra_lo >= 360.0:
+        return (0.0, 360.0), (dec_lo, dec_hi)
+    if ra_lo < 0.0:
+        ra_lo, ra_hi = ra_lo + 360.0, ra_hi + 360.0
+    return (ra_lo, ra_hi), (dec_lo, dec_hi)

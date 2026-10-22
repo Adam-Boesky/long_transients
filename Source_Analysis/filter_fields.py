@@ -38,7 +38,7 @@ CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Co
 GAIA_OBS_EPOCH = 2021.0  # representative epoch of ZTF detections, used to propagate Gaia positions forward from ref_epoch (J2016.0) before crossmatching
 PSTARR_UPPER_LIM = {'g': 23.3, 'r': 23.2, 'i': 23.1}
 EXTRACTED_CATALOG_DIR = 'catalog_results/field_results' # 'debugging'
-FILTER_RESULT_DIR = 'filter_results_9_13_2026_full_catalog'  # 'filter_results_kde_sep_flag'  # 'debugging/filter_results'  # 'filter_results_gemini'
+FILTER_RESULT_DIR = 'filter_results_9_21_2026_full_catalog_fixed_pm' # 'filter_results_9_13_2026_full_catalog'
 
 def _is_flag(flags: np.ndarray, flag: Union[int, Iterable[int]]) -> np.ndarray:
     """

@@ -24,4 +24,8 @@ source activate long_transients2
 
 cd /n/home04/aboesky/berger/long_transients
 
-python3 -u -m Extracting.run_extraction
+EXTRA_ARGS=""
+if [ -n "${START_FIELD}" ]; then
+    EXTRA_ARGS="--start-field ${START_FIELD}"
+fi
+python3 -u -m Extracting.run_extraction --mode ${MODE:-forward} ${EXTRA_ARGS}

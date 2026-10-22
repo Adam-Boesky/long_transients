@@ -201,7 +201,7 @@ def process_field(field_id: int):
 
     # Iterate through the field, extracting sources with quadrants parallelized
     if USE_LOCAL_PS1:
-        executor_kwargs = dict(max_workers=16)
+        executor_kwargs = dict(max_workers=8)
     else:
         casjobs_lock = multiprocessing.Lock()
         executor_kwargs = dict(max_workers=8, initializer=init_worker_lock, initargs=(casjobs_lock,))
@@ -303,7 +303,7 @@ def process_missed_quadrants(quads_to_reextract: dict):
 
     print(f'Re-extracting {len(quadrants_to_run)} quadrants...')
     if USE_LOCAL_PS1:
-        executor_kwargs = dict(max_workers=16)
+        executor_kwargs = dict(max_workers=8)
     else:
         casjobs_lock = multiprocessing.Lock()
         executor_kwargs = dict(max_workers=8, initializer=init_worker_lock, initargs=(casjobs_lock,))
@@ -320,8 +320,15 @@ def process_missed_quadrants(quads_to_reextract: dict):
                 traceback.print_exc()
 
 
-def extract_sources():
+def extract_sources(mode: str = 'forward', start_field: int = None):
+    """
+    mode='forward'  — extract entirely-missing fields in ascending field-ID order
+    mode='reverse'  — extract entirely-missing fields in descending field-ID order
+    mode='missed'   — only re-extract incomplete quadrants in already-present fields
 
+    start_field: if given, skip all fields with ID < start_field (forward) or
+                 > start_field (reverse) so a job can start from the middle.
+    """
     # Config
     global raise_exceptions
     raise_exceptions = False
@@ -339,32 +346,90 @@ def extract_sources():
     gr_fields = np.intersect1d(ar1=bands_imaged['g'], ar2=bands_imaged['r'])
     gr_only_fields = np.setdiff1d(gr_fields, bands_imaged['i'])
 
-    # # Gemini logic
-    # north_fields = ztffields.get_fieldid(grid='main', dec_range=[10, 30], ra_range=[120, 170])
-    # south_fields = ztffields.get_fieldid(grid='main', dec_range=[-30, -10], ra_range=[130, 180])
-    # gemini_fields = np.concatenate([north_fields, south_fields])
-    # fields_imaged_all_bands = np.intersect1d(ar1=gemini_fields, ar2=fields_imaged_all_bands)
+    all_target_fields = set(np.union1d(fields_imaged_all_bands, gr_only_fields))
 
-    # Extract g+r-only fields (not yet extracted)
-    print(f'Extracting {len(gr_only_fields)} g+r-only fields...')
-    for fid in gr_only_fields:
-        process_field(fid)
+    if mode in ('forward', 'reverse'):
+        # Extract entirely-missing fields
+        extracted_fields = set(
+            int(d.split('_')[0])
+            for d in os.listdir(os.path.join(data_path, 'catalog_results'))
+            if d != 'field_results' and len(d.split('_')) == 3
+        )
+        fields_to_run = sorted(
+            [fid for fid in all_target_fields if fid not in extracted_fields],
+            reverse=(mode == 'reverse'),
+        )
+        if start_field is not None:
+            if mode == 'forward':
+                fields_to_run = [fid for fid in fields_to_run if fid >= start_field]
+            else:
+                fields_to_run = [fid for fid in fields_to_run if fid <= start_field]
+        print(f'Extracting {len(fields_to_run)} fields missing from catalog_results ({mode}, start_field={start_field})...')
+        for fid in fields_to_run:
+            process_field(fid)
 
-    # # Get incomplete quadrants that belong to imaged fields
-    # print('Checking for incomplete quadrant directories...')
-    # incomplete_quads = get_incomplete_quadrant_dirs()
-    # quads_to_reextract = {
-    #     dirname: [f[4] for f in missing_files if f.startswith('ZTF_') and f.endswith('.hdf5')]
-    #     for dirname, missing_files in incomplete_quads.items()
-    #     if int(dirname[:6]) in fields_imaged_all_bands
-    #     and any(f.startswith('ZTF_') and f.endswith('.hdf5') for f in missing_files)
-    # }
-    # print(f'Found {len(quads_to_reextract)} incomplete quadrants to re-extract.')
-    # process_missed_quadrants(quads_to_reextract)
+    # Re-extract incomplete quadrants across all target fields (8 workers to avoid OOM)
+    print('Checking for incomplete quadrant directories...')
+    incomplete_quads = get_incomplete_quadrant_dirs()
+    quads_to_reextract = {
+        dirname: missing_files
+        for dirname, missing_files in incomplete_quads.items()
+        if int(dirname[:6]) in all_target_fields
+        and any(f.startswith('ZTF_') and f.endswith('.hdf5') for f in missing_files)
+    }
+    print(f'Found {len(quads_to_reextract)} incomplete quadrants to re-extract.')
+    process_missed_quadrants(quads_to_reextract)
 
     # # Extract over ALL fields
     # for fid in fields_imaged_all_bands:
     #     process_field(fid)
 
+def extract_quadrant_list(quad_list_path: str, max_workers: int = 8):
+    """Extract an explicit (fieldid, ccdid, qid, bands_to_extract, fresh) list, e.g. the IRSA-vs-disk audit.
+
+    The forward/reverse/missed modes can't reach quadrants that never got a directory inside a field that
+    did, so this is driven by the list instead. `fresh` quadrants are moved aside and redone in every band:
+    Tile rewrites PSTARR.hdf5 with only the bands it extracts, which would break the bands already there.
+    """
+    import pandas as pd
+    data_path = get_data_path()
+    quads = pd.read_csv(quad_list_path)
+    backup_dir = os.path.join(data_path, 'catalog_results_partial_backup')
+    for row in quads[quads['fresh'] == 1].itertuples():
+        quad_dirname = f'{str(row.fieldid).zfill(6)}_{str(row.ccdid).zfill(2)}_{row.qid}'
+        src = os.path.join(data_path, 'catalog_results', quad_dirname)
+        if os.path.exists(src):
+            os.makedirs(backup_dir, exist_ok=True)
+            print(f'Moving partial {quad_dirname} to {backup_dir} for a fresh extraction')
+            shutil.move(src, os.path.join(backup_dir, quad_dirname))
+
+    jobs = [(int(r.fieldid), int(r.ccdid), int(r.qid), list(r.bands_to_extract)) for r in quads.itertuples()]
+    print(f'Extracting {len(jobs)} quadrants from {quad_list_path} with {max_workers} workers', flush=True)
+    n_ok = n_fail = 0
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(process_quadrant, *job): job for job in jobs}
+        for future in as_completed(futures):
+            fieldid, ccdid, qid, bands = futures[future]
+            name = f'{str(fieldid).zfill(6)}_{str(ccdid).zfill(2)}_{qid}'
+            try:
+                future.result()
+                n_ok += 1
+                print(f'QUAD_OK {name} {"".join(bands)} [{n_ok + n_fail}/{len(jobs)}]', flush=True)
+            except Exception as exc:
+                n_fail += 1
+                print(f'QUAD_FAIL {name} {"".join(bands)} {exc.__class__.__name__}: {exc} [{n_ok + n_fail}/{len(jobs)}]', flush=True)
+    print(f'Done: {n_ok} ok, {n_fail} failed of {len(jobs)}', flush=True)
+
+
 if __name__=='__main__':
-    extract_sources()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=['forward', 'reverse', 'missed', 'list'], default='forward')
+    parser.add_argument('--start-field', type=int, default=None)
+    parser.add_argument('--quad-list', type=str, default=None, help='CSV for --mode list')
+    parser.add_argument('--workers', type=int, default=8)
+    args = parser.parse_args()
+    if args.mode == 'list':
+        extract_quadrant_list(args.quad_list, max_workers=args.workers)
+    else:
+        extract_sources(mode=args.mode, start_field=args.start_field)

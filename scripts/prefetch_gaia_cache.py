@@ -86,9 +86,15 @@ def read_field_coords(field_name: str) -> tuple:
     return np.concatenate(ras), np.concatenate(decs)
 
 
+FOOTPRINT = None  # field -> (ras, decs) of IRSA quadrant corners, set by --footprint
+
+
 def prefetch_field(field_name: str) -> int:
     """Trigger + cache the Gaia query for a field. Returns n Gaia sources."""
-    all_ras, all_decs = read_field_coords(field_name)
+    if FOOTPRINT is not None:
+        all_ras, all_decs = FOOTPRINT[int(field_name)]
+    else:
+        all_ras, all_decs = read_field_coords(field_name)
     gaia_table = query_gaia_for_field(field_name, all_ras, all_decs)
     return len(gaia_table)
 
@@ -104,7 +110,30 @@ def main():
                         help='Explicit field names instead of directory discovery.')
     parser.add_argument('--overwrite', action='store_true',
                         help='Re-query fields that are already cached.')
+    parser.add_argument('--footprint', default=None,
+                        help='CSV of (field, ra, dec) quadrant corners; boxes come from these instead of '
+                             'extracted catalogs, for fields whose extraction is still incomplete.')
+    parser.add_argument('--move-old-to', default=None,
+                        help='Move existing caches of the requested fields here (once) and re-query them.')
     args = parser.parse_args()
+
+    if args.footprint is not None:
+        import pandas as pd
+        global FOOTPRINT
+        fp = pd.read_csv(args.footprint)
+        FOOTPRINT = {f: (g['ra'].to_numpy(), g['dec'].to_numpy()) for f, g in fp.groupby('field')}
+        if args.fields is None:
+            args.fields = [str(f).zfill(6) for f in sorted(FOOTPRINT)]
+
+    if args.move_old_to is not None and not args.dry_run:
+        import shutil
+        os.makedirs(args.move_old_to, exist_ok=True)
+        cache_dir = os.path.join(get_data_path(), 'gaia_cache')
+        for f in args.fields:
+            old, dest = os.path.join(cache_dir, f'{f}.ecsv'), os.path.join(args.move_old_to, f'{f}.ecsv')
+            if os.path.exists(old) and not os.path.exists(dest):  # dest exists => already moved, old is the new cache
+                shutil.move(old, dest)
+                print(f'Moved old cache {old} -> {dest}', flush=True)
 
     fields = args.fields if args.fields is not None else discover_fields()
     print(f'Found {len(fields)} extracted fields.', flush=True)

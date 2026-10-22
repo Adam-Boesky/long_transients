@@ -8,12 +8,12 @@ from astropy.table import Table, vstack
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from typing import Iterable
 
-sys.path.append('/Users/adamboesky/Research/long_transients')
+sys.path.insert(0, '/n/home04/aboesky/berger/long_transients')
 
-from Extracting.utils import load_ecsv, get_data_path
+from Extracting.utils import load_ecsv, get_data_path, prepare_table_for_write
 from Source_Analysis.filter_fields import combine_stats, create_filter_flowchart
 
-FILTER_RESULTS_DIRNAME = 'filter_results_kde'
+FILTER_RESULTS_DIRNAME = 'filter_results_9_21_2026_full_catalog_fixed_pm'
 
 
 def combine_filtered_tabs():
@@ -87,14 +87,18 @@ def combine_filtered_tabs():
     for cat in (0, 1, 2):
         stat_dfs[cat].to_csv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, 'combined', f'{cat}_filter_stats.csv'))
         if cat != 2:  # TODO: temporary for bad pstarr extraction
-            tabs[cat].write(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, 'combined', f'{cat}.ecsv'), overwrite=True)
+            prepare_table_for_write(tabs[cat]).write(
+                os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, 'combined', f'{cat}.hdf5'),
+                path='data', serialize_meta=True, overwrite=True)
 
     for cat in (1, 2):
         if cat != 2:  # TODO: temporary for bad pstarr extraction
-            tabs_wide[cat].write(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, 'combined', f'{cat}_wide_association.ecsv'), overwrite=True)
+            prepare_table_for_write(tabs_wide[cat]).write(
+                os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, 'combined', f'{cat}_wide_association.hdf5'),
+                path='data', serialize_meta=True, overwrite=True)
 
     for cat in (0, 1, 2):
-        create_filter_flowchart(stat_dfs[cat]).save(f'/Users/adamboesky/Research/long_transients/Data/{FILTER_RESULTS_DIRNAME}/combined/{cat}_flowchart.pdf')
+        create_filter_flowchart(stat_dfs[cat]).save(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, 'combined', f'{cat}_flowchart.pdf'))
 
 
 if __name__ == '__main__':
