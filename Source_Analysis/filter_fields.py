@@ -1678,7 +1678,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'shape_filter')
     all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'pstarr_not_saturated')
     all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'psf_fit_filter')
-    all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'dec_greater_than', min_dec=min_dec)
+    # all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'dec_greater_than', min_dec=min_dec)  # dec cut disabled (plan_filter_review.md #13): applied by hand afterwards
 
     # Build (or load cached) KDE envelopes from quality-filtered sources
     in_both_quality_tabs = {band: tab[tab['Catalog_Flag'] == 0] for band, tab in all_quality_source_tabs.items()}
@@ -1703,7 +1703,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     tabs = filters.filter(tabs, 'psf_fit_filter')
 
     # Drop sources with dec < -29.5
-    tabs = filters.filter(tabs, 'dec_greater_than', min_dec=min_dec)
+    # tabs = filters.filter(tabs, 'dec_greater_than', min_dec=min_dec)  # dec cut disabled (plan_filter_review.md #13): applied by hand afterwards
 
     # Drop all sources with snr < 5
     tabs, ztf_tabs_low_snr, pstarr_tabs_low_snr = filters.filter(tabs, 'snr_filter', snr_min=5, both_cat=True)
@@ -1778,7 +1778,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     in_ztf_tabs = filters.filter(in_ztf_tabs, 'psf_fit_filter')
 
     # Drop sources with dec < -29.5
-    in_ztf_tabs = filters.filter(in_ztf_tabs, 'dec_greater_than', min_dec=min_dec)
+    # in_ztf_tabs = filters.filter(in_ztf_tabs, 'dec_greater_than', min_dec=min_dec)  # dec cut disabled (plan_filter_review.md #13): applied by hand afterwards
 
     # Double check ZTF sources that are a little more than 1 arcsec from PanSTARRS sources
     min_sep, max_sep = 1.0, 3.0
@@ -1897,7 +1897,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'snr_filter', snr_min=5)
 
     # Drop sources with dec < -29.5
-    in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'dec_greater_than', min_dec=min_dec)
+    # in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'dec_greater_than', min_dec=min_dec)  # dec cut disabled (plan_filter_review.md #13): applied by hand afterwards
 
     # Double check ZTF sources that are a little more than 1 arcsec from PanSTARRS sources
     min_sep, max_sep = 1.0, 3.0

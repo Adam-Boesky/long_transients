@@ -16,6 +16,7 @@ Issue numbers are the ones used during the review.
 | 3 | #5 | Support g+r-only fields | `filter_fields.py` |
 | 4 | #8 | SNR routing tie-break on PSF SNR | `filter_fields.py` (`snr_filter`) |
 | 5 | #9 | Per-band PS1 values; position from the first matched band | `Sources.py` (`Sources.data`) |
+| 5b | #13 | Remove the Dec > −29.5 cut (applied by hand afterwards) | `filter_fields.py` |
 | 6 | – | Move stale KDE caches aside; stage-3 filtering of all 485 fields into a new results directory | cluster run |
 | 7 | #1, #11 | `group_id`; read only field folders | combine script |
 | 8 | – | Enrichment, then website database update (annotations carried over by identity) | stage 5 |
@@ -144,6 +145,15 @@ Issue numbers are the ones used during the review.
     - 1–2 per field move more than 0.5″: the neighbour cases.
   - No other column changes.
 - **Website:** rows moving more than 0.5″ (~0.2% of in-both, the neighbour cases) get new identity matches.
+
+### 13. [ ] No declination cut in filtering
+- **Change:** the `Dec > −29.5` cut (`dec_greater_than`) is commented out everywhere it ran:
+  - the quality-filtered tables the KDE envelopes and `Sources` rows are built from;
+  - the in-both branch;
+  - the ZTF-only branch;
+  - the PS1-only branch.
+- **Why:** the declination limit will be applied by hand to the final candidates, so filtering keeps everything.
+- **Effect:** candidates below −29.5° now appear in the outputs. Envelopes in the southernmost fields include those sources (they are rebuilt for stage 3 anyway).
 
 ### 1. [ ] Duplicate candidates across overlapping fields
 - **Problem:** neighbouring fields overlap, and the combine step stacks per-field outputs with no deduplication, so an object in the overlap appears once per field.
