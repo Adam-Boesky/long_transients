@@ -39,7 +39,7 @@ BANDS = ['g', 'r', 'i']
 CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Coverage'}
 GAIA_OBS_EPOCH = 2021.0  # representative epoch of ZTF detections, used to propagate Gaia positions forward from ref_epoch (J2016.0) before crossmatching
 EXTRACTED_CATALOG_DIR = 'catalog_results/field_results' # 'debugging'
-FILTER_RESULT_DIR = 'filter_results_9_21_2026_full_catalog_fixed_pm' # 'filter_results_9_13_2026_full_catalog'
+FILTER_RESULT_DIR = 'filter_results_final_10_22_2026'  # previous: 'filter_results_9_21_2026_full_catalog_fixed_pm'
 
 def _is_flag(flags: np.ndarray, flag: Union[int, Iterable[int]]) -> np.ndarray:
     """
@@ -2042,4 +2042,8 @@ def filter_fields(descending: bool = False):
 
 
 if __name__ == '__main__':
-    filter_fields(descending='--descending' in sys.argv)
+    # --field 000400 filters one field (used by the array job); otherwise work through every field
+    if '--field' in sys.argv:
+        _filter_field_wrapper(sys.argv[sys.argv.index('--field') + 1].zfill(6))
+    else:
+        filter_fields(descending='--descending' in sys.argv)
