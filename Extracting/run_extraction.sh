@@ -24,4 +24,12 @@ source activate long_transients2
 
 cd /n/home04/aboesky/berger/long_transients
 
-python3 -u -m Extracting.run_extraction
+# MODE=forward|reverse|missed (optional START_FIELD), or MODE=list with QUAD_LIST=<csv> (optional WORKERS)
+EXTRA_ARGS=""
+if [ -n "${START_FIELD}" ]; then
+    EXTRA_ARGS="--start-field ${START_FIELD}"
+fi
+if [ "${MODE}" = "list" ]; then
+    EXTRA_ARGS="--quad-list ${QUAD_LIST:?set QUAD_LIST for MODE=list} --workers ${WORKERS:-8}"
+fi
+python3 -u -m Extracting.run_extraction --mode ${MODE:-forward} ${EXTRA_ARGS}
