@@ -1038,7 +1038,7 @@ class Filters():
             # Run only_big_dmag on all bands using the same source data table
             # (each band reads its own band-prefixed columns, e.g. ZTF_gPSFMag)
             good_tabs, _, _ = self.only_big_dmag(
-                {band: data for band in BANDS},
+                {band: data for band in BANDS if band in envelopes},  # g+r fields have no i envelope
                 sigma_boundary=sigma_boundary,
                 envelopes=envelopes,
             )
@@ -2005,14 +2005,12 @@ def _filter_field_wrapper(field):
 def filter_fields(descending: bool = False):
     """Filter fields! Pass descending=True to work the list from the far end, so a second
     job can be run alongside an ascending one and meet it in the middle."""
-    # Fields imaged in all three bands — intersect the per-band npy lists so that
-    # we only run on gri fields and avoid KeyErrors in the i-band envelope lookup.
+    # Fields imaged in g and r (gri and g+r-only fields); i is the only band any field lacks
     data_path = get_data_path()
     g_fields = np.load(os.path.join(data_path, 'g_imaged_fields.npy'))
     r_fields = np.load(os.path.join(data_path, 'r_imaged_fields.npy'))
-    i_fields = np.load(os.path.join(data_path, 'i_imaged_fields.npy'))
-    gri_fields = np.intersect1d(np.intersect1d(g_fields, r_fields), i_fields)
-    fields = [str(f).zfill(6) for f in sorted(gri_fields)]
+    gr_fields = np.intersect1d(g_fields, r_fields)
+    fields = [str(f).zfill(6) for f in sorted(gr_fields)]
 
     fields = [f for f in fields if not os.path.exists(os.path.join(data_path, FILTER_RESULT_DIR, f, '2_flowchart.pdf'))]
     if descending:
