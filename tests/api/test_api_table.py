@@ -256,7 +256,7 @@ def test_an_unmatched_catalog_contributes_nothing():
 
 
 def test_simbad_classifications_are_included():
-    """`classify_app/lib/classes.py` lists four catalogs and omits SIMBAD.
+    """SIMBAD classifications count.
 
     We cross-match it and it types sources, so leaving it out reported a
     SIMBAD-identified quasar as unclassified.

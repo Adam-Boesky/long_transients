@@ -50,8 +50,7 @@ router = APIRouter()
 # it pulls in matplotlib with usetex at module scope.
 
 # (crossmatch prefix, display prefix, class column, column holds a list).
-# Mirrors `classify_app/lib/classes.CLASS_SOURCES`; the crossmatch prefix is
-# what `{prefix}_matched` is built from.
+# The crossmatch prefix is what `{prefix}_matched` is built from.
 # The crossmatch flags the require/exclude filters offer, in display order.
 CATALOG_PREFIXES = ['sdss', 'desi', 'tns', 'wise', 'agn_db']
 

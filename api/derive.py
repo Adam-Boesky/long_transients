@@ -11,9 +11,8 @@ import orjson
 
 # (display prefix, column, the column holds a JSON list).
 #
-# SIMBAD is here where `classify_app/lib/classes.py` has only four entries.
-# It is a catalog we cross-match and it does type sources, so leaving it out
-# means a source SIMBAD calls a quasar reads as unclassified. `otype_label`
+# SIMBAD is included: we cross-match it and it types sources, so leaving it
+# out would make a source SIMBAD calls a quasar read as unclassified. `otype_label`
 # rather than `otype` because it is the readable form -- "Quasar", not "QSO".
 CLASS_SOURCES: list[tuple[str, str, bool]] = [
     ('SDSS', 'sdss_class', False),

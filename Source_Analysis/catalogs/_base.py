@@ -101,8 +101,7 @@ def to_pandas_array(col) -> pd.Series:
     integers go straight from the int64 buffer to pandas `Int64`.
 
     This matters for anything reading the enriched tables back into pandas;
-    `scripts/build_classify_manifest.py` and `source_db/catalog_tier.py`
-    both do, and both must use this rather than `Table.to_pandas()`.
+    `source_db/catalog_tier.py` does, and must use this rather than `Table.to_pandas()`.
     """
     mask = getattr(col, 'mask', None)
     mask = None if mask is None or np.ndim(mask) == 0 else np.asarray(mask, dtype=bool)
