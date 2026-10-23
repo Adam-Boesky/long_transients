@@ -239,7 +239,8 @@ def fetch_chunk(cat: Catalog, positions: pd.DataFrame,
 
 def fetch(catalog: str, limit: Optional[int] = None, raw_dir: Path = RAW_DIR,
           chunk_size: int = CHUNK_SIZE, resume: bool = True,
-          radius_arcsec: float = MATCH_RADIUS_ARCSEC, workers: int = 1) -> dict:
+          radius_arcsec: float = MATCH_RADIUS_ARCSEC, workers: int = 1,
+          max_wait_seconds: float = MAX_WAIT_SECONDS) -> dict:
     """Fetch one catalog for every source, in resumable chunks.
 
     `workers` > 1 keeps that many async jobs open at IRSA at once. The chunks
@@ -266,7 +267,7 @@ def fetch(catalog: str, limit: Optional[int] = None, raw_dir: Path = RAW_DIR,
         df = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                df = fetch_chunk(cat, sub, radius_arcsec)
+                df = fetch_chunk(cat, sub, radius_arcsec, max_wait_seconds=max_wait_seconds)
                 break
             except Exception as exc:
                 if attempt == MAX_ATTEMPTS:
@@ -373,7 +374,9 @@ if __name__ == '__main__':
     ap.add_argument('--raw-dir', type=Path, default=RAW_DIR)
     ap.add_argument('--workers', type=int, default=1,
                     help='async jobs open at IRSA at once (chunks are disjoint)')
+    ap.add_argument('--max-wait-hours', type=float, default=MAX_WAIT_SECONDS / 3600,
+                    help='abandon and retry a job still running after this long')
     a = ap.parse_args()
     for name in a.catalogs:
         fetch(name, limit=a.limit, raw_dir=a.raw_dir, chunk_size=a.chunk_size,
-              workers=a.workers)
+              workers=a.workers, max_wait_seconds=a.max_wait_hours * 3600)
