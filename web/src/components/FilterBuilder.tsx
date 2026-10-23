@@ -23,13 +23,14 @@
  * silently flattened.
  */
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { getColumnStats, getFilterSchema, isAbort, previewFilter } from '../api/client'
 import { isExpr, isGroup } from '../api/types'
 import type {
   ColumnStats, FilterColumn, FilterGroup, FilterLeaf, FilterNode, FilterOp,
   FilterSchema, SourceQuery,
 } from '../api/types'
-import { Card, field } from './ui'
+import { Card, Label, field } from './ui'
 import { useStableValue } from '../lib/useStableValue'
 
 /** Operators offered per column type. Ordered by how often you want them,
@@ -70,7 +71,6 @@ function leafFor(col: FilterColumn): FilterLeaf {
 
 export function FilterBuilder({ value, onChange, scope }: FilterBuilderProps) {
   const [schema, setSchema] = useState<FilterSchema | null>(null)
-  const [open, setOpen] = useState(false)
   const [total, setTotal] = useState<number | null>(null)
   const [scopeTotal, setScopeTotal] = useState<number | null>(null)
   const [counts, setCounts] = useState<(number | null)[]>([])
@@ -136,18 +136,18 @@ export function FilterBuilder({ value, onChange, scope }: FilterBuilderProps) {
 
   return (
     <div>
-      <button onClick={() => setOpen((v) => !v)}
-              style={{ ...field, textAlign: 'left', cursor: 'pointer',
-                       display: 'flex', justifyContent: 'space-between' }}>
-        <span>{open ? '▾' : '▸'} Column filters</span>
+      <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: 6 }}>
+        <Label>Column filters</Label>
         {n > 0 && (
-          <span style={{ fontSize: 11, padding: '0 6px', borderRadius: 999,
-                         border: '1px solid var(--border-strong)' }}>{n}</span>
+          <button onClick={() => onChange(null)}
+                  style={{ marginLeft: 'auto', border: 0, background: 'none', font: 'inherit',
+                           fontSize: 11, opacity: 0.7, cursor: 'pointer', color: 'inherit' }}>
+            clear
+          </button>
         )}
-      </button>
+      </div>
 
-      {open && (
-        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {n > 1 && (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center',
                           fontSize: 12, opacity: 0.8 }}>
@@ -173,22 +173,14 @@ export function FilterBuilder({ value, onChange, scope }: FilterBuilderProps) {
                      onAdd={(c) => emit([...group.clauses, c], group.op)} />
 
           {err && <div style={{ color: 'crimson', fontSize: 12 }}>{err}</div>}
-          {typeof total === 'number' && !err && (
+          {n > 0 && typeof total === 'number' && !err && (
             <div style={{ fontSize: 12, opacity: 0.8 }}>
               <b>{total.toLocaleString()}</b> source{total === 1 ? '' : 's'} match
               {typeof scopeTotal === 'number' && scopeTotal !== total
                 && ` of ${scopeTotal.toLocaleString()} in the current scope`}
             </div>
           )}
-          {n > 0 && (
-            <button onClick={() => onChange(null)}
-                    style={{ ...field, cursor: 'pointer', width: 'auto',
-                             alignSelf: 'flex-start', fontSize: 12 }}>
-              clear all
-            </button>
-          )}
-        </div>
-      )}
+      </div>
     </div>
   )
 }
@@ -322,62 +314,143 @@ function Row({ children, matches, onRemove }: {
 }
 
 
-/** Search across all 318 columns, grouped, with the fill rate on each.
+/** Search across all 318 columns: a combobox with the list below the box.
  *
- * A `<datalist>` rather than a custom dropdown: it is searchable for free,
- * keyboard-navigable for free, and 318 options is exactly the size where a
- * hand-rolled list starts needing virtualisation to stay smooth.
+ * The WAI-ARIA "editable combobox with list autocomplete" pattern, as most
+ * search bars behave: the best match is highlighted as you type, so Enter takes
+ * it; arrows move the highlight, Escape closes, a click picks. Typing alone
+ * never commits, or walking towards `ra_association_...` would pick `ra` on the
+ * way past and reload the page under you.
+ *
+ * The list is portalled and fixed-positioned under the input, because the
+ * sidebar it sits in scrolls and would clip an absolutely positioned one.
  */
-function ColumnPicker({ schema, value, onChange }: {
+const MAX_OPTIONS = 60
+
+function ColumnPicker({ schema, value, onChange, autoFocus, onCancel }: {
   schema: FilterSchema; value: string; onChange: (name: string) => void
+  autoFocus?: boolean
+  /** Called when it is left without picking anything. */
+  onCancel?: () => void
 }) {
   const [draft, setDraft] = useState(value)
   useEffect(() => setDraft(value), [value])
-  // `useId`, not a random ref: several pickers are on screen at once and each
-  // needs its own <datalist>, but a ref initialiser re-evaluates on every
-  // render even though only the first value is kept.
+  const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(0)
+  const [rect, setRect] = useState<DOMRect | null>(null)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const listRef = useRef<HTMLUListElement | null>(null)
   const id = useId()
 
-  const known = (name: string) =>
-    schema.groups.flatMap((g) => g.columns).find((c) => c.name === name)
+  // Only matches once something is typed; the whole catalogue before that.
+  const options = useMemo(() => {
+    const ranked = rankColumns(schema, draft)
+    return (draft.trim() ? ranked.filter((o) => o.r < 4) : ranked).slice(0, MAX_OPTIONS)
+  }, [schema, draft])
 
-  const commit = (name: string) => {
-    if (name === value) return
-    if (known(name)) onChange(name)
-    else setDraft(value)          // not a column: put back what was there
+  const known = (name: string) =>
+    schema.groups.flatMap((g) => g.columns).some((c) => c.name === name)
+
+  const pick = (name: string) => {
+    setDraft(name); setOpen(false)
+    if (name !== value) onChange(name)
   }
+  const cancel = () => { setDraft(value); setOpen(false); onCancel?.() }
+
+  // Keep the list under the input while the page or sidebar scrolls.
+  useEffect(() => {
+    if (!open) return
+    const place = () => setRect(inputRef.current?.getBoundingClientRect() ?? null)
+    place()
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [open])
+
+  useEffect(() => {
+    listRef.current?.children[active]?.scrollIntoView({ block: 'nearest' })
+  }, [active])
 
   return (
     <>
-      <input list={id} value={draft} spellCheck={false}
-             onChange={(e) => {
-               setDraft(e.target.value)
-               // Picking from the dropdown commits straight away; typing does
-               // not, or walking the keyboard towards `ra_association_...`
-               // would commit `ra` on the way past and reload the page under
-               // you. Browsers report a list selection as a replacement
-               // rather than an insertion, which is the difference.
-               const how = (e.nativeEvent as InputEvent).inputType
-               if (how === undefined || how === 'insertReplacementText') {
-                 commit(e.target.value)
+      <input ref={inputRef} value={draft} spellCheck={false} autoComplete="off" autoFocus={autoFocus}
+             role="combobox" aria-expanded={open} aria-controls={id}
+             aria-activedescendant={open && options[active] ? `${id}-${active}` : undefined}
+             placeholder="column"
+             onFocus={(e) => { e.target.select(); setActive(0); setOpen(true) }}
+             onChange={(e) => { setDraft(e.target.value); setActive(0); setOpen(true) }}
+             onBlur={() => { if (known(draft)) pick(draft); else cancel() }}
+             onKeyDown={(e) => {
+               if (e.key === 'ArrowDown') {
+                 e.preventDefault(); setOpen(true)
+                 setActive((i) => Math.min(i + 1, options.length - 1))
+               } else if (e.key === 'ArrowUp') {
+                 e.preventDefault(); setActive((i) => Math.max(i - 1, 0))
+               } else if (e.key === 'Enter') {
+                 e.preventDefault()
+                 const o = open ? options[active] : undefined
+                 if (o) pick(o.col.name)
+                 else if (known(draft)) pick(draft)
+               } else if (e.key === 'Escape') {
+                 cancel()
                }
              }}
-             onBlur={(e) => commit(e.target.value)}
-             onKeyDown={(e) => {
-               if (e.key === 'Enter') {
-                 e.preventDefault(); commit((e.target as HTMLInputElement).value)
-               } else if (e.key === 'Escape') setDraft(value)
-             }}
-             placeholder="column"
              style={{ ...field, fontFamily: 'ui-monospace, monospace', fontSize: 12 }} />
-      <datalist id={id}>
-        {schema.groups.map((g) => g.columns.filter((c) => c.filterable).map((c) => (
-          <option key={c.name} value={c.name}
-                  label={`${g.label} · ${Math.round(c.fill * 100)}% filled`} />
-        )))}
-      </datalist>
+      {open && rect && options.length > 0 && createPortal(
+        <ul ref={listRef} id={id} role="listbox"
+            // Keeps focus in the input so a click is not lost to its blur.
+            onMouseDown={(e) => e.preventDefault()}
+            style={{ position: 'fixed', top: rect.bottom + 2, left: rect.left,
+                     width: Math.max(rect.width, 320), maxHeight: 300, overflowY: 'auto',
+                     margin: 0, padding: 4, listStyle: 'none', zIndex: 1000,
+                     background: 'var(--bg)', color: 'var(--fg, inherit)',
+                     border: '1px solid var(--border-strong)', borderRadius: 6,
+                     boxShadow: '0 6px 18px rgba(0,0,0,0.15)', font: '12px system-ui' }}>
+          {options.map((o, i) => (
+            <li key={o.col.name} id={`${id}-${i}`} role="option" aria-selected={i === active}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => pick(o.col.name)}
+                style={{ display: 'flex', gap: 10, alignItems: 'baseline',
+                         padding: '4px 8px', borderRadius: 4, cursor: 'pointer',
+                         background: i === active ? 'rgba(37, 99, 235, 0.14)'
+                                                  : 'transparent' }}>
+              <span style={{ fontFamily: 'ui-monospace, monospace' }}>{o.col.name}</span>
+              <span style={{ marginLeft: 'auto', opacity: 0.55, whiteSpace: 'nowrap' }}>
+                {o.group} · {Math.round(o.col.fill * 100)}%
+              </span>
+            </li>
+          ))}
+        </ul>,
+        document.body,
+      )}
     </>
   )
+}
+
+
+/** Columns ordered best match first, match-sorter style: exact, prefix,
+ *  a `_`-separated word starting with the query, then anywhere. Ties go to the
+ *  shorter name, then the better-filled column. Non-matches keep schema order. */
+function rankColumns(schema: FilterSchema, query: string) {
+  const q = query.trim().toLowerCase()
+  const rank = (name: string) => {
+    const n = name.toLowerCase()
+    if (!q) return 0
+    if (n === q) return 0
+    if (n.startsWith(q)) return 1
+    if (n.split(/[_.]/).some((w) => w.startsWith(q))) return 2
+    if (n.includes(q)) return 3
+    return 4
+  }
+  const all = schema.groups.flatMap((g, gi) => g.columns
+    .filter((c) => c.filterable)
+    .map((col, ci) => ({ col, group: g.label, order: gi * 10000 + ci, r: rank(col.name) })))
+  return all.sort((a, b) => a.r - b.r
+    || (a.r < 4 && q ? a.col.name.length - b.col.name.length || b.col.fill - a.col.fill : 0)
+    || a.order - b.order)
 }
 
 
@@ -491,26 +564,25 @@ function AddClause({ schema, onAdd }: {
     return (
       <div style={{ display: 'flex', gap: 6 }}>
         <button onClick={() => setPicking(true)}
-                style={{ ...field, cursor: 'pointer', fontSize: 12 }}>
-          + column
+                style={{ ...field, cursor: 'pointer', fontSize: 12, flex: 1 }}>
+          + Filter
         </button>
         <button onClick={() => onAdd({ expr: '' })}
                 title="an arithmetic comparison across columns"
-                style={{ ...field, cursor: 'pointer', fontSize: 12 }}>
-          + expression
+                style={{ ...field, cursor: 'pointer', fontSize: 12, flex: 1 }}>
+          + Expression
         </button>
       </div>
     )
   }
   return (
-    <Card pad={8}>
-      <ColumnPicker schema={schema} value=""
-                    onChange={(name) => {
-                      const col = schema.groups.flatMap((g) => g.columns)
-                        .find((c) => c.name === name)
-                      if (col) { onAdd(leafFor(col)); setPicking(false) }
-                    }} />
-    </Card>
+    <ColumnPicker schema={schema} value="" autoFocus
+                  onCancel={() => setPicking(false)}
+                  onChange={(name) => {
+                    const col = schema.groups.flatMap((g) => g.columns)
+                      .find((c) => c.name === name)
+                    if (col) { onAdd(leafFor(col)); setPicking(false) }
+                  }} />
   )
 }
 
