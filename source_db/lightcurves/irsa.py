@@ -239,8 +239,12 @@ def fetch_chunk(cat: Catalog, positions: pd.DataFrame,
 
 def fetch(catalog: str, limit: Optional[int] = None, raw_dir: Path = RAW_DIR,
           chunk_size: int = CHUNK_SIZE, resume: bool = True,
-          radius_arcsec: float = MATCH_RADIUS_ARCSEC) -> dict:
-    """Fetch one catalog for every source, in resumable chunks."""
+          radius_arcsec: float = MATCH_RADIUS_ARCSEC, workers: int = 1) -> dict:
+    """Fetch one catalog for every source, in resumable chunks.
+
+    `workers` > 1 keeps that many async jobs open at IRSA at once. The chunks
+    are disjoint and each writes its own part, so this only changes wall time.
+    """
     cat = CATALOGS[catalog]
     positions = _base.load_positions(limit=limit)
     chunks = _base.row_chunks(positions, chunk_size)
@@ -251,9 +255,9 @@ def fetch(catalog: str, limit: Optional[int] = None, raw_dir: Path = RAW_DIR,
           f'{len(todo)} to do', flush=True)
 
     t0 = time.time()
-    n_rows = 0
-    failed = []
-    for cid, sub in todo:
+
+    def one(item):
+        cid, sub = item
         t1 = time.time()
         # IRSA returns transient 5xx under load, and a NEOWISE chunk costs
         # ~75 min -- so one bad response must not throw the run away. Retry
@@ -268,22 +272,25 @@ def fetch(catalog: str, limit: Optional[int] = None, raw_dir: Path = RAW_DIR,
                 if attempt == MAX_ATTEMPTS:
                     print(f'  chunk {cid}: giving up after {attempt} attempts '
                           f'({exc!r})', flush=True)
-                    failed.append(cid)
-                    break
+                    return cid, None
                 wait = RETRY_BACKOFF_S * 2 ** (attempt - 1)
                 print(f'  chunk {cid}: attempt {attempt} failed ({exc!r}); '
                       f'retrying in {wait}s', flush=True)
                 time.sleep(wait)
-        if df is None:
-            continue
         # n_rows is recorded by write_raw itself -- passing it here too would
         # collide in record_chunk(**meta).
         _base.write_raw(cat.name, cid, df, raw_dir=raw_dir,
                         n_positions=len(sub))
         _base.write_coverage(cat.name, cid, sub.source_uuid, raw_dir=raw_dir)
-        n_rows += len(df)
         print(f'  chunk {cid}: {len(sub):,} positions -> {len(df):,} rows '
               f'[{time.time() - t1:.0f}s]', flush=True)
+        return cid, len(df)
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        results = list(ex.map(one, todo))
+    failed = [cid for cid, n in results if n is None]
+    n_rows = sum(n for _, n in results if n is not None)
     dt = time.time() - t0
     if failed:
         print(f'{cat.name}: {len(failed)} chunks failed ({", ".join(failed)}); '
@@ -364,6 +371,9 @@ if __name__ == '__main__':
     ap.add_argument('--limit', type=int, default=None)
     ap.add_argument('--chunk-size', type=int, default=CHUNK_SIZE)
     ap.add_argument('--raw-dir', type=Path, default=RAW_DIR)
+    ap.add_argument('--workers', type=int, default=1,
+                    help='async jobs open at IRSA at once (chunks are disjoint)')
     a = ap.parse_args()
     for name in a.catalogs:
-        fetch(name, limit=a.limit, raw_dir=a.raw_dir, chunk_size=a.chunk_size)
+        fetch(name, limit=a.limit, raw_dir=a.raw_dir, chunk_size=a.chunk_size,
+              workers=a.workers)
