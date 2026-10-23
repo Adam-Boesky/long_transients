@@ -63,6 +63,8 @@ const OVERSCAN = 8
 const COLUMNS: Column[] = [
   { key: 'file', label: 'File', width: 196, cell: (r) => r.file },
   { key: 'catalog', label: 'Catalog', width: 124, cell: (r) => r.catalog },
+  { key: 'sigma', label: 'Mean |σ|', width: 84, numeric: true,
+    cell: (r) => r.sigma?.toFixed(2) ?? '' },
   { key: 'dmag', label: 'Mean |dmag|', width: 96, numeric: true,
     cell: (r) => r.dmag?.toFixed(4) ?? '' },
   { key: 'ra', label: 'RA', width: 92, numeric: true,
@@ -127,7 +129,7 @@ export function TablePage({ member }: { member: string }) {
           query: sharedQuery } = useFilters()
   const [scrollTop, setScrollTop] = useState(0)
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>(
-    { key: 'dmag', desc: true })
+    { key: 'sigma', desc: true })
   const [widths, setWidths] = useState(loadWidths)
   useEffect(() => {
     try { localStorage.setItem(WIDTHS_KEY, JSON.stringify(widths)) } catch { /* private window */ }
@@ -185,11 +187,11 @@ export function TablePage({ member }: { member: string }) {
     getTable({
       ...scope,
       offset: page * pageSize, limit: pageSize,
-      // An annotation column sorts locally, over the default |dmag| window.
+      // An annotation column sorts locally, over the default |σ| window.
       // Sending no sort here fell back to the server's uuid order instead,
       // a different 5,000 rows that could hold none of the comments.
       ...(serverKey ? { sort: serverKey, desc: sort.desc }
-                    : { sort: 'mean_abs_dmag', desc: true }),
+                    : { sort: 'mean_abs_dmag_sigma', desc: true }),
       ...(labelState !== 'All' ? { label_state: labelState, author: member } : {}),
     }, ac.signal)
       .then((p) => { setRows(p.rows); setTotal(p.total) })

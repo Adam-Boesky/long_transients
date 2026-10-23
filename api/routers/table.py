@@ -107,6 +107,7 @@ WANTED_COLUMNS = [
     # implementation of the same formula -- and with it the twelve input
     # columns that only existed to feed it.
     'coord_slug', 'ra', 'dec', 'catalog_tier', 'wise_w1w2_mean', 'mean_abs_dmag',
+    'mean_abs_dmag_sigma',
     *(c for _, c, _ in CLASS_SOURCES),
     *MATCHED_COLUMN.values(),
     *(f'{p}_matched' for p in CATALOG_PREFIXES),
@@ -156,6 +157,7 @@ def _derive(row: dict) -> dict:
         'ra': row.get('ra'), 'dec': row.get('dec'),
         'catalog_tier': row.get('catalog_tier'),
         'mean_abs_dmag': _number(row.get('mean_abs_dmag')),
+        'mean_abs_dmag_sigma': _number(row.get('mean_abs_dmag_sigma')),
         'wise_w1w2': _number(row.get('wise_w1w2_mean')),
         'matched': {p: bool(row.get(f'{p}_matched')) for p in CATALOG_PREFIXES},
         'classes': classes_of(row),

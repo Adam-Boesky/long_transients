@@ -233,6 +233,8 @@ export interface TableRow {
   catalog_tier: string | null
   /** Mean |ZTF - PanSTARRS| over g/r/i, recomputed by the API. */
   mean_abs_dmag: number | null
+  /** Mean |Δmag σ| over g/r/i against each field's envelope (capped at 8). */
+  mean_abs_dmag_sigma: number | null
   wise_w1w2: number | null
   /** Crossmatch prefix (`sdss`, `wise`, ...) -> did that catalog match. */
   matched: Record<string, boolean>

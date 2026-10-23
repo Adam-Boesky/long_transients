@@ -93,8 +93,9 @@ export function Label({ children, caps = true }:
  */
 export const SORT_OPTIONS: readonly { key: string; label: string;
                                       desc: boolean }[] = [
-  // The triage order, and the default: the largest change between surveys
-  // first, which is what the sample was built to find.
+  // The triage order, and the default: the most significant change between
+  // surveys first, in units of each field's Δmag envelope.
+  { key: 'mean_abs_dmag_sigma', label: 'Mean |σ|', desc: true },
   { key: 'mean_abs_dmag', label: 'Mean |dmag|', desc: true },
   { key: 'wise_w1w2', label: 'W1-W2', desc: true },
   { key: 'n_epochs', label: 'Epochs', desc: true },

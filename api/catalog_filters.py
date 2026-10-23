@@ -127,6 +127,19 @@ def _mean_abs_dmag_sql(available: set[str]) -> str:
         return 'CAST(NULL AS DOUBLE)'
     return f'list_avg(list_filter([{", ".join(parts)}], x -> x IS NOT NULL))'
 
+def _mean_abs_dmag_sigma_sql(available: set[str]) -> str:
+    """Mean |Δmag σ| over the bands that have one: the default sort.
+
+    `{band}_dmag_sigma` is the significance of each band's Δmag against its
+    field's KDE envelope, written by filtering (capped at 8). NULL when no band
+    has one, as for releases built before the column existed.
+    """
+    cols = [f'"{b}_dmag_sigma"' for b in 'gri' if f'{b}_dmag_sigma' in available]
+    if not cols:
+        return 'CAST(NULL AS DOUBLE)'
+    return f'list_avg(list_filter([{", ".join(f"abs({_finite(c)})" for c in cols)}], x -> x IS NOT NULL))'
+
+
 # The pipeline's sub-catalogues, as tagged in `catalog_tier` by
 # `source_db.catalog_tier.TIERS`, grouped into the names the `catalog=`
 # parameter takes. Defined here alone -- `api.routers.sources` imports it --
@@ -181,6 +194,7 @@ def startup(science: sqlite3.Connection, parquet=None) -> CatalogFilters:
         engine.attach('unified', unified)
     available = {c.name for c in engine.columns()}
     engine.derive('mean_abs_dmag', _mean_abs_dmag_sql(available))
+    engine.derive('mean_abs_dmag_sigma', _mean_abs_dmag_sigma_sql(available))
     engine.derive('classification', _classification_sql(available))
     engine.columns()                      # warm the schema so page 1 is fast
     _engine = engine

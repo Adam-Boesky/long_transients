@@ -33,7 +33,8 @@ def test_table_row_has_the_columns_the_page_reads(client):
     # endpoint, so that a verdict filed by one person does not invalidate a
     # megabyte of catalog data that did not change.
     assert set(row) == {'source_uuid', 'coord_slug', 'ra', 'dec',
-                        'catalog_tier', 'mean_abs_dmag', 'wise_w1w2',
+                        'catalog_tier', 'mean_abs_dmag', 'mean_abs_dmag_sigma',
+                        'wise_w1w2',
                         'matched', 'classes'}
     assert set(row['matched']) == {'sdss', 'desi', 'tns', 'wise', 'agn_db'}
     # Only catalogs that actually said something appear; the fixture rows
