@@ -27,8 +27,9 @@ from source_db.paths import DEFAULT_OUT_DIR, REPO
 
 # (filename in <combined_dir>, catalog_tier label). Order fixes row order in the
 # output, so the smallest tables land first and a schema problem surfaces early.
+# `1_wide_association_enriched.ecsv` is deliberately not read: the wide-radius
+# ZTF-only sources are no longer part of the website.
 TIERS: list[tuple[str, str]] = [
-    ('1_wide_association_enriched.ecsv', '1_wide_association'),
     ('1_enriched.ecsv', '1'),
     ('0_enriched.ecsv', '0'),
 ]

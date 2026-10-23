@@ -134,14 +134,10 @@ def _mean_abs_dmag_sql(available: set[str]) -> str:
 # to disagree about what `in_ztf` means.
 #
 # A partition, not overlapping sets: these are offered as a segmented control,
-# which promises mutually exclusive views. `1_wide_association` is the
-# wider-radius variant of the ZTF-only table; it used to ride along inside
-# `in_ztf`, where its 28 sources could not be looked at on their own or
-# excluded. It gets its own name instead.
+# which promises mutually exclusive views.
 CATALOG_TIERS = {
     'in_both': ('0',),
     'in_ztf': ('1',),
-    'in_ztf_wide': ('1_wide_association',),
 }
 
 # Which name to show for a source, given its tier. Well defined because the

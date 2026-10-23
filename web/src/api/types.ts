@@ -18,7 +18,7 @@ export interface SourceSummary {
   label: string | null
   n_annotations: number
   /** Sub-catalogue in the `catalog=` filter's terms; null outside both. */
-  catalog: 'in_both' | 'in_ztf' | 'in_ztf_wide' | null
+  catalog: 'in_both' | 'in_ztf' | null
 }
 
 export interface SourcePage {
@@ -158,7 +158,7 @@ export interface SourceQuery {
    *  validates the name against the catalog schema. */
   sort?: string
   desc?: boolean
-  /** Sub-catalogue: 'in_both', 'in_ztf' or 'in_ztf_wide'; omit for all. */
+  /** Sub-catalogue: 'in_both' or 'in_ztf'; omit for all. */
   catalog?: string
   author?: string
   /** Substring of `coord_slug`, or a uuid prefix. Matched server-side: the
