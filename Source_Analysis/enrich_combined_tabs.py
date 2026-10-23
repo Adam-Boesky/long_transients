@@ -38,7 +38,7 @@ from astropy.table import Table, hstack
 sys.path.append('/Users/adamboesky/Research/long_transients')
 
 from Extracting.utils import load_ecsv
-from Source_Analysis.catalogs import agn, desi, sdss, simbad, tns, wise
+from Source_Analysis.catalogs import agn, desi, erosita, sdss, simbad, tns, wise
 from Source_Analysis.catalogs._base import text_column_names, to_astropy_table
 
 # Matches Source.max_arcsec, the association radius every per-source lookup in
@@ -46,7 +46,11 @@ from Source_Analysis.catalogs._base import text_column_names, to_astropy_table
 MATCH_RADIUS_ARCSEC = 1.5
 
 CATALOGS = {'sdss': sdss, 'desi': desi, 'tns': tns, 'wise': wise, 'agn_db': agn,
-            'simbad': simbad}
+            'simbad': simbad, 'erosita': erosita}
+
+# Catalogs matched at their own fixed radius rather than the shared one: eROSITA's
+# positional errors are a few arcsec, far beyond 1.5".
+OWN_RADIUS = {'erosita': erosita.MATCH_RADIUS_ARCSEC}
 
 
 def selected_catalogs(catalogs: Optional[Sequence[str]] = None) -> list[str]:
@@ -71,7 +75,8 @@ def crossmatch_columns(
     """Nearest match in each catalog, one row per input position, in input order."""
     frames = []
     for name in selected_catalogs(catalogs):
-        frame = CATALOGS[name].cone_search_many(ra, dec, radius_arcsec=radius_arcsec)
+        radius = OWN_RADIUS.get(name, radius_arcsec)
+        frame = CATALOGS[name].cone_search_many(ra, dec, radius_arcsec=radius)
         n = int(frame[f'{name}_matched'].sum())
         print(f'  {name:6s} {n:6,} / {len(frame):,} matched')
         frames.append(frame)
@@ -95,7 +100,8 @@ def enrich(
     table = load_ecsv(in_path)
     print(f'{os.path.basename(in_path)}: {len(table):,} sources, '
           f'{len(table.colnames)} columns')
-    print(f'  crossmatching {", ".join(names)} at {radius_arcsec}"')
+    print(f'  crossmatching {", ".join(names)} at {radius_arcsec}"'
+          + ''.join(f' ({n} at {OWN_RADIUS[n]}")' for n in names if n in OWN_RADIUS))
 
     # Drop only the *selected* catalogs' columns, so re-running replaces rather
     # than duplicating them. Widening this to every catalog in CATALOGS would

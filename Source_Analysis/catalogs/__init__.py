@@ -16,8 +16,9 @@ service. They share a cone-search interface:
             catalogs miss.
     tns     Transient Name Server object dump (207k rows).
     wise    AllWISE photometry, for W1-W2 colour.
+    erosita eROSITA-DE DR2 X-ray sources (1.98M rows), matched at a fixed 10".
 
-`sdss`, `desi`, `simbad` and `tns` share `_base.LocalCatalog`, which holds the
+`sdss`, `desi`, `simbad`, `tns` and `erosita` share `_base.LocalCatalog`, which holds the
 slim parquet in memory and matches against a cached KD-tree. That is fast for
 bulk work but costs up to ~13 GB for DESI and a further ~8 GB for SIMBAD, so
 run them in a single process rather than inside a multiprocessing Pool.

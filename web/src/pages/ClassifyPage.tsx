@@ -14,7 +14,7 @@
  * permalink after; it is never read again, so plain React state stays the
  * single source of truth for which candidate is on screen.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   ApiError, getCutouts, getLightCurve, getSource,
@@ -41,6 +41,8 @@ import {
 } from '../charts/palette'
 import { CatalogPanel } from '../components/CatalogPanel'
 import { CutoutGrid } from '../components/CutoutGrid'
+import { XRayPanel } from '../components/XRayPanel'
+import { isTrue } from '../lib/format'
 import { usePrefetchCache } from '../lib/usePrefetchCache'
 import { PageHeader } from '../components/chrome'
 import { Badge, Card, NavBar, SORT_OPTIONS } from '../components/ui'
@@ -303,6 +305,21 @@ export function ClassifyPage({ member, schema }:
     return { ...base, surveys: { ...base.surveys, ztforce: binned } }
   }, [lc, ztf, ztfWindow])
 
+  // Hold the main column at its last settled height while the next source
+  // loads. A filter edit swaps the source, the column empties for a moment,
+  // and without this the page shrinks, the browser pulls the scroll up, and
+  // you land somewhere else when the content comes back.
+  const mainRef = useRef<HTMLDivElement | null>(null)
+  const heldHeight = useRef(0)
+  const loading = !(win.ready && total === 0) && (!current || detail === null || lc === null)
+  useLayoutEffect(() => {
+    const el = mainRef.current
+    if (!el) return
+    if (loading) { el.style.minHeight = `${heldHeight.current}px`; return }
+    el.style.minHeight = ''
+    heldHeight.current = el.offsetHeight
+  })
+
   const mine = detail?.annotations.find((a) => a.author === member)
   const myLabel = mine?.label ?? ''
   const myStatus = mine?.status ?? null
@@ -452,7 +469,7 @@ export function ClassifyPage({ member, schema }:
         )}
       />
 
-      <div style={{ minWidth: 0 }}>
+      <div ref={mainRef} style={{ minWidth: 0 }}>
         {/* The coord slug, not the uuid: it is what the stored plots and
             followup files are named by, so the heading matches what you
             search for on disk. Falls back to the uuid for a source with no
@@ -550,6 +567,7 @@ export function ClassifyPage({ member, schema }:
                                redshifts={detail?.redshifts ?? null}
                                loading={detail === null} />
               <GaiaTag catalog={detail?.catalog ?? null} />
+              <XRayTag catalog={detail?.catalog ?? null} />
               {/* With the other classifications: it answers the same question
                   they do -- has anyone already typed this source? */}
               {(() => {
@@ -592,15 +610,18 @@ export function ClassifyPage({ member, schema }:
               {/* 2:1, matching the analysis page's 8-and-4 of its 26-column
                   grid. The colour histogram answers the question the WISE
                   curve raises, so they belong side by side. */}
+              {/* Two rows so the X-ray box can centre on the colour curve beside it. */}
               <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr',
-                            gap: 14, alignItems: 'start' }}>
-                <div>
-                  <LightCurveChart lightcurve={lc} surveys={INFRARED_SURVEYS}
-                                   defaultBands={DEFAULT_INFRARED_BANDS}
-                                   title="WISE / NEOWISE" yAxisTitle="Vega Mag" />
-                  <WiseColorCurveChart lightcurve={lc} />
-                </div>
+                            columnGap: 14, alignItems: 'start' }}>
+                <LightCurveChart lightcurve={lc} surveys={INFRARED_SURVEYS}
+                                 defaultBands={DEFAULT_INFRARED_BANDS}
+                                 title="WISE / NEOWISE" yAxisTitle="Vega Mag" />
                 <WiseColorChart lightcurve={lc} />
+                <WiseColorCurveChart lightcurve={lc} />
+                <div style={{ alignSelf: 'center' }}>
+                  <XRayPanel catalog={detail?.catalog ?? null}
+                             ra={current.ra ?? null} dec={current.dec ?? null} />
+                </div>
               </div>
               <SpectrumChart spectra={spectra} />
             </Card>
@@ -617,6 +638,21 @@ export function ClassifyPage({ member, schema }:
   )
 }
 
+
+/** An X-ray tag when eROSITA DR2 has a source within 10"; nothing otherwise,
+ *  as with the other catalog matches. */
+function XRayTag({ catalog }: { catalog: Record<string, unknown> | null }) {
+  if (!catalog || !isTrue(catalog.erosita_matched)) return null
+  const sep = catalog.erosita_sep_arcsec
+  return (
+    <span title={typeof sep === 'number' ? `eROSITA DR2 source ${sep.toFixed(1)}" away` : undefined}
+          style={{ display: 'inline-flex', gap: 5, alignItems: 'baseline',
+                   padding: '2px 8px', borderRadius: 999, fontSize: 12,
+                   border: '1px solid var(--border-strong)' }}>
+      <b>X-ray</b>
+    </span>
+  )
+}
 
 /** Whether Gaia has this source, and whether it published a pm/parallax for it.
  *
@@ -667,11 +703,6 @@ async function copyText(text: string): Promise<boolean> {
   finally { document.body.removeChild(ta) }
 }
 
-/** A catalog flag, which reaches the page as a bool, number or string. */
-function isTrue(v: unknown): boolean {
-  if (typeof v === 'string') return ['true', 't', '1', 'yes'].includes(v.trim().toLowerCase())
-  return v === true || v === 1
-}
 
 
 /** What the cross-matched catalogs call this source.

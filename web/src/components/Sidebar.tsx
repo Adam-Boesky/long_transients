@@ -28,16 +28,12 @@ import {
  * mixing them makes the run hard to reason about.
  */
 
-// A partition, matching `api.catalog_filters.CATALOG_TIERS`: the four are
-// mutually exclusive, which is what a segmented control promises. `wide` is
-// the wider-radius variant of the ZTF-only table -- 28 sources that used to
-// ride along inside `in_ztf`, where they could be neither isolated nor
-// excluded.
-const CATALOGS: readonly CatalogFilter[] = ['in_ztf', 'in_ztf_wide',
-                                            'in_both', 'all']
+// A partition, matching `api.catalog_filters.CATALOG_TIERS`: the views are
+// mutually exclusive, which is what a segmented control promises.
+const CATALOGS: readonly CatalogFilter[] = ['in_ztf', 'in_both', 'all']
 
 const CATALOG_LABEL: Record<CatalogFilter, string> = {
-  in_ztf: 'in_ztf', in_ztf_wide: 'wide', in_both: 'in_both', all: 'everything',
+  in_ztf: 'in_ztf', in_both: 'in_both', all: 'everything',
 }
 
 /** "nobody has set one", in both checklists. Matches
@@ -85,7 +81,8 @@ export function Sidebar(p: SidebarProps) {
   const {
     search, setSearch, catalog, setCatalog,
     bucketFilter, setBucketFilter, statusFilter, setStatusFilter,
-    classFilter, setClassFilter, labelState, setLabelState,
+    classFilter, setClassFilter, matchFilter, setMatchFilter, matchCatalogs,
+    labelState, setLabelState,
     w1w2, setW1w2, w1w2KeepMissing, setW1w2KeepMissing, clearFilters,
     labels, labelColors, labelCounts, reloadLabels, addBucket,
   } = useFilters()
@@ -127,6 +124,7 @@ export function Sidebar(p: SidebarProps) {
   const anySet = Object.keys(bucketFilter).length > 0
               || Object.keys(statusFilter).length > 0
               || Object.keys(classFilter).length > 0
+              || Object.keys(matchFilter).length > 0
               || w1w2 !== W1W2_MODES[0]
   const filtersSection = (
       <section style={{ border: '1px solid var(--border-strong)',
@@ -163,6 +161,11 @@ export function Sidebar(p: SidebarProps) {
         <TriChecklist title="Class" options={[...UNIFIED_CLASSES]}
                       value={classFilter}
                       onChange={setClassFilter} />
+        {matchCatalogs.length > 0 && (
+          <TriChecklist title="Matched" options={matchCatalogs}
+                        value={matchFilter}
+                        onChange={setMatchFilter} />
+        )}
         <div style={{ marginTop: 10 }}>
           <Label>W1 - W2</Label>
           <SegmentedControl options={[...W1W2_MODES]} value={w1w2}

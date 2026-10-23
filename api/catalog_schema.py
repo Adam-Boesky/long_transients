@@ -23,6 +23,7 @@ GROUP_RULES: list[tuple[str, str, re.Pattern]] = [
     ('wise',      'WISE',           re.compile(r'^wise[_.]')),
     ('simbad',    'SIMBAD',         re.compile(r'^simbad[_.]')),
     ('gaia',      'Gaia',           re.compile(r'^gaia[_.]')),
+    ('erosita',   'eROSITA (X-ray)', re.compile(r'^erosita[_.]')),
     ('sdss',      'SDSS',           re.compile(r'^sdss[_.]')),
     ('tns',       'TNS',            re.compile(r'^tns[_.]')),
     ('desi',      'DESI',           re.compile(r'^desi[_.]')),
