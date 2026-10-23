@@ -1,0 +1,97 @@
+/* Light theme, fixed.
+ *
+ * The Vite template flips to a dark palette under
+ * `@media (prefers-color-scheme: dark)`, which means the app followed the OS
+ * rather than its own design. This is a data-inspection tool whose charts are
+ * drawn on a white paper background, so the surrounding UI is pinned light
+ * and `color-scheme: light` stops the browser dark-styling form controls and
+ * scrollbars underneath it.
+ */
+:root {
+  --text: #22262e;
+  --text-dim: #5d6673;
+  --bg: #ffffff;
+  --bg-soft: #f6f7f9;
+  --border: #dfe3e8;
+  --border-strong: #c4cad2;
+  --accent: #2563eb;
+  --accent-bg: rgba(37, 99, 235, 0.08);
+
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
+
+  color-scheme: light;
+  font: 13px/1.45 var(--sans);
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+}
+
+h1, h2, h3 { color: var(--text); }
+
+a { color: var(--accent); }
+
+input, select, textarea, button {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: 2px solid var(--accent-bg);
+  border-color: var(--accent);
+}
+
+button { cursor: pointer; }
+button:hover:not(:disabled) { background: var(--bg-soft); }
+button:disabled { cursor: default; opacity: 0.45; }
+
+table { font-variant-numeric: tabular-nums; }
+
+/* The enlarge dialog's backdrop. A pseudo-element cannot be styled inline,
+   so this is the one piece of the cutout grid that has to live here. The
+   browser supplies the element itself once the dialog is opened modally. */
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* The per-stamp Enlarge button: hidden until the stamp is hovered, or until
+   the button itself is keyboard-focused. Done in CSS rather than React state
+   so it cannot be left stuck visible when the modal swallows a `mouseleave`,
+   and `pointer-events` keeps it from being an invisible click target. */
+.cutout-enlarge {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease-out;
+}
+
+.cutout-frame:hover .cutout-enlarge,
+.cutout-enlarge:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Table column resize handle: the right edge of each header cell. */
+.col-resize {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 6px;
+  cursor: col-resize;
+}
+/* A visible divider at the centre of the strip, so the edge reads as draggable. */
+.col-resize::after {
+  content: ''; position: absolute; top: 5px; bottom: 5px; right: 2px;
+  width: 1px; background: var(--border-strong);
+}
+.col-resize:hover { background: var(--border-strong); }

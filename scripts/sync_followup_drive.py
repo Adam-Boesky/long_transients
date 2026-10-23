@@ -87,11 +87,10 @@ FLOWCHARTS_DIR     = REPO_ROOT / "Data" / "filter_results_kde" / "combined"
 SPECTRA_PLOTS_DIR  = REPO_ROOT / "Data" / "followup" / "spectra" / "plots"
 REDSHIFTS_CSV      = REPO_ROOT / "Data" / "followup" / "spectra" / "redshifts.csv"
 
-# Analysis-pages subdirectories: local name → Drive folder name
 AP_SUBDIRS = {
     "in_both":   "in_both",
     "in_ztf":    "in_ztf",
-    "in_pstarr": "in_panstarrs",
+    "in_pstarr": "in_pstarr",
 }
 
 # Match radius for pairing analysis pages with manually-named spectrum files.
@@ -198,21 +197,26 @@ def _list_drive_files(drive, folder_id: str) -> dict[str, str]:
     return {f["name"]: f["id"] for f in results.get("files", [])}
 
 
-def _list_drive_files_recursive(drive, folder_id: str) -> dict[str, str]:
-    """Return {stem: drive_url} for every PDF in a Drive folder tree (recursive)."""
+def _list_drive_files_recursive(
+    drive, folder_id: str, include_names: set[str] | None = None
+) -> dict[str, str]:
+    """Return {stem: drive_url} for every PDF in a Drive folder tree (recursive).
+
+    If include_names is given, only recurse into subfolders whose names are in that set.
+    """
     stem_to_url: dict[str, str] = {}
 
-    # Files at this level
     files = _list_drive_files(drive, folder_id)
     for name, fid in files.items():
         if name.lower().endswith(".pdf"):
             stem_to_url[Path(name).stem] = _drive_url(fid)
 
-    # Recurse into subfolders
     q = f"'{folder_id}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'"
     results = drive.files().list(q=q, fields="files(id, name)", pageSize=1000).execute()
     for subfolder in results.get("files", []):
-        stem_to_url.update(_list_drive_files_recursive(drive, subfolder["id"]))
+        if include_names is not None and subfolder["name"] not in include_names:
+            continue
+        stem_to_url.update(_list_drive_files_recursive(drive, subfolder["id"], include_names))
 
     return stem_to_url
 
@@ -357,14 +361,14 @@ def _fetch_existing_urls(drive) -> tuple[dict[str, str], dict[str, str], dict[st
     sp_root_id  = _get_or_create_folder(drive, "Spectra",        DRIVE_FOLDER_ID)
     leg_root_id = _get_or_create_folder(drive, "Legacy",         DRIVE_FOLDER_ID)
 
-    all_ap_urls: dict[str, str] = {}
-    for drive_name in AP_SUBDIRS.values():
-        subdir_id = _get_or_create_folder(drive, drive_name, ap_root_id)
-        existing = _list_drive_files(drive, subdir_id)
-        all_ap_urls.update({Path(f).stem: _drive_url(fid) for f, fid in existing.items()})
+    ap_subdirs = set(AP_SUBDIRS.values())
+    all_ap_urls = _list_drive_files_recursive(drive, ap_root_id, include_names=ap_subdirs)
 
     log("  Scanning Legacy/ folder tree for analysis pages…")
-    legacy_ap_urls = _list_drive_files_recursive(drive, leg_root_id)
+    legacy_ap_urls = {
+        s: u for s, u in _list_drive_files_recursive(drive, leg_root_id).items()
+        if "_spectrum" not in s
+    }
     log(f"  {len(legacy_ap_urls)} legacy files found")
 
     sp_existing = _list_drive_files(drive, sp_root_id)

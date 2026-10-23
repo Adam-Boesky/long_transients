@@ -297,6 +297,8 @@ class PanSTARRSLocal:
             raise ValueError(f'band must be one of {sorted(VALID_BANDS)}, got {band!r}')
 
         ra_min, ra_max = ra_range
+        if ra_max > 360.0:  # (lo, hi + 360) form from get_coord_range
+            ra_max -= 360.0
         dec_min, dec_max = dec_range
         wraps = (ra_min > ra_max)
 
