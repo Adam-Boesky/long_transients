@@ -18,4 +18,4 @@ RAW_DIR = DEFAULT_OUT_DIR / 'raw'
 
 # Default inputs: the enriched tables from the current pipeline run.
 DEFAULT_COMBINED = (REPO / 'Data'
-                    / 'filter_results_9_21_2026_full_catalog_fixed_pm' / 'combined')
+                    / 'filter_results_final_10_22_2026' / 'combined')
