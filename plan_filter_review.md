@@ -2,7 +2,7 @@
 
 Review of the extraction → filtering → combine pipeline, before producing the final candidate set.
 Line numbers refer to the cluster copy of `Source_Analysis/filter_fields.py` (commit `4d7cc19` plus uncommitted edits) unless stated.
-Status: `[ ]` to implement · `[x]` implemented and verified.
+Status: `[ ]` to implement · `[~]` partly done · `[x]` implemented and verified.
 Issue numbers are the ones used during the review.
 
 ---
@@ -75,7 +75,7 @@ Issue numbers are the ones used during the review.
   - 4 of the 21 ZTF-only candidates carrying a PS1 object lie inside their quadrant's PS1 box; recheck them.
   - 280 ZTF-only candidates have a flag-2 g row with no PS1 values; recheck them.
 
-### 4. [ ] Remove the wide-association branch
+### 4. [x] Remove the wide-association branch
 - **Problem:** the branch that re-evaluates ZTF-only sources with a PS1 object 1–3″ away (as in-both) doesn't work:
   - `Sources` (`Sources.py` ~1898) rebuilds each source from the original ZTF-only row (flag 1), so `at_least_n_big_dmag_bands(catalog='in_both')` always fails.
   - `associate_in_btwn_distance` (~1245) overwrites entire ZTF columns.
@@ -90,7 +90,7 @@ Issue numbers are the ones used during the review.
   - Delete the wide-association evaluation and its `1_wide_association` / `2_wide_association` outputs.
   - Drop the matching tables from the combine step.
 
-### 5. [ ] Support g+r-only fields
+### 5. [x] Support g+r-only fields
 - **Problem:**
   - `at_least_n_big_dmag_bands` loops over g, r, i and looks up `envelopes['i']`, which raises `KeyError` for g+r fields.
   - `filter_fields()` only selects fields imaged in g, r *and* i.
@@ -105,7 +105,7 @@ Issue numbers are the ones used during the review.
   - statistics combine and the table stacks with field 400.
   - Columns missing vs field 400 (`psfLikelihood`, `PSTARR_iinfoFlag`) come from CasJobs-era vs local-PS1 extraction, not from g+r.
 
-### 8. [ ] Rows routed to both one-sided branches
+### 8. [x] Rows routed to both one-sided branches
 - **Problem:** `snr_filter(both_cat=True)` (763–768):
   - A row stays in-both only if both catalogues pass SNR > 5 in the same photometry type (PSF–PSF or Kron–Kron). Otherwise the ZTF-only and PS1-only tests are independent.
   - If each catalogue passes in a *different* type (ZTF PSF + PS1 Kron, or ZTF Kron + PS1 PSF), the row goes to **both** branches. It is also added twice, as flag 1 and flag 2, to `all_quality_source_tabs` (1677–1683).
@@ -123,7 +123,7 @@ Issue numbers are the ones used during the review.
 - **Fix:** if a row passes both one-sided tests, route it only to the side with PSF SNR > 5. Δmag uses PSF magnitudes, and exactly one side always qualifies.
   - All other routing is unchanged, including the NaN rules and Kron-pair in-both rows.
 
-### 9. [ ] Candidate rows mix PS1 objects across bands
+### 9. [x] Candidate rows mix PS1 objects across bands
 - **Problem:** `Sources.data` builds each candidate row in two steps:
   1. for each band, take the nearest row within 1.5″ (any flag);
   2. copy values in, **first non-empty wins, in g → r → i order**.
@@ -147,7 +147,7 @@ Issue numbers are the ones used during the review.
   - No other column changes.
 - **Website:** rows moving more than 0.5″ (~0.2% of in-both, the neighbour cases) get new identity matches.
 
-### 13. [ ] No declination cut in filtering
+### 13. [x] No declination cut in filtering
 - **Change:** the `Dec > −29.5` cut (`dec_greater_than`) is commented out everywhere it ran:
   - the quality-filtered tables the KDE envelopes and `Sources` rows are built from;
   - the in-both branch;
@@ -169,7 +169,7 @@ Issue numbers are the ones used during the review.
     - 7 had only passed by comparing a neighbour row's ZTF limit with a PS1 magnitude borrowed from another band's row (e.g. field 400: the real ZTF g detection had failed the shape cut).
   - The committed code reproduces the tested patch exactly.
 
-### 1. [ ] Duplicate candidates across overlapping fields
+### 1. [x] Duplicate candidates across overlapping fields
 - **Problem:** neighbouring fields overlap, and the combine step stacks per-field outputs with no deduplication, so an object in the overlap appears once per field.
 - **Evidence** (9/21 `combined/`):
   - `0.hdf5` has 8,899 pairs within 1″ (17,182 rows); `1.hdf5` has 304 pairs.
@@ -182,7 +182,7 @@ Issue numbers are the ones used during the review.
   - Website: group by `group_id`, show all members together, label them as one.
   - Counts and rates: count each distinct `group_id` once, plus every ungrouped row.
 
-### 11. [ ] Combine reads non-field folders
+### 11. [x] Combine reads non-field folders
 - **Problem:**
   - The combine step reads every folder in the results directory as a field, skipping only `combined`, `candidates` and `.DS_Store`.
   - A leftover debug copy such as `combined_pre_filtered_out/` (present in the 9/21 directory) would be read as a field. Every candidate would then be stacked twice, with no error.
@@ -203,10 +203,13 @@ Recorded for the paper.
 ---
 
 ## Cleanup (after each step's output is fully validated)
-1. [ ] Delete the pre-rebuild PS1 files: `catalog_results/*/PSTARR_pre_rebuild.hdf5`.
-2. [ ] Delete the rebuild scripting: `Extracting/rebuild_ps1_catalogs.py`, `Extracting/rebuild_ps1.sh`, `ps1_rebuild_quads_10_22.csv`, and the `ps1_rebuilt.txt` markers.
-3. [ ] Delete the validation leftovers: the `PSTARR_rebuilt.hdf5` side copies in 000683_06_4, 000683_06_1, 000466_09_2, 000400_01_1, 000694_16_1, and the scratch folders `ps1_rebuild_test/`, `fill_fix_test/`, `gr_field_test/` and `wide_assoc_experiment/`.
-4. [ ] Cluster one-off scripts (untracked; also in `~/backup_cluster_tree_10_22/working_tree_before.tgz`): `Extracting/cross_match_stage2.sh`, `Notebooks/tune_kdes.sh`, `determinism_test.py/.sh`, `scripts/compare_quad_495.sh`, `scripts/filter_two_fields.py/.sh`, `scripts/prefetch_kde_one_field.sh`, `scripts/repair_000788_000859.py/.sh`, `scripts/submit_kde_array.sh`, `test_ztf_local_lc.py`, `validate_combined.py`.
-5. [ ] Cluster switch-over backup: `~/backup_cluster_tree_10_22/` and `git stash@{0}`. Drop after stage 3 validates. They hold the uncommitted KDE-prefetcher rewrite (`scripts/prefetch_kde_envelopes.py/.sh`).
-6. [ ] Old merged tables `catalog_results/field_results_pre_ps1_rebuild/` (after stage 3 validates), and the October 2025 `.ecsv` leftovers in `catalog_results/field_results/` (77 files; filtering reads only `.hdf5`).
-7. [ ] Cross-match scratch: `Extracting/cross_match_fields.sh` (commit if we keep it), `xmatch_lists/`.
+Done 2026-10-23, move-only: everything below sits in `_stale_2026-10-23/to_delete/` (data dir on the cluster) or `Data/_stale_2026-10-23/` (laptop), ready to `rm -rf` once you're happy.
+1. [x] Pre-rebuild PS1 files, `ps1_rebuilt.txt` markers and `PSTARR_rebuilt.hdf5` side copies (61,323 files) -> `to_delete/catalog_results_ps1_rebuild_leftovers/`.
+2. [x] Rebuild scripting: `Extracting/rebuild_ps1_catalogs.py` / `rebuild_ps1.sh` (laptop copies in `Data/_stale_2026-10-23/code/`; cluster copies archived on branch `archive/cluster-wip-2026-10-22`), `ps1_rebuild_quads_10_22.csv`.
+3. [x] Validation scratch: `ps1_rebuild_test/`, `fill_fix_test/`, `gr_field_test/`, `wide_assoc_experiment/`, `fix{5,8,9,14}_test/`, `e2e_test/`, `reextract_fix_test/`.
+4. [~] Cluster one-off scripts: archived on `archive/cluster-wip-2026-10-22`; the untracked copies are still in the cluster checkout (moving them was blocked by the permission check).
+5. [~] Cluster switch-over backup: stash@{0} is archived on `archive/cluster-wip-2026-10-22`, so `git stash drop stash@{0}` and `~/backup_cluster_tree_10_22/` are safe to remove by hand (both still present).
+6. [x] `catalog_results/field_results_pre_ps1_rebuild/` (2.2 TB) and the 77 October-2025 `.ecsv` leftovers -> `to_delete/`.
+7. [x] `xmatch_lists/` -> `to_delete/`; `Extracting/cross_match_fields.sh` archived on the branch above.
+8. [x] Superseded runs and pre-change backups -> `_stale_2026-10-23/old/` (not on the agreed list, so kept for you to decide): `filter_results_{7_30,9_13,kde,kde_sep_flag,kde_sep_flag_no_extended_artifact}`, `catalog_results_partial_backup/`, `gaia_cache_pre_reextract/`, `kde_envelopes_pre_ps1_rebuild/`, and one-off diagnostic CSVs/logs.
+9. [ ] `lt_pre9` worktree (`git worktree remove ../lt_pre9`) and the `~/berger/*_tmp.py` scratch scripts: left for you (removal was blocked by the permission check).
