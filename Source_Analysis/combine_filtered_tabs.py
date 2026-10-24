@@ -18,7 +18,7 @@ from Extracting.utils import load_ecsv, get_data_path, prepare_table_for_write
 from Source_Analysis import filtered_out_summary
 from Source_Analysis.filter_fields import combine_stats, create_filter_flowchart
 
-FILTER_RESULTS_DIRNAME = 'filter_results_final_10_22_2026'
+FILTER_RESULTS_DIRNAME = os.environ.get('FILTER_RESULT_DIR', 'filter_results_final_10_22_2026')
 
 
 def _field_reasons(field_name: str, run_dirname: str, max_arcsec: float):

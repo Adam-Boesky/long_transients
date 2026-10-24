@@ -1,6 +1,6 @@
 import os
 
-from source_db.constants import PSTARR_UPPER_LIM
+from source_db.constants import PSTARR_UPPER_LIM, SIGMA_CAP
 import sys
 import shutil
 import requests
@@ -36,11 +36,21 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
 
 BANDS = ['g', 'r', 'i']
-SIGMA_CAP = 8.0  # |Δmag sigma| beyond what the envelope grid resolves is reported as the cap, with a flag
 CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Coverage'}
 GAIA_OBS_EPOCH = 2021.0  # representative epoch of ZTF detections, used to propagate Gaia positions forward from ref_epoch (J2016.0) before crossmatching
 EXTRACTED_CATALOG_DIR = 'catalog_results/field_results' # 'debugging'
-FILTER_RESULT_DIR = 'filter_results_final_10_22_2026'  # previous: 'filter_results_9_21_2026_full_catalog_fixed_pm'
+# PS1 DR2 regions with no ObjectThin sources, (dec_min, dec_max, ra_min, ra_max) in deg.
+# From https://outerspace.stsci.edu/display/PANSTARRS/PS1+DR2+caveats
+PS1_DR2_MISSING_REGIONS = [
+    (35.46, 35.499, 189.0, 267.7),
+    (35.46, 35.499, 0.0, 25.31),
+    (35.46, 35.499, 25.88, 47.25),
+    (76.88, 78.11, 123.34, 126.66),
+    (75.47, 76.40, 342.51, 345.00),
+    (73.60, 74.06, 343.50, 345.00),
+    (-27.18, -26.72, 76.40, 76.91),
+]
+FILTER_RESULT_DIR = os.environ.get('FILTER_RESULT_DIR', 'filter_results_final_10_22_2026')  # previous: 'filter_results_9_21_2026_full_catalog_fixed_pm'
 
 def _is_flag(flags: np.ndarray, flag: Union[int, Iterable[int]]) -> np.ndarray:
     """
@@ -405,8 +415,13 @@ class Envelope_KDE:
         c = ((1 - w) * ((1 - u) * cdf[i0, j0] + u * cdf[i0, j0 + 1]) +
              w * ((1 - u) * cdf[i0 + 1, j0] + u * cdf[i0 + 1, j0 + 1]))
         p_cap = norm.cdf(-SIGMA_CAP)
-        capped = ((c < p_cap) | (c > 1 - p_cap) | (dmag < dg[0]) | (dmag > dg[-1])) & ~bad & np.isfinite(c)
+        low = (c < p_cap) | (dmag < dg[0])
+        high = (c > 1 - p_cap) | (dmag > dg[-1])
+        capped = (low | high) & ~bad & np.isfinite(c)
         z = norm.ppf(np.clip(c, p_cap, 1 - p_cap))
+        # Off the Δmag grid the CDF above is the grid edge's, not the cap; report the cap.
+        z[capped & low] = -SIGMA_CAP
+        z[capped & high] = SIGMA_CAP
         z[bad | ~np.isfinite(c)] = np.nan
         return z, capped
 
@@ -525,6 +540,7 @@ class Filters():
             'parallax_filter': self.parallax_filter,
             'proper_motion_filter': self.proper_motion_filter,
             'no_nearby_source_filter': self.no_nearby_source_filter,
+            'ps1_missing_region_filter': self.ps1_missing_region_filter,
             'pstarr_mag_less_than': self.pstarr_mag_less_than,
             'dec_greater_than': self.dec_greater_than,
             'pstarr_not_saturated': self.pstarr_not_saturated,
@@ -1141,6 +1157,33 @@ class Filters():
         else:
             return self._proper_motion_in_srcs(sources)
     
+    def _ps1_missing_region_in_srcs(self, srcs: Sources) -> Sources:
+        coords = srcs.coords
+        ra, dec = coords.ra.deg, coords.dec.deg
+        in_gap = np.zeros(len(ra), dtype=bool)
+        for dec_min, dec_max, ra_min, ra_max in PS1_DR2_MISSING_REGIONS:
+            in_gap |= (dec >= dec_min) & (dec <= dec_max) & (ra >= ra_min) & (ra <= ra_max)
+        return srcs[~in_gap], srcs[in_gap]
+
+    def ps1_missing_region_filter(
+            self,
+            sources: Union[Sources, Dict[str, Sources]],
+            *args,
+            **kwargs,
+        ) -> Union[Tuple[Dict[str, Sources], Dict[str, Sources]], Sources]:
+        """Drop sources inside the regions where PS1 DR2 has no ObjectThin sources.
+
+        A ZTF source there has no PS1 counterpart because the catalog is missing, not
+        because the source is new. The boxes are MAST's list of DR2 missing regions:
+        https://outerspace.stsci.edu/display/PANSTARRS/PS1+DR2+caveats
+        """
+        if isinstance(sources, Dict):
+            good_sources, bad_sources = {}, {}
+            for band in sources.keys():
+                good_sources[band], bad_sources[band] = self._ps1_missing_region_in_srcs(sources[band])
+            return good_sources, bad_sources
+        return self._ps1_missing_region_in_srcs(sources)
+
     def _no_nearby_source_in_srcs(self, srcs: Sources, n_nearby_max: int) -> Sources:
         all_coords = srcs.coords
         seps = all_coords.separation(all_coords[:, None])
@@ -1545,6 +1588,7 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
                 'only_big_dmag': r'$\Delta \rm{mag} > 5 \sigma$',
                 'at_least_n_bands': r'$\Delta \rm{mag} > 5 \sigma$ in $>1$ band',
                 'at_least_n_big_dmag_bands': r'$\Delta \rm{mag} > 5 \sigma$ in $>1$ band',
+                'ps1_missing_region_filter': 'Outside PS1 DR2 missing regions',
                 'no_nearby_source_filter': r'$<5$ sources within $200^{\prime\prime}$',
                 'proper_motion_filter': 'Proper motion ' + r'$\frac{\rm{value}}{\sigma} < 5$',
                 'parallax_filter': 'Parallax ' + r'$\frac{\rm{value}}{\sigma} < 5$',
@@ -1821,6 +1865,9 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
 
     # Check for big dmag in >1 bands
     sources_in_ztf = filters.filter(sources_in_ztf, 'at_least_n_big_dmag_bands', catalog='in_ztf', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
+
+    # Drop sources in the regions PS1 DR2 has no catalog for
+    sources_in_ztf = filters.filter(sources_in_ztf, 'ps1_missing_region_filter', branch=branch)
 
     # Check for big dmag in >1 bands
     sources_in_ztf = filters.filter(sources_in_ztf, 'no_nearby_source_filter', n_nearby_max=5, branch=branch)
