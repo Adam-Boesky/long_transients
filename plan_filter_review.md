@@ -189,6 +189,15 @@ Issue numbers are the ones used during the review.
   - Today's `combined/` is correct (186,970 rows).
 - **Fix:** read only digit-named field folders, in all three loops.
 
+### 15. [x] PS1 DR2 missing regions
+- **Problem:** PS1 DR2 has no ObjectThin sources in seven boxes (~4.9 deg²) listed on MAST's [DR2 caveats page](https://outerspace.stsci.edu/display/PANSTARRS/PS1+DR2+caveats): a Dec 35.46–35.499 strip in three RA pieces, three polar boxes, and one box at (76.4–76.9, −27.18 to −26.72). ZTF sources there have no PS1 counterpart because the catalogue is missing, not because they are new.
+  - Inside a big box most ZTF sources are more than 1′ from any PS1 object, so they get `Catalog_Flag` 3 and never become candidates; only a ~1′ rim inside each edge (and all of the 2.3′-tall strip) became ZTF-only.
+  - `no_nearby_source_filter` removed most of those floods, but 13 ZTF-only candidates inside the boxes survived.
+- **Fix:** `ps1_missing_region_filter` drops ZTF-only candidates inside the boxes, no padding, applied *after* `no_nearby_source_filter`.
+  - Applied before it, removing the in-box floods first left their neighbours just outside the boxes (the real hole extends ~8″ below the strip's listed edge) with too few neighbours, and ~1,100 of them survived in 12 strip fields alone.
+- **Rerun:** the 22 fields whose footprint touches a box (255, 648–654, 672–682, 858, 859, 868), then combine. Result: 13 ZTF-only rows removed (14,911 → 14,898), all inside the boxes; in-both and every other column unchanged.
+- **Storage fault during the rerun:** holystore01 `OST0028` (index 40) hangs any read of a file stored on it while still reporting ACTIVE. Fields that needed one of its files were rerun with new output pinned to a healthy OST (`lfs setstripe -i 10`): 52 more fields whose filtered-out tables were on it (output identical to before), plus the Δmag envelopes of 7 fields rebuilt. Field 399's `0_i_filtered_out.ecsv` is unreadable and its merged catalogue is too, so its `filtered_out_in_both_i` values were restored from the previous combined run.
+
 ---
 
 ## Known limitations (not fixed)
@@ -213,3 +222,4 @@ Done 2026-10-23, move-only: everything below sits in `_stale_2026-10-23/to_delet
 7. [x] `xmatch_lists/` -> `to_delete/`; `Extracting/cross_match_fields.sh` archived on the branch above.
 8. [x] Superseded runs and pre-change backups -> `_stale_2026-10-23/old/` (not on the agreed list, so kept for you to decide): `filter_results_{7_30,9_13,kde,kde_sep_flag,kde_sep_flag_no_extended_artifact}`, `catalog_results_partial_backup/`, `gaia_cache_pre_reextract/`, `kde_envelopes_pre_ps1_rebuild/`, and one-off diagnostic CSVs/logs.
 9. [ ] `lt_pre9` worktree (`git worktree remove ../lt_pre9`) and the `~/berger/*_tmp.py` scratch scripts: left for you (removal was blocked by the permission check).
+10. [~] 2026-10-25: laptop `Data/_stale_2026-10-23/` deleted. The cluster `_stale_2026-10-23/` (now also holding the pre-#15 field folders and `combined`) is still there; deleting it was blocked by the permission check. Run by hand: `rm -rf /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/{_stale_2026-10-23,_ost40_replacements,filter_results_final_ps1gap_rerun}`.
