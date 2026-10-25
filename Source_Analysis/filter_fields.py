@@ -1481,8 +1481,32 @@ def add_final_filt(filt_name: str, srcs: Sources, d: schemdraw.Drawing) -> schem
     return d
 
 
+def _with_passthrough_rows(df: pd.DataFrame, template: pd.DataFrame) -> pd.DataFrame:
+    """`df` with any (filter, branch) step of `template` it lacks inserted as a no-op.
+
+    A field filtered before a step was added has no row for it; the step removed
+    nothing there, so its counts before and after are the previous step's after.
+    """
+    have = {(f, b): i for i, (f, b) in enumerate(zip(df['filter'], df['branch']))}
+    after = [c for c in df.columns if c.startswith('n_') and c.endswith('_after')]
+    rows, prev = [], None
+    for f, b in zip(template['filter'], template['branch']):
+        if (f, b) in have:
+            row = df.iloc[have[(f, b)]].copy()
+        else:
+            row = prev.copy()
+            row['filter'], row['branch'] = f, b
+            for c in after:
+                row[c.replace('_after', '_before')] = prev[c]
+        rows.append(row); prev = row
+    return pd.DataFrame(rows).reset_index(drop=True)
+
+
 def combine_stats(stats_dfs: Iterable[pd.DataFrame]) -> pd.DataFrame:
     """Function to combine (sum) the stats of several given flowchart dataframes."""
+    # Fields run before a filter step was added lack its row; fill it in as a no-op
+    template = max(stats_dfs, key=len)
+    stats_dfs = [df if len(df) == len(template) else _with_passthrough_rows(df, template) for df in stats_dfs]
     combined_df = stats_dfs[0]
 
     # Ensure that the filters and branches of each df are the same
