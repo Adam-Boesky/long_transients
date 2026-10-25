@@ -1862,11 +1862,12 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Check for big dmag in >1 bands
     sources_in_ztf = filters.filter(sources_in_ztf, 'at_least_n_big_dmag_bands', catalog='in_ztf', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
-    # Drop sources in the regions PS1 DR2 has no catalog for
-    sources_in_ztf = filters.filter(sources_in_ztf, 'ps1_missing_region_filter', branch=branch)
-
     # Check for big dmag in >1 bands
     sources_in_ztf = filters.filter(sources_in_ztf, 'no_nearby_source_filter', n_nearby_max=5, branch=branch)
+
+    # Drop sources in the regions PS1 DR2 has no catalog for. After no_nearby: the gap floods
+    # are what make no_nearby remove their edge sources just outside MAST's boxes.
+    sources_in_ztf = filters.filter(sources_in_ztf, 'ps1_missing_region_filter', branch=branch)
 
     # Store pre-gaia filteration if requested
     if store_pre_gaia:
