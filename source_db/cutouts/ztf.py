@@ -120,14 +120,18 @@ def fetch(limit: Optional[int] = None, raw_dir: Path = RAW_DIR,
     print(f'{CATALOG}: {len(pts):,} pointings across {len(fields)} fields',
           flush=True)
 
-    done = _base.completed_chunks(CATALOG, raw_dir) if resume else set()
+    # Resume by covered field, not chunk id: new fields shift the chunk boundaries,
+    # so an id-keyed resume skipped them (88 fields after the 10/22 catalog).
+    if resume:
+        done = _base.all_covered(CATALOG, raw_dir)
+        fields = [f for f in fields if str(f) not in done]
+    start = _base.next_chunk_index(CATALOG, raw_dir) if resume else 0
+    print(f'{CATALOG}: {len(fields)} fields to fetch', flush=True)
     t0, n_rows = time.time(), 0
     auth = _auth()
     for k in range(0, len(fields), chunk_size):
-        cid = f'{k // chunk_size:04d}'
+        cid = f'{start + k // chunk_size:04d}'
         part = fields[k:k + chunk_size]
-        if cid in done:
-            continue
         t1 = time.time()
         got = fetch_chunk(part, auth, workers)
         # Stored whole, not filtered to the pointings the catalog currently
