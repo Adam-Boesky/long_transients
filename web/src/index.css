@@ -16,6 +16,10 @@
   --border-strong: #c4cad2;
   --accent: #2563eb;
   --accent-bg: rgba(37, 99, 235, 0.08);
+  /* Classification, Gaia and X-ray pills on the classify page. */
+  --class: #6d28d9;
+  --class-bg: rgba(124, 58, 237, 0.10);
+  --class-border: rgba(124, 58, 237, 0.45);
 
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Consolas, monospace;

@@ -42,7 +42,7 @@ import {
 import { CatalogPanel } from '../components/CatalogPanel'
 import { CutoutGrid } from '../components/CutoutGrid'
 import { XRayPanel } from '../components/XRayPanel'
-import { isTrue } from '../lib/format'
+import { bandAbsSigma, isTrue, meanAbsSigma } from '../lib/format'
 import { usePrefetchCache } from '../lib/usePrefetchCache'
 import { PageHeader } from '../components/chrome'
 import { Badge, Card, GroupNav, NavBar, SORT_OPTIONS } from '../components/ui'
@@ -548,6 +548,7 @@ export function ClassifyPage({ member, schema }:
             </span>
           )}
           afterTitle={current && (<>
+            <SigmaBadge catalog={detail?.catalog ?? null} />
             <button
               title="Copy link to this source" aria-label="Copy link"
               onClick={() => {
@@ -712,8 +713,9 @@ function XRayTag({ catalog }: { catalog: Record<string, unknown> | null }) {
     <span title={typeof sep === 'number' ? `eROSITA DR2 source ${sep.toFixed(1)}" away` : undefined}
           style={{ display: 'inline-flex', gap: 5, alignItems: 'baseline',
                    padding: '2px 8px', borderRadius: 999, fontSize: 12,
-                   border: '1px solid var(--border-strong)' }}>
-      <b>X-ray</b>
+                   background: 'var(--class-bg)',
+                   border: '1px solid var(--class-border)' }}>
+      <b style={{ color: 'var(--class)' }}>X-ray</b>
     </span>
   )
 }
@@ -743,9 +745,28 @@ function GaiaTag({ catalog }: { catalog: Record<string, unknown> | null }) {
     <span title={help}
           style={{ display: 'inline-flex', gap: 5, alignItems: 'baseline',
                    padding: '2px 8px', borderRadius: 999, fontSize: 12,
-                   border: '1px solid var(--border-strong)' }}>
-      <b>Gaia</b>
+                   background: 'var(--class-bg)',
+                   border: '1px solid var(--class-border)' }}>
+      <b style={{ color: 'var(--class)' }}>Gaia</b>
       {!fit && <span style={{ opacity: 0.75 }}>(no fit)</span>}
+    </span>
+  )
+}
+
+/** Mean |Δmag σ| beside the name: the value the queue is sorted by. "≥" when a
+ *  band hit the envelope's cap, so the mean is a lower bound. */
+function SigmaBadge({ catalog }: { catalog: Record<string, unknown> | null }) {
+  const m = meanAbsSigma(catalog)
+  if (!m) return null
+  const help = ['g', 'r', 'i']
+    .map((b) => [b, bandAbsSigma(catalog ?? {}, b)] as const)
+    .filter(([, v]) => v !== null)
+    .map(([b, v]) => `${b}: ${(v as number).toFixed(2)}σ`).join(' · ')
+  return (
+    <span title={`Mean |Δmag σ| (${help})`}
+          style={{ fontSize: 17, fontWeight: 600, opacity: 0.6, whiteSpace: 'nowrap',
+                   fontVariantNumeric: 'tabular-nums' }}>
+      |σ| {m.capped ? '≥' : ''}{m.value.toFixed(2)}
     </span>
   )
 }
@@ -806,9 +827,10 @@ function Classifications({ classes, redshifts, classRedshifts, loading }:
           <span key={catalog}
                 style={{ display: 'inline-flex', gap: 5, alignItems: 'baseline',
                          padding: '2px 8px', borderRadius: 999, fontSize: 12,
-                         border: '1px solid var(--border-strong)' }}>
+                         background: 'var(--class-bg)',
+                         border: '1px solid var(--class-border)' }}>
             <span style={{ opacity: 0.6 }}>{catalog}</span>
-            <b>
+            <b style={{ color: 'var(--class)' }}>
               {perClass
                 ? values.map((v, i) => (
                     <span key={v}>

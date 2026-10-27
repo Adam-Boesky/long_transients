@@ -58,3 +58,24 @@ export function isTrue(v: unknown): boolean {
   if (typeof v === 'string') return ['true', 't', '1', 'yes'].includes(v.trim().toLowerCase())
   return v === true || v === 1
 }
+
+/** Δmag σ cap (source_db.constants.SIGMA_CAP). */
+export const SIGMA_CAP = 8
+
+/** |Δmag σ| for one band, the cap when the band is flagged capped (as the API's sort counts it). */
+export function bandAbsSigma(catalog: Record<string, unknown>, band: string): number | null {
+  const v = catalog[`${band}_dmag_sigma`]
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null
+  return isTrue(catalog[`${band}_dmag_sigma_capped`]) ? SIGMA_CAP : Math.abs(v)
+}
+
+/** Mean |Δmag σ| over the bands that have one, as the API's `mean_abs_dmag_sigma`
+ *  sort computes it; `capped` when any band hit the cap, so the mean is a lower bound. */
+export function meanAbsSigma(catalog: Record<string, unknown> | null):
+    { value: number; capped: boolean } | null {
+  if (!catalog) return null
+  const bands = ['g', 'r', 'i'].filter((b) => bandAbsSigma(catalog, b) !== null)
+  if (bands.length === 0) return null
+  const value = bands.reduce((s, b) => s + (bandAbsSigma(catalog, b) as number), 0) / bands.length
+  return { value, capped: bands.some((b) => isTrue(catalog[`${b}_dmag_sigma_capped`])) }
+}

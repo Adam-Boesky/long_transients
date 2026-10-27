@@ -71,11 +71,13 @@ export function PageHeader({ title, large, right, beforeTitle, afterTitle }:
                              beforeTitle?: React.ReactNode
                              afterTitle?: React.ReactNode }) {
   const Tag = large ? 'h1' : 'h2'
+  // The title group never shrinks below its content (a coord slug can't
+  // break), so when the row runs out of room `right` wraps onto its own line
+  // instead of being painted over.
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12,
-                  marginBottom: 10 }}>
-      <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6,
-                    minWidth: 0 }}>
+                  flexWrap: 'wrap', marginBottom: 10 }}>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6 }}>
         {beforeTitle}
         <Tag style={{ margin: 0, fontSize: large ? 24 : 17, fontWeight: 600 }}>
           {title}
