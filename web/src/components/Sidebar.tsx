@@ -23,17 +23,18 @@ import {
  *
  * These are the separate enriched tables the filter stage emits, tagged in
  * the database as `catalog_tier`: `0_enriched` is the sources detected in
- * both surveys, `1_enriched` the ZTF-only ones. As in the Streamlit app you
+ * both surveys, `1_enriched` the ZTF-only ones, and `1_wide_association` the
+ * ZTF-only detections with a PS1 source 1-3" away. As in the Streamlit app you
  * work through one at a time, because they are different populations and
  * mixing them makes the run hard to reason about.
  */
 
 // A partition, matching `api.catalog_filters.CATALOG_TIERS`: the views are
 // mutually exclusive, which is what a segmented control promises.
-const CATALOGS: readonly CatalogFilter[] = ['in_ztf', 'in_both', 'all']
+const CATALOGS: readonly CatalogFilter[] = ['in_ztf', 'in_ztf_wide', 'in_both', 'all']
 
 const CATALOG_LABEL: Record<CatalogFilter, string> = {
-  in_ztf: 'in_ztf', in_both: 'in_both', all: 'everything',
+  in_ztf: 'in_ztf', in_ztf_wide: 'in_ztf_wide', in_both: 'in_both', all: 'everything',
 }
 
 /** "nobody has set one", in both checklists. Matches

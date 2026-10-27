@@ -158,10 +158,12 @@ def _mean_abs_dmag_sigma_sql(available: set[str]) -> str:
 # to disagree about what `in_ztf` means.
 #
 # A partition, not overlapping sets: these are offered as a segmented control,
-# which promises mutually exclusive views.
+# which promises mutually exclusive views. `in_ztf_wide` is the ZTF-only
+# detections with a PS1 source 1-3" away, compared with that source.
 CATALOG_TIERS = {
     'in_both': ('0',),
     'in_ztf': ('1',),
+    'in_ztf_wide': ('1_wide_association',),
 }
 
 # Which name to show for a source, given its tier. Well defined because the

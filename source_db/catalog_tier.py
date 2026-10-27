@@ -27,12 +27,14 @@ from source_db.paths import DEFAULT_OUT_DIR, REPO
 
 # (filename in <combined_dir>, catalog_tier label). Order fixes row order in the
 # output, so the smallest tables land first and a schema problem surfaces early.
-# `1_wide_association_enriched.ecsv` is deliberately not read: the wide-radius
-# ZTF-only sources are no longer part of the website.
+# `1_wide_association` holds ZTF-only detections with a PS1 source 1-3" away,
+# evaluated against that source; it is optional (absent from older runs).
 TIERS: list[tuple[str, str]] = [
+    ('1_wide_association_enriched.ecsv', '1_wide_association'),
     ('1_enriched.ecsv', '1'),
     ('0_enriched.ecsv', '0'),
 ]
+OPTIONAL_TIERS = {'1_wide_association'}
 
 
 # Values that upstream writes as a real number but means as "absent", mapped to
@@ -85,6 +87,9 @@ def read_combined(combined_dir: Path) -> pd.DataFrame:
     frames = []
     for fname, tier in TIERS:
         path = combined_dir / fname
+        if not path.exists() and tier in OPTIONAL_TIERS:
+            print(f'  {fname}: not found, skipped')
+            continue
         if not path.exists():
             raise FileNotFoundError(f'missing {path} -- run enrich_combined_tabs.py first')
         table = load_ecsv(str(path))
@@ -95,7 +100,27 @@ def read_combined(combined_dir: Path) -> pd.DataFrame:
         del table
     out = pd.concat(frames, ignore_index=True)
     del frames
+    regroup(out)
     return out
+
+
+def regroup(df: pd.DataFrame) -> None:
+    """Renumber `group_id` over all tiers together, in place.
+
+    Each combined table numbers its duplicate groups from 1, so stacking them
+    would make unrelated sources in different tiers share an id; one pass over
+    the stacked rows also links an object found in more than one tier. Same
+    1" rule and numbering as `combine_filtered_tabs.add_group_ids`.
+    """
+    from astropy.table import Table
+    from Source_Analysis.combine_filtered_tabs import add_group_ids
+    if 'group_id' not in df.columns:
+        return
+    t = Table({'ra': df['ra'].to_numpy(float), 'dec': df['dec'].to_numpy(float)})
+    add_group_ids([t])
+    df['group_id'] = np.asarray(t['group_id']) if len(t) else df['group_id']
+    print(f'  group_id: {int(np.sum(df["group_id"] > 0)):,} rows in '
+          f'{df.loc[df["group_id"] > 0, "group_id"].nunique():,} groups across tiers')
 
 
 def apply_sentinel_nulls(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:

@@ -27,7 +27,7 @@ class SourceSummary(BaseModel):
     label: Optional[str] = None          # this author's label, when asked for
     n_annotations: int = 0               # how many authors have labelled it
     # Which sub-catalogue it came from, in the `catalog=` filter's own terms:
-    # 'in_both' or 'in_ztf'. None for a tier outside both.
+    # 'in_both', 'in_ztf' or 'in_ztf_wide'. None for a tier outside them.
     catalog: Optional[str] = None
 
 

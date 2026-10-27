@@ -27,8 +27,8 @@ export type { LabelState } from './tableModel'
  *  enriched tables the filter stage emits, tagged `catalog_tier`. Declared
  *  here rather than beside the control that sets it, because the control
  *  imports this module -- the two used to import each other. */
-export type CatalogFilter = 'all' | 'in_both' | 'in_ztf'
-const CATALOG_FILTERS: readonly string[] = ['all', 'in_both', 'in_ztf']
+export type CatalogFilter = 'all' | 'in_both' | 'in_ztf' | 'in_ztf_wide'
+const CATALOG_FILTERS: readonly string[] = ['all', 'in_both', 'in_ztf', 'in_ztf_wide']
 
 /** The seven groups of `source_db.unified_class`, in its wedge order. */
 export const UNIFIED_CLASSES = ['AGN', 'Galaxy', 'Transient', 'Star',

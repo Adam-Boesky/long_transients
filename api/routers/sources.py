@@ -135,7 +135,7 @@ def list_sources(
     desc: bool = False,
     survey: str | None = None,
     catalog: str | None = Query(
-        None, description="sub-catalogue: 'in_both' or 'in_ztf'; omit for all"),
+        None, description="sub-catalogue: 'in_both', 'in_ztf' or 'in_ztf_wide'; omit for all"),
     min_epochs: int | None = None,
     has_lightcurve: bool = False,
     has_spectrum: bool = False,

@@ -1,6 +1,6 @@
 """Build the catalog tier of the source database.
 
-Reads the two `*_enriched.ecsv` tables produced by `enrich_combined_tabs.py`,
+Reads the `*_enriched.ecsv` tables produced by `enrich_combined_tabs.py`,
 assigns a stable `source_uuid` to every source, and writes the artifacts. No
 network access -- the crossmatch results are already in those tables.
 

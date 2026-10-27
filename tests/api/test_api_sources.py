@@ -198,8 +198,8 @@ def tiered_client(tmp_path):
     con.execute('CREATE TABLE sources (source_uuid TEXT PRIMARY KEY, coord_slug TEXT,'
                 ' ra REAL, dec REAL, n_epochs INT, surveys TEXT, n_spectra INT,'
                 ' spec_surveys TEXT, catalog_tier TEXT, catalog_json TEXT)')
-    # Two in_both, three in_ztf, and one with no tier at all.
-    tiers = ['0', '0', '1', '1', '1', None]
+    # Two in_both, two in_ztf, one in_ztf_wide, and one with no tier at all.
+    tiers = ['0', '0', '1', '1', '1_wide_association', None]
     for i, tier in enumerate(tiers):
         con.execute('INSERT INTO sources VALUES (?,?,?,?,?,?,?,?,?,?)',
                     (f'{i:08d}-0000-4000-8000-000000000000', f'slug{i}',
@@ -235,14 +235,14 @@ def test_catalog_filter_splits_the_tiers(tiered_client):
     """The named groups partition the tiers: no source is in two of them."""
     totals = {name: tiered_client.get('/api/sources',
                                       params={'catalog': name}).json()['total']
-              for name in ('in_both', 'in_ztf')}
-    assert totals == {'in_both': 2, 'in_ztf': 3}
+              for name in ('in_both', 'in_ztf', 'in_ztf_wide')}
+    assert totals == {'in_both': 2, 'in_ztf': 2, 'in_ztf_wide': 1}
 
 
 def test_the_named_groups_do_not_overlap(tiered_client):
     """What the segmented control that offers them promises."""
     seen = []
-    for name in ('in_both', 'in_ztf'):
+    for name in ('in_both', 'in_ztf', 'in_ztf_wide'):
         page = tiered_client.get('/api/sources', params={'catalog': name}).json()
         seen += [i['source_uuid'] for i in page['items']]
     assert len(seen) == len(set(seen))
@@ -252,7 +252,7 @@ def test_each_row_names_its_sub_catalogue(tiered_client):
     """The classify header shows this, in the filter's own vocabulary."""
     items = tiered_client.get('/api/sources').json()['items']
     got = [i['catalog'] for i in sorted(items, key=lambda i: i['source_uuid'])]
-    assert got == ['in_both', 'in_both', 'in_ztf', 'in_ztf', 'in_ztf', None]
+    assert got == ['in_both', 'in_both', 'in_ztf', 'in_ztf', 'in_ztf_wide', None]
 
 
 def test_catalog_filter_omitted_returns_every_tier(tiered_client):
@@ -266,7 +266,7 @@ def test_source_without_a_tier_appears_only_under_everything(tiered_client):
     malformed blob silently landing in one of the named buckets.
     """
     seen = set()
-    for cat in ('in_both', 'in_ztf'):
+    for cat in ('in_both', 'in_ztf', 'in_ztf_wide'):
         page = tiered_client.get('/api/sources', params={'catalog': cat}).json()
         seen |= {i['source_uuid'] for i in page['items']}
     everything = {i['source_uuid'] for i
