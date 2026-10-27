@@ -40,7 +40,7 @@ want to cut on it -- about 2.6% of the catalog is 'E', and those coordinates are
 poor enough that they mostly fail to match at all rather than matching wrongly.
 
 `scripts/build_simbad_catalog.py` downloads the raw chunks and calls
-`build_parquet()`. Like TNS -- and unlike the frozen SDSS DR17 and DESI DR1
+`build_parquet()`. Like TNS -- and unlike the frozen SDSS DR20 and DESI DR1
 releases -- SIMBAD grows continuously, so this catalog goes stale and wants an
 occasional refresh.
 

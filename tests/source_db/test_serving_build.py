@@ -173,3 +173,13 @@ def test_buckets_share_one_schema(tmp_path):
 def test_bucket_of_matches_the_written_layout():
     assert _base.bucket_of('ab123456-0000') == 'ab'
     assert len(_base.bucket_of('ab123456-0000')) == _base.BUCKET_CHARS
+
+
+def test_sdss_spectra_of_a_former_match_are_not_published():
+    from source_db.serving.build_serving_db import current_sdss_spectra
+    spec = pd.DataFrame({'source_uuid': ['a', 'a', 'a', 'b', 'b'],
+                         'survey': ['sdss', 'sdss', 'sdss', 'sdss', 'desi'],
+                         'spec_id': ['111', '112', '222', '333', '444']})
+    kept = current_sdss_spectra(spec, {'a|111', 'a|112'})
+    # Both of a's current spectra stay; its old one and b's go; DESI is untouched.
+    assert kept['spec_id'].tolist() == ['111', '112', '444']

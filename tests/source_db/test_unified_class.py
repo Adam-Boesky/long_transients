@@ -13,7 +13,7 @@ BLANK = {'tns_matched': False, 'tns_designation': '', 'tns_type': '',
          'wise_matched': False, 'wise_w1mpro': None, 'wise_w2mpro': None,
          'wise_cc_flags': '', 'wise_w2snr': None, 'wise_nb': None,
          'agn_db_matched': False, 'agn_db_best_class_all': '',
-         'sdss_matched': False, 'sdss_class': '',
+         'sdss_matched': False, 'sdss_classes': '',
          'desi_matched': False, 'desi_spectype': '',
          'simbad_matched': False, 'simbad_otype_path': '',
          'simbad_is_candidate': False}
@@ -33,15 +33,16 @@ def test_no_catalog_saw_it_is_unmatched():
 
 def test_seen_but_untyped_is_unclassified():
     """Distinct from Unmatched: somebody looked and said nothing."""
-    assert classify(sdss_matched=True, sdss_class='') == 'Unclassified'
+    assert classify(sdss_matched=True, sdss_classes='') == 'Unclassified'
 
 
 # ── single votes ──────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize('col,value,expected', [
-    ('sdss_class', 'QSO', 'AGN'),
-    ('sdss_class', 'GALAXY', 'Galaxy'),
-    ('sdss_class', 'STAR', 'Star'),
+    ('sdss_classes', '["QSO"]', 'AGN'),
+    ('sdss_classes', '["QSO_BAL"]', 'AGN'),
+    ('sdss_classes', '["GALAXY"]', 'Galaxy'),
+    ('sdss_classes', '["STAR"]', 'Star'),
 ])
 def test_a_spectrum_classifies(col, value, expected):
     assert classify(sdss_matched=True, **{col: value}) == expected
@@ -89,25 +90,30 @@ def test_cc_flags_only_in_w3_w4_still_passes():
 def test_transient_wins_over_agn():
     """A transient at an AGN is the interesting part."""
     assert classify(tns_matched=True, tns_designation='2020abc',
-                    sdss_matched=True, sdss_class='QSO') == 'Transient'
+                    sdss_matched=True, sdss_classes='["QSO"]') == 'Transient'
 
 
 def test_a_spectrum_outranks_a_generic_star():
     """SIMBAD's plain Star is often an unresolved point source."""
     assert classify(simbad_matched=True, simbad_otype_path='* > Star',
-                    sdss_matched=True, sdss_class='QSO') == 'AGN'
+                    sdss_matched=True, sdss_classes='["QSO"]') == 'AGN'
 
 
 def test_agn_beats_galaxy():
     """SDSS calls any AGN without broad lines GALAXY."""
-    assert classify(sdss_matched=True, sdss_class='GALAXY',
+    assert classify(sdss_matched=True, sdss_classes='["GALAXY"]',
                     simbad_matched=True,
                     simbad_otype_path='G > AGN > QSO') == 'AGN'
 
 
 def test_spectra_disagreeing_is_a_real_conflict():
-    assert classify(sdss_matched=True, sdss_class='QSO',
+    assert classify(sdss_matched=True, sdss_classes='["QSO"]',
                     desi_matched=True, desi_spectype='GALAXY') == 'Multiple Classes'
+
+
+def test_every_sdss_spectrum_votes():
+    """A source's SDSS spectra can disagree; each class they give votes."""
+    assert classify(sdss_matched=True, sdss_classes='["QSO", "STAR"]') == 'Multiple Classes'
 
 
 def test_star_and_galaxy_is_multiple_classes():
@@ -146,7 +152,7 @@ def test_agn_db_list_votes(entry, expected):
 
 def test_every_row_gets_a_known_group():
     rows = pd.DataFrame([BLANK, {**BLANK, 'sdss_matched': True,
-                                 'sdss_class': 'QSO'}])
+                                 'sdss_classes': '["QSO"]'}])
     assert set(unified_classes(rows)) <= set(GROUPS)
 
 

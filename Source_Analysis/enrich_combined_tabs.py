@@ -1,7 +1,7 @@
 """Append catalog crossmatch columns to a combined filter-results table.
 
 Runs between `combine_filtered_tabs.py` and `store_src_plots.py`. Each source
-gets its nearest match in SDSS DR17, DESI DR1, TNS, AllWISE, AGN-DB and SIMBAD
+gets its nearest match in SDSS DR20, DESI DR1, TNS, AllWISE, AGN-DB and SIMBAD
 appended as columns, so cuts can be made on classification without querying
 anything at plot time.
 

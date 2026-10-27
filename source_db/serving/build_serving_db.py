@@ -132,7 +132,28 @@ def _write_lightcurves(con: sqlite3.Connection, out_dir: Path,
     return n_src, n_rows
 
 
-def _write_spectra(con: sqlite3.Connection, raw_dir: Path,
+def current_sdss_spectra(all_spec: pd.DataFrame, current: set[str]) -> pd.DataFrame:
+    """Drop SDSS spectra that are not among the source's current matches.
+
+    `raw/` keeps every spectrum ever fetched, so after a catalog rebuild a
+    source can hold a spectrum it no longer matches (an unplugged fibre, say).
+    `current` holds `uuid|specobjid` keys, as `spectra.sdss.coverage_keys`.
+    """
+    key = all_spec['source_uuid'].astype(str) + '|' + all_spec['spec_id'].astype(str)
+    stale = (all_spec['survey'] == 'sdss') & ~key.isin(current)
+    if stale.any():
+        print(f'  dropped {int(stale.sum()):,} SDSS spectra that are no longer '
+              f'their source\'s matches')
+    return all_spec[~stale]
+
+
+def current_sdss_keys(out_dir: Path) -> set[str]:
+    """`uuid|specobjid` for every SDSS spectrum the sources currently match."""
+    from source_db.spectra import sdss as spec_sdss
+    return set(spec_sdss.coverage_keys(spec_sdss.targets(out_dir)))
+
+
+def _write_spectra(con: sqlite3.Connection, raw_dir: Path, out_dir: Path,
                    wanted: set[str] | None) -> tuple[int, int]:
     """One payload per source that has any spectrum.
 
@@ -151,7 +172,8 @@ def _write_spectra(con: sqlite3.Connection, raw_dir: Path,
     if not frames:
         return 0, 0
 
-    all_spec = pd.concat(frames, ignore_index=True)
+    all_spec = current_sdss_spectra(pd.concat(frames, ignore_index=True),
+                                    current_sdss_keys(out_dir))
     if wanted is not None:
         all_spec = all_spec[all_spec['source_uuid'].isin(wanted)]
 
@@ -264,7 +286,7 @@ def build(out_dir: Path = DEFAULT_OUT_DIR, limit: int | None = None,
         wanted = {r[0] for r in con.execute('SELECT source_uuid FROM sources')}
     n_lc, n_rows = _write_lightcurves(con, out_dir, wanted)
 
-    n_spec_src, n_spec = _write_spectra(con, RAW_DIR, wanted)
+    n_spec_src, n_spec = _write_spectra(con, RAW_DIR, out_dir, wanted)
     print(f'  spectra: {n_spec:,} for {n_spec_src:,} sources')
 
     n_cut = _write_cutouts(con, RAW_DIR, wanted)

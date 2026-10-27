@@ -55,6 +55,8 @@ LC_UUIDS = UUIDS[:-1]
 # of these carry one -- the fixture mirrors that rather than giving every
 # source a spectrum.
 SPEC_UUIDS = [UUIDS[0], UUIDS[1]]
+# UUIDS[0]'s SDSS match; the serving build only publishes a source's current one.
+SDSS_SPECOBJID = '1389259429339162624'
 NO_SPEC_UUID = UUIDS[2]
 
 # (survey, band, n_epochs) per source with data.
@@ -101,7 +103,7 @@ def _spectra_frames() -> dict[str, pd.DataFrame]:
     sdss_wave = np.linspace(3600.0, 9200.0, 40)
     desi_wave = np.arange(3600.0, 3600.0 + 0.8 * 50, 0.8)
     sdss = pd.DataFrame([spec_base.spectrum_row(
-        source_uuid=UUIDS[0], survey='sdss', spec_id='1234-55555-0001',
+        source_uuid=UUIDS[0], survey='sdss', spec_id=SDSS_SPECOBJID,
         wavelength=sdss_wave, flux=rng.normal(10, 1, sdss_wave.size),
         model=rng.normal(10, 0.2, sdss_wave.size),
         spec_class='QSO', redshift=1.23)])
@@ -131,6 +133,8 @@ def built_db(tmp_path_factory, monkeypatch_session) -> Path:
         'dec': [-5.0, 0.0, 5.0, 10.0, 15.0],
         'PSTARR_PanSTARR_ID': [1, 2, 3, 4, 5],
         'some_float': [1.5, 2.5, 3.5, 4.5, 5.5],
+        'sdss_matched': [True, False, False, False, False],
+        'sdss_specobjid': [SDSS_SPECOBJID, None, None, None, None],
     }).to_parquet(out / 'sources.parquet', index=False)
 
     with _base.BucketedWriter(out) as w:
@@ -142,6 +146,9 @@ def built_db(tmp_path_factory, monkeypatch_session) -> Path:
     for catalog, df in _spectra_frames().items():
         spec_base.write_raw(catalog, '0000', df, raw_dir=raw)
     monkeypatch_session.setattr(build_serving_db, 'RAW_DIR', raw)
+    # The real lookup re-lists SDSS spectra from the local catalog.
+    monkeypatch_session.setattr(build_serving_db, 'current_sdss_keys',
+                                lambda out_dir: {f'{UUIDS[0]}|{SDSS_SPECOBJID}'})
 
     return build_serving_db.build(out_dir=out)
 

@@ -224,6 +224,32 @@ class LocalCatalog:
         out.insert(3, f'{p}_dec', np.where(matched, cat['dec'].values[idx], np.nan))
         return out
 
+    def within_many(
+        self,
+        ra: Sequence[float],
+        dec: Sequence[float],
+        radius_arcsec: float,
+        filtered: bool = True,
+    ) -> pd.DataFrame:
+        """Every catalog row within `radius_arcsec` of each input position.
+
+        One row per (input, catalog row) pair, with the input's position in
+        `input_index`, ordered by input then separation.
+        """
+        ra = np.atleast_1d(np.asarray(ra, dtype=float))
+        dec = np.atleast_1d(np.asarray(dec, dtype=float))
+        p = self.prefix
+        cat = self.frame(filtered)
+        finite = np.flatnonzero(np.isfinite(ra) & np.isfinite(dec))
+        # Called on the inputs, search_around_sky returns the *argument's* index first.
+        i_cat, i_in, sep2d, _ = SkyCoord(ra[finite] * u.deg, dec[finite] * u.deg).search_around_sky(
+            self.coords(filtered), radius_arcsec * u.arcsec
+        )
+        out = cat.iloc[i_cat].reset_index(drop=True)
+        out.insert(0, 'input_index', finite[i_in])
+        out.insert(1, f'{p}_sep_arcsec', sep2d.arcsec)
+        return out.sort_values(['input_index', f'{p}_sep_arcsec'], kind='stable').reset_index(drop=True)
+
     def within(
         self,
         ra: float,

@@ -1,6 +1,6 @@
 """Refresh the local TNS object catalog from the daily staged dump.
 
-TNS is the one local catalog that goes stale -- SDSS DR17 and DESI DR1 are
+TNS is the one local catalog that goes stale -- SDSS DR20 and DESI DR1 are
 frozen releases, but TNS grows by ~25k objects a year. This downloads the
 staged full-catalog CSV and rebuilds the slim parquet that
 `Source_Analysis.catalogs.tns` crossmatches against.

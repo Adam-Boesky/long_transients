@@ -17,7 +17,7 @@ from api.catalog_filters import (BAD_FILTER, CATALOG_OF_TIER, CATALOG_TIERS,
                                  combine, get_filters, legacy_filter)
 from api.db import get_annotations, get_science
 from api.annotation_filters import annotation_filter
-from api.derive import classes_of, redshifts_of
+from api.derive import class_redshifts_of, classes_of, redshifts_of
 from source_db.serving.filters import UUID, CatalogFilters, FilterError, restrict_to
 from api import catalog_schema
 from api.config import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
@@ -351,7 +351,8 @@ def get_source(source_uuid: str,
         n_spectra=row['n_spectra'] or 0,
         spec_surveys=_split_surveys(row['spec_surveys']),
         catalog=cat, classes=classes_of(cat),
-        redshifts=redshifts_of(cat), annotations=anns)
+        redshifts=redshifts_of(cat), class_redshifts=class_redshifts_of(cat),
+        annotations=anns)
 
 
 @router.get('/sources/{source_uuid}/lightcurve')

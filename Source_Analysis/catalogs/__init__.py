@@ -9,7 +9,8 @@ service. They share a cone-search interface:
 
     agn     AGN-DB merged AGN/quasar catalog (8.1M rows) -- DuckDB against parquet,
             too wide to hold in memory, and queried per-source at plot time.
-    sdss    SDSS DR17 specObj spectroscopic catalog (5.8M rows).
+    sdss    SDSS DR20 spectroscopic catalog: specObj-dr17 (SDSS-I--IV) plus the
+            SDSS-V spAll and visual-inspection VAC.
     desi    DESI DR1 (Iron) redshift catalog (28.4M rows).
     simbad  SIMBAD `basic` cross-identification database (22.2M rows) -- names,
             object types and the type hierarchy for positions the spectroscopic

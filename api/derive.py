@@ -15,7 +15,7 @@ import orjson
 # out would make a source SIMBAD calls a quasar read as unclassified. `otype_label`
 # rather than `otype` because it is the readable form -- "Quasar", not "QSO".
 CLASS_SOURCES: list[tuple[str, str, bool]] = [
-    ('SDSS', 'sdss_class', False),
+    ('SDSS', 'sdss_classes', True),
     ('DESI', 'desi_spectype', False),
     ('TNS', 'tns_type', False),
     ('SIMBAD', 'simbad_otype_label', False),
@@ -39,11 +39,17 @@ MATCHED_COLUMN = {
 # one it nominates itself (`best_z_all` is a JSON list of per-sub-catalogue
 # values). WISE, Gaia and the photometric catalogues have no redshift at all.
 REDSHIFT_COLUMN = {
-    'SDSS': 'sdss_z',
     'DESI': 'desi_z',
     'TNS': 'tns_redshift',
     'SIMBAD': 'simbad_z',
     'AGN-DB': 'agn_db_best_z_merged',
+}
+
+# Catalogs that give one redshift per class rather than one per source: SDSS
+# keeps every spectrum of a source, and they need not agree. A JSON object,
+# class -> median redshift of that class's spectra.
+CLASS_REDSHIFT_COLUMN = {
+    'SDSS': 'sdss_class_z',
 }
 
 # Stands in for "this catalog has the source but has not typed it".
@@ -111,6 +117,23 @@ def redshifts_of(cat: dict) -> dict[str, float]:
         z = _as_float(cat.get(column))
         if z is not None:
             out[prefix] = z
+    return out
+
+
+def class_redshifts_of(cat: dict) -> dict[str, dict[str, float]]:
+    """Display prefix -> {class: redshift}, for the `CLASS_REDSHIFT_COLUMN` catalogs."""
+    out: dict[str, dict[str, float]] = {}
+    for prefix, column in CLASS_REDSHIFT_COLUMN.items():
+        value = cat.get(column)
+        if value is None or str(value).strip() in _BLANK:
+            continue
+        try:
+            parsed = orjson.loads(str(value))
+        except orjson.JSONDecodeError:
+            continue
+        zs = {str(c): z for c, v in parsed.items() if (z := _as_float(v)) is not None}
+        if zs:
+            out[prefix] = zs
     return out
 
 

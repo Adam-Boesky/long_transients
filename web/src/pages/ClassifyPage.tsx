@@ -565,6 +565,7 @@ export function ClassifyPage({ member, schema }:
               </span>
               <Classifications classes={detail?.classes ?? null}
                                redshifts={detail?.redshifts ?? null}
+                               classRedshifts={detail?.class_redshifts ?? null}
                                loading={detail === null} />
               <GaiaTag catalog={detail?.catalog ?? null} />
               <XRayTag catalog={detail?.catalog ?? null} />
@@ -713,9 +714,10 @@ async function copyText(text: string): Promise<boolean> {
  * entirely, and is why the empty case says "no known classifications"
  * rather than showing nothing at all.
  */
-function Classifications({ classes, redshifts, loading }:
+function Classifications({ classes, redshifts, classRedshifts, loading }:
                          { classes: Record<string, string[]> | null
                            redshifts: Record<string, number> | null
+                           classRedshifts: Record<string, Record<string, number>> | null
                            loading: boolean }) {
   if (loading) return <span style={{ opacity: 0.4 }}>·</span>
   const entries = Object.entries(classes ?? {})
@@ -734,14 +736,30 @@ function Classifications({ classes, redshifts, loading }:
         // absent far more often than the class is -- rendered only when
         // present rather than as an empty "(z=)".
         const z = redshifts?.[catalog]
+        // SDSS: every spectrum of the source counts, so each class carries
+        // its own redshift.
+        const perClass = classRedshifts?.[catalog]
         return (
           <span key={catalog}
                 style={{ display: 'inline-flex', gap: 5, alignItems: 'baseline',
                          padding: '2px 8px', borderRadius: 999, fontSize: 12,
                          border: '1px solid var(--border-strong)' }}>
             <span style={{ opacity: 0.6 }}>{catalog}</span>
-            <b>{values.join(' / ')}</b>
-            {typeof z === 'number' && Number.isFinite(z) && (
+            <b>
+              {perClass
+                ? values.map((v, i) => (
+                    <span key={v}>
+                      {i > 0 && ' / '}{v}
+                      {typeof perClass[v] === 'number' && (
+                        <span style={{ fontWeight: 400, opacity: 0.75 }}>
+                          {' '}(z={perClass[v].toFixed(4)})
+                        </span>
+                      )}
+                    </span>
+                  ))
+                : values.join(' / ')}
+            </b>
+            {!perClass && typeof z === 'number' && Number.isFinite(z) && (
               // 4 decimals to match the `:.4f` the analysis-page info panel
               // already uses for the AGN-DB and SIMBAD redshifts.
               <span style={{ opacity: 0.75 }}>(z={z.toFixed(4)})</span>

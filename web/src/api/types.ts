@@ -75,6 +75,9 @@ export interface SourceDetail {
    *  can be in `classes` and absent here (SIMBAD stars, most TNS rows), so a
    *  missing entry means "no redshift", not "no match". */
   redshifts: Record<string, number>
+  /** Per class, for catalogs whose spectra of a source can disagree (SDSS):
+   *  prefix -> class -> median redshift of that class's spectra. */
+  class_redshifts?: Record<string, Record<string, number>>
   annotations: Annotation[]
 }
 
@@ -132,6 +135,8 @@ export interface Spectrum {
   spec_id: string
   spec_class: string | null
   redshift: number | null
+  /** Observation date; SDSS only, where a source can have many spectra. */
+  mjd?: number | null
   n_pix: number
   flux: (number | null)[]
   model: (number | null)[] | null

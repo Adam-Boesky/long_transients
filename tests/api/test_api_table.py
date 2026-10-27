@@ -43,12 +43,16 @@ def test_table_row_has_the_columns_the_page_reads(client):
 
 
 def test_table_tolerates_a_catalog_row_with_none_of_the_columns(client):
-    """Nothing in the fixture is crossmatched or has ZTF/PanSTARRS mags."""
+    """The fixture's only crossmatch is UUIDS[0]'s SDSS spectrum, with no class
+    column; nothing has ZTF/PanSTARRS mags."""
     rows = client.get('/api/table').json()['rows']
     assert all(r['mean_abs_dmag'] is None for r in rows)
     assert all(r['wise_w1w2'] is None for r in rows)
-    assert all(not any(r['matched'].values()) for r in rows)
-    assert all(v == [] for r in rows for v in r['classes'].values())
+    assert all(r['matched']['sdss'] == (r['source_uuid'] == UUIDS[0]) for r in rows)
+    assert all(not any(v for k, v in r['matched'].items() if k != 'sdss') for r in rows)
+    # Matched but untyped reads 'unknown' rather than nothing.
+    assert all(r['classes'] == ({'SDSS': ['unknown']} if r['source_uuid'] == UUIDS[0] else {})
+               or all(v == [] for v in r['classes'].values()) for r in rows)
 
 
 def test_table_pools_verdicts_across_authors(client):
@@ -253,7 +257,7 @@ def test_a_matched_but_untyped_catalog_reads_as_unknown():
 def test_an_unmatched_catalog_contributes_nothing():
     """Absent rather than present-and-empty, so a caller can render the map
     directly without filtering blanks back out."""
-    assert 'SDSS' not in classes_of({'sdss_matched': False, 'sdss_class': None})
+    assert 'SDSS' not in classes_of({'sdss_matched': False, 'sdss_classes': None})
 
 
 def test_simbad_classifications_are_included():
@@ -334,17 +338,18 @@ def test_classification_sql_matches_the_python_implementation():
 
     cases = [
         {},                                                     # nothing at all
-        {'sdss_class': 'QSO', 'sdss_matched': True},
+        {'sdss_classes': '["QSO"]', 'sdss_matched': True},
+        {'sdss_classes': '["GALAXY", "QSO"]', 'sdss_matched': True},   # spectra disagree
         {'tns_matched': True, 'tns_type': None},                # matched, untyped
         {'tns_matched': True, 'tns_type': '<NA>'},              # blank-as-text
         {'tns_matched': True, 'tns_type': 'nan'},
         {'simbad_matched': True, 'simbad_otype_label': 'Quasar'},
         {'agn_db_matched': True,
          'agn_db_best_class_all': '["generic_agn", "unknown", "generic_agn"]'},
-        {'sdss_class': 'QSO', 'sdss_matched': True,
+        {'sdss_classes': '["QSO"]', 'sdss_matched': True,
          'simbad_otype_label': 'Quasar', 'simbad_matched': True,
          'agn_db_best_class_all': '["generic_agn"]', 'agn_db_matched': True},
-        {'sdss_matched': 'true', 'sdss_class': 'GALAXY'},       # flag as text
+        {'sdss_matched': 'true', 'sdss_classes': '["GALAXY"]'},  # flag as text
     ]
     frame = pd.DataFrame([{c: case.get(c) for c in columns} for case in cases],
                          columns=columns).astype(object)
@@ -388,10 +393,19 @@ def test_redshifts_are_keyed_like_classes():
     """The chip pairs the two by display prefix, so the keys must line up."""
     from api.derive import REDSHIFT_COLUMN, redshifts_of
     assert set(REDSHIFT_COLUMN) <= {p for p, _, _ in CLASS_SOURCES}
-    cat = {'sdss_z': 2.4737, 'desi_z': 2.4741, 'simbad_z': 2.475,
+    cat = {'desi_z': 2.4741, 'simbad_z': 2.475,
            'agn_db_best_z_merged': 2.4737, 'tns_redshift': 0.06}
-    assert redshifts_of(cat) == {'SDSS': 2.4737, 'DESI': 2.4741, 'SIMBAD': 2.475,
+    assert redshifts_of(cat) == {'DESI': 2.4741, 'SIMBAD': 2.475,
                                  'AGN-DB': 2.4737, 'TNS': 0.06}
+
+
+def test_sdss_redshifts_are_per_class():
+    """A source's SDSS spectra can disagree, so each class keeps its own z."""
+    from api.derive import CLASS_REDSHIFT_COLUMN, class_redshifts_of
+    assert set(CLASS_REDSHIFT_COLUMN) <= {p for p, _, _ in CLASS_SOURCES}
+    cat = {'sdss_class_z': '{"GALAXY": 0.58, "QSO": 2.84}'}
+    assert class_redshifts_of(cat) == {'SDSS': {'GALAXY': 0.58, 'QSO': 2.84}}
+    assert class_redshifts_of({'sdss_class_z': None}) == {}
 
 
 def test_a_catalog_without_a_redshift_is_absent_not_zero():
@@ -418,8 +432,8 @@ def test_redshifts_parse_text_cells():
     """The catalog blob round-trips through JSON, so a numeric column can
     arrive as a string, and the blank sentinels as text."""
     from api.derive import redshifts_of
-    assert redshifts_of({'sdss_z': '1.5', 'desi_z': '<NA>',
-                         'simbad_z': 'nan', 'tns_redshift': ''}) == {'SDSS': 1.5}
+    assert redshifts_of({'desi_z': '1.5', 'simbad_z': '<NA>',
+                         'agn_db_best_z_merged': 'nan', 'tns_redshift': ''}) == {'DESI': 1.5}
 
 
 def test_table_filters_by_followup_status(client):

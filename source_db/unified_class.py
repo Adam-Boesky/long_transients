@@ -21,7 +21,8 @@ GROUPS = ('AGN', 'Galaxy', 'Transient', 'Star', 'Multiple Classes',
           'Unclassified', 'Unmatched')
 
 # Spectroscopic classes that map onto a group; anything else says nothing.
-_SPEC = {'QSO': 'AGN', 'GALAXY': 'Galaxy', 'STAR': 'Star'}
+# QSO_BAL comes from SDSS's visual-inspection VAC, which sdss_class prefers.
+_SPEC = {'QSO': 'AGN', 'QSO_BAL': 'AGN', 'GALAXY': 'Galaxy', 'STAR': 'Star'}
 _SPEC_CATALOGS = ('SDSS', 'DESI')
 # TNS types that name the host rather than a transient.
 _TNS_AGN = {'AGN', 'QSO'}
@@ -37,7 +38,7 @@ INPUT_COLUMNS = (
     'wise_matched', 'wise_w1mpro', 'wise_w2mpro', 'wise_cc_flags',
     'wise_w2snr', 'wise_nb',
     'agn_db_matched', 'agn_db_best_class_all',
-    'sdss_matched', 'sdss_class', 'desi_matched', 'desi_spectype',
+    'sdss_matched', 'sdss_classes', 'desi_matched', 'desi_spectype',
     'simbad_matched', 'simbad_otype_path', 'simbad_is_candidate',
 )
 
@@ -147,13 +148,18 @@ def unified_classes(data) -> np.ndarray:
         for g in agn_db_groups(agn_cls[i]):
             vote(i, 'AGN-DB', g)
 
-    for catalog, matched_col, class_col in (
-            ('SDSS', 'sdss_matched', 'sdss_class'),
-            ('DESI', 'desi_matched', 'desi_spectype')):
-        spec = _s(data[class_col])
-        for i in np.flatnonzero(_b(data[matched_col])):
-            if spec[i] in _SPEC:
-                vote(i, catalog, _SPEC[spec[i]])
+    # SDSS holds every class its spectra of the source give (a JSON list), so
+    # spectra that disagree each vote.
+    sdss = _s(data['sdss_classes'])
+    for i in np.flatnonzero(_b(data['sdss_matched'])):
+        for c in (json.loads(sdss[i]) if sdss[i] else []):
+            if c in _SPEC:
+                vote(i, 'SDSS', _SPEC[c])
+
+    desi = _s(data['desi_spectype'])
+    for i in np.flatnonzero(_b(data['desi_matched'])):
+        if desi[i] in _SPEC:
+            vote(i, 'DESI', _SPEC[desi[i]])
 
     # Candidates ('AG?', 'Q?') do not vote.
     path = _s(data['simbad_otype_path'])

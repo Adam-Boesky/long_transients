@@ -15,19 +15,15 @@ from tests.conftest import NO_SPEC_UUID, SPEC_UUIDS, UUIDS
 
 # ── SDSS URL construction (offline, no network) ───────────────────────────────
 
-def test_sdss_spectrum_url_is_built_from_identifiers():
-    row = pd.Series({'sdss_plate': 6740, 'sdss_mjd': 56401,
-                     'sdss_fiberid': 518, 'sdss_run2d': 'v5_13_2'})
-    url = spec_sdss.spectrum_url(row)
-    assert url.endswith('/v5_13_2/spectra/lite/6740/spec-6740-56401-0518.fits')
-    # plate and fiber are zero-padded to 4; mjd is not
-    assert 'spec-6740-56401-0518' in url
+def test_sdss_spectrum_url_is_the_catalog_url():
+    url = ('https://data.sdss.org/sas/dr20/spectro/boss/redux/v6_2_1/spectra/daily/lite/'
+           '015XXX/015000/59146/spec-015000-59146-4375786564.fits')
+    assert spec_sdss.spectrum_url(pd.Series({'sdss_spec_url': url})) == url
 
 
-def test_sdss_spectrum_url_is_none_when_identifiers_are_missing():
-    row = pd.Series({'sdss_plate': None, 'sdss_mjd': 56401,
-                     'sdss_fiberid': 518, 'sdss_run2d': 'v5_13_2'})
-    assert spec_sdss.spectrum_url(row) is None
+def test_sdss_spectrum_url_is_none_when_unmatched():
+    assert spec_sdss.spectrum_url(pd.Series({'sdss_spec_url': None})) is None
+    assert spec_sdss.spectrum_url(pd.Series({'sdss_spec_url': pd.NA})) is None
 
 
 # ── payload encoding ──────────────────────────────────────────────────────────

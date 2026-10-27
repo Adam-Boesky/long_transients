@@ -40,7 +40,8 @@ from source_db.paths import RAW_DIR
 
 SURVEY = 'sdss'
 
-DATA_RELEASE = 'dr18'
+# DR20 has no new imaging: PhotoObj is identical to DR17-DR19.
+DATA_RELEASE = 'dr20'
 BASE_URL = f'https://skyserver.sdss.org/{DATA_RELEASE}/SkyServerWS/SearchTools/SqlSearch'
 
 # Matches Source.max_arcsec and every other catalog here; see the module

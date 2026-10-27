@@ -36,9 +36,10 @@ SURVEYS = ['sdss', 'desi']
 SPECTRUM_COLUMNS = [
     'source_uuid',    # the key
     'survey',         # sdss | desi
-    'spec_id',        # SDSS 'plate-mjd-fiberid', DESI targetid
+    'spec_id',        # SDSS specobjid, DESI specid
     'spec_class',     # SDSS CLASS / DESI SPECTYPE
     'redshift',
+    'mjd',            # observation date; SDSS only (a source can have many)
     'n_pix',
     'wavelength',     # list<float32>, Angstroms (linear, not log)
     'flux',           # list<float32>
@@ -67,9 +68,10 @@ def load_targets(survey: str, out_dir: Path = DEFAULT_OUT_DIR,
             f'{path} not found -- run `python -m source_db.build_catalog_tier` first')
 
     if survey == 'sdss':
-        cols = ['source_uuid', 'ra', 'dec', 'sdss_matched', 'sdss_plate',
-                'sdss_mjd', 'sdss_fiberid', 'sdss_run2d', 'sdss_class', 'sdss_z']
-    elif survey == 'desi':
+        # A source can have many SDSS spectra; `spectra.sdss.targets` lists them.
+        from source_db.spectra import sdss
+        return sdss.targets(out_dir, limit)
+    if survey == 'desi':
         cols = ['source_uuid', 'ra', 'dec', 'desi_matched', 'desi_targetid',
                 'desi_spectype', 'desi_z']
     else:
@@ -83,7 +85,7 @@ def load_targets(survey: str, out_dir: Path = DEFAULT_OUT_DIR,
 def empty_spectra() -> pd.DataFrame:
     return pd.DataFrame({c: pd.Series(dtype=t) for c, t in zip(
         SPECTRUM_COLUMNS,
-        ['string', 'string', 'string', 'string', 'float64', 'Int32',
+        ['string', 'string', 'string', 'string', 'float64', 'float64', 'Int32',
          'object', 'object', 'object'])})
 
 
@@ -96,7 +98,7 @@ def as_float32(a) -> Optional[np.ndarray]:
 
 def spectrum_row(source_uuid: str, survey: str, spec_id: str,
                  wavelength, flux, model=None, spec_class=None,
-                 redshift=None) -> dict:
+                 redshift=None, mjd=None) -> dict:
     """One normalised spectrum, with the arrays already float32."""
     w = as_float32(wavelength)
     f = as_float32(flux)
@@ -105,6 +107,7 @@ def spectrum_row(source_uuid: str, survey: str, spec_id: str,
         'source_uuid': source_uuid, 'survey': survey, 'spec_id': str(spec_id),
         'spec_class': None if spec_class is None else str(spec_class),
         'redshift': None if redshift is None else float(redshift),
+        'mjd': None if mjd is None or pd.isna(mjd) else float(mjd),
         'n_pix': 0 if w is None else int(w.size),
         'wavelength': None if w is None else w,
         'flux': None if f is None else f,

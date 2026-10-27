@@ -50,6 +50,8 @@ class SourceDetail(BaseModel):
     # catalog can appear in `classes` and not here (SIMBAD stars, most TNS
     # rows), so the two are read together rather than assumed parallel.
     redshifts: dict[str, float] = Field(default_factory=dict)
+    # Per class, for catalogs whose spectra of a source can disagree (SDSS).
+    class_redshifts: dict[str, dict[str, float]] = Field(default_factory=dict)
     annotations: list['Annotation'] = Field(default_factory=list)
 
 

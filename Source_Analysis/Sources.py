@@ -541,9 +541,9 @@ class Source():
 
     @property
     def spectrum(self) -> Union[List[HDUList], None]:
-        """The SDSS DR17 spectrum as a one-element list of HDULists, or None.
+        """The SDSS DR20 spectrum as a one-element list of HDULists, or None.
 
-        The match is found in the local specObj catalog and the spectrum is
+        The match is found in the local SDSS catalog and the spectrum is
         pulled straight from the Science Archive Server, rather than going
         through astroquery's SkyServer endpoint. Same data release and the same
         file -- verified bit-identical in HDU1 (loglam/flux/model) and HDU2
