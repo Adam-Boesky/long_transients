@@ -15,8 +15,9 @@ from astroquery.ipac.irsa import Irsa
 from astropy.coordinates import SkyCoord
 from concurrent.futures import ThreadPoolExecutor
 
-from Extracting.utils import get_pstarr_lc_from_coord, get_pstarr_lc_from_id, img_flux_to_ab_mag, get_data_path, throttled_sdss_query
+from Extracting.utils import get_pstarr_lc_from_coord, get_pstarr_lc_from_id, img_flux_to_ab_mag, throttled_sdss_query
 from Source_Analysis.ZTF_Local_LC import ZTF_LC, BAD_CATFLAG_MASK
+from Source_Analysis import followup
 
 # Diagnostic: log SDSS's raw response body when it fails to parse, so we can see
 # *why* (rate limit, server error, etc.) instead of just the resulting parse exception.
@@ -109,7 +110,6 @@ ALL_BAND_DF = pd.DataFrame(
     index=['band', 'survey'],
 )
 GAIA_ZERO_PTS = {'g': 25.8010, 'bp': 25.3540, 'rp': 25.1040}  # from Table 5.4 in https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu5pho/cu5pho_sec_photProc/cu5pho_ssec_photCal.html#SSS3.P2
-CUSTOM_PHOT_DIR = os.path.join(get_data_path(), 'followup', 'photometry')
 
 
 class Light_Curve:
@@ -318,7 +318,7 @@ class Light_Curve:
             print(f'Local store has no {catalog}; falling back to the service.')
         if catalog == 'ztforce':
             from ztforce import run_forced_photometry_batch, build_config
-            OUT_DIR = Path(__file__).resolve().parents[1] / 'Data' / 'followup' / 'ztforce_photometry'
+            OUT_DIR = followup.ZTFORCE_CACHE_DIR
             config = build_config()
             all_lcs = run_forced_photometry_batch(
                 targets=[self.skycoord],
@@ -543,36 +543,21 @@ class Light_Curve:
                         print(f'SDSS query_crossid returned unexpected columns {lightcurve_tab.colnames} — treating as no result.')
                         lightcurve_tab = None
                 elif catalog == 'custom':
-                    # Get the filename -> coordinate mapping
-                    custom_phot_fnames = [fname.split('.')[0] for fname in os.listdir(CUSTOM_PHOT_DIR) if fname != 'README.md'] # dropping file extensions
-                    if len(custom_phot_fnames) == 0:
-                        print('No custom photometry files found. Returning None...')
-                        lightcurve_tab = None
-                    else:
-                        fname_coords = [(
-                            float(fname.split('_')[1].replace("p", ".").replace("n", "-")),
-                            float(fname.split('_')[2].replace("p", ".").replace("n", "-"))
-                        ) for fname in custom_phot_fnames]
-
-                        # Get the lightcurve table
-                        fname_skycoords = SkyCoord(
-                            [c[0] for c in fname_coords],
-                            [c[1] for c in fname_coords],
-                            unit='deg',
-                            )
-                        seps = self.skycoord.separation(fname_skycoords)
-                        if np.min(seps.arcsecond > self.query_rad_arcsec):
-                            lightcurve_tab = None
-                        else:
-                            # Read the custom file format into a pandas DataFrame
-                            custom_phot_fname = custom_phot_fnames[np.argmin(seps.arcsec)]
+                    # Our own photometry: the nearest follow-up target that has some.
+                    targets = [t for t in followup.iter_targets() if t.photometry_file is not None]
+                    lightcurve_tab = None
+                    if targets:
+                        seps = self.skycoord.separation(SkyCoord(
+                            [t.ra for t in targets], [t.dec for t in targets], unit='deg'))
+                        if np.min(seps.arcsec) <= self.query_rad_arcsec:
+                            target = targets[int(np.argmin(seps.arcsec))]
                             lightcurve_tab = pd.read_csv(
-                                os.path.join(CUSTOM_PHOT_DIR, f'{custom_phot_fname}.txt'),
-                                sep=r'\s+',  # delim_whitespace=True
+                                target.photometry_file,
+                                sep=r'\s+',
                                 comment='#',
                                 names=['mjd', 'custom_mag', 'custom_magerr', 'filter', 'ul', 'telescope', 'instrument']
                             )
-                            lightcurve_tab['custom_id'] = custom_phot_fname
+                            lightcurve_tab['custom_id'] = target.slug
                             lightcurve_tab = Table.from_pandas(lightcurve_tab)
                 else:
                     lightcurve_tab: Table = Irsa.query_region(

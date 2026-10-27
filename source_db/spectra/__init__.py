@@ -7,7 +7,7 @@ a spectrum and the identifiers needed to fetch it:
     SDSS DR20   sdss_matched, sdss_spec_url                -> a SAS file URL
     DESI DR1    desi_matched, desi_targetid                -> a SPARCL record
 
-Local follow-up spectra in `Data/followup/spectra` are deliberately not wired
-up yet: their filenames are truncated to 2-3 decimals (~10-30"), so matching
-them to sources needs the precision recovery we deferred.
+Local follow-up spectra (`Data/followup/<slug>/spectra`, see
+`Source_Analysis.followup`) are not wired up yet; each target's `target.yaml`
+carries its `source_uuid`, so attaching them is a lookup, not a crossmatch.
 """

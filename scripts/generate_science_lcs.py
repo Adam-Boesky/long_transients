@@ -1,5 +1,5 @@
-"""Generate forced-PSF photometry lightcurves on ZTF science images for all sources
-in Data/followup/ztf_forced_photometry/source_map.csv using ztforce.
+"""Generate forced-PSF photometry lightcurves on ZTF science images, using ztforce,
+for every follow-up target with IPAC ZFPS results (at the ZFPS request position).
 
 Output layout:
   Data/followup/ztforce_photometry/
@@ -23,8 +23,10 @@ from astropy.time import Time
 # ── paths ──────────────────────────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-SOURCE_MAP = REPO_ROOT / "Data" / "followup" / "ztf_forced_photometry" / "source_map.csv"
-OUT_DIR = REPO_ROOT / "Data" / "followup" / "ztforce_photometry"
+from Source_Analysis.followup import ZTFORCE_CACHE_DIR  # noqa: E402
+from ztf_fp_query.sync import load_map  # noqa: E402
+
+OUT_DIR = ZTFORCE_CACHE_DIR
 PLOT_DIR = OUT_DIR / "plots"
 
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -172,8 +174,9 @@ def plot_rolling_stack_summary(
 
 
 def main() -> None:
-    src = pd.read_csv(SOURCE_MAP)
-    print(f"Loaded {len(src)} sources from {SOURCE_MAP}", flush=True)
+    # One position per target; the ztforce cache is keyed by these request positions.
+    src = load_map().drop_duplicates("slug", keep="last")
+    print(f"Loaded {len(src)} targets with ZFPS results", flush=True)
 
     targets = [SkyCoord(ra=row.ra, dec=row.dec, unit="deg") for _, row in src.iterrows()]
     config = build_config()

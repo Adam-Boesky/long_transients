@@ -61,13 +61,13 @@ print(f'\nDownloaded {len(downloaded)} new file(s).')
 # -----------------------------------------------------------------------
 
 # By sky position (looks up the file via the local index)
-fp = ForcedPhotometry(ra=210.08983, dec=-6.88676)
+fp = ForcedPhotometry(ra=126.27485, dec=26.70601)
 print(fp)  # ForcedPhotometry(ra=..., dec=..., n_epochs=..., bands=[...])
 
 # Or directly from a file path
 fp = ForcedPhotometry.from_file(
-    '/Users/adamboesky/Research/long_transients/Data/ztf_forced_photometry/'
-    'batchfp_req0004838848_lc.txt'
+    '/Users/adamboesky/Research/long_transients/Data/followup/126p274850_26p706012/zfps/'
+    'batchfp_req0004838857_lc.txt'
 )
 
 

@@ -20,6 +20,7 @@ sys.path.append('/n/home04/aboesky/berger/long_transients')
 from Extracting.utils import get_data_path, init_worker_sdss_lock, load_ecsv
 from Sources import Source, Sources
 from Source_Analysis.coord_utils import coord_stem
+from Source_Analysis import followup
 from multiprocessing import Pool, Lock, Value
 
 # Plot formatting
@@ -194,7 +195,7 @@ def write_dmag_sidecar(srcs: Sources, fnames: list[str], plot_dir: str, filename
     pd.DataFrame(rows).to_csv(os.path.join(plot_dir, filename), index=False)
 
 
-ZTFORCE_DIR = Path(__file__).resolve().parents[1] / 'Data' / 'followup' / 'ztforce_photometry'
+ZTFORCE_DIR = followup.ZTFORCE_CACHE_DIR
 
 
 def prefetch_ztforce(srcs: Sources) -> None:

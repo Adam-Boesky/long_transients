@@ -1,13 +1,13 @@
 """Custom follow-up photometry -> `Data/db/raw/custom/`.
 
-The only catalog here with no network call: the epochs are text files in
-`Data/followup/photometry`, one per target, named `<id>_<ra>_<dec>.txt` with
-`p` standing in for a decimal point and `n` for a minus sign.
+The only catalog here with no network call: the epochs are each follow-up
+target's `photometry.txt` (`Data/followup/<slug>/`, see
+`Source_Analysis.followup`), positioned by the target's `target.yaml`.
 
-`Light_Curve` matches a source to the *nearest* such file within
+`Light_Curve` matches a source to the *nearest* such target within
 `query_rad_arcsec`; this module does the same match for every source at once.
 Six files and 60 epochs today, so it runs in well under a second -- it exists
-as a module rather than a one-off so that newly dropped-in files are picked up
+as a module rather than a one-off so that newly added photometry is picked up
 by the same `python -m source_db.lightcurves.custom` as everything else.
 """
 from __future__ import annotations
@@ -19,15 +19,13 @@ import numpy as np
 import pandas as pd
 from astropy.coordinates import SkyCoord
 
+from Source_Analysis import followup
 from source_db.lightcurves import _base
-from source_db.paths import RAW_DIR, REPO
+from source_db.paths import RAW_DIR
 
 SURVEY = 'custom'
 
-CUSTOM_PHOT_DIR = REPO / 'Data' / 'followup' / 'photometry'
-
-# 1.5" to match Light_Curve.query_rad_arcsec and every other catalog here.
-MATCH_RADIUS_ARCSEC = 1.5
+MATCH_RADIUS_ARCSEC = followup.MATCH_RADIUS_ARCSEC
 
 # The header every file carries. `UL` marks a non-detection upper limit.
 FIELDS = ['mjd', 'mag', 'magerr', 'band', 'ul', 'telescope', 'instrument']
@@ -40,29 +38,17 @@ _CHUNK_ID = '0000'
 
 # ── the files ─────────────────────────────────────────────────────────────────
 
-def file_positions(phot_dir: Path = CUSTOM_PHOT_DIR) -> pd.DataFrame:
-    """`custom_id`, `ra`, `dec` parsed from each filename."""
-    rows = []
-    for path in sorted(Path(phot_dir).glob('*.txt')):
-        stem = path.stem
-        parts = stem.split('_')
-        if len(parts) < 3:
-            print(f'  skipping {path.name}: name is not <id>_<ra>_<dec>')
-            continue
-        try:
-            ra = float(parts[1].replace('p', '.').replace('n', '-'))
-            dec = float(parts[2].replace('p', '.').replace('n', '-'))
-        except ValueError:
-            print(f'  skipping {path.name}: cannot parse a position from the name')
-            continue
-        rows.append({'custom_id': stem, 'path': str(path), 'ra': ra, 'dec': dec})
-    return pd.DataFrame(rows)
+def file_positions(root: Path = followup.FOLLOWUP_DIR) -> pd.DataFrame:
+    """`custom_id` (the target slug), `path`, `ra`, `dec` for every target with photometry."""
+    rows = [{'custom_id': t.slug, 'path': str(t.photometry_file), 'ra': t.ra, 'dec': t.dec}
+            for t in followup.iter_targets(root) if t.photometry_file is not None]
+    return pd.DataFrame(rows, columns=['custom_id', 'path', 'ra', 'dec'])
 
 
 def read_photometry(path: Path, custom_id: str) -> pd.DataFrame:
     """One file -> one frame, tolerating a row that omits the `UL` field.
 
-    `14_355p63_n27p83.txt` has a row with six fields rather than seven. Read
+    #14's file has a row with six fields rather than seven. Read
     positionally (as `Light_Curve` does) that row shifts, landing the telescope
     in `ul` and dropping the instrument. The measurement columns are unaffected
     either way, so this only rescues the metadata -- but storing `ul` as
@@ -96,13 +82,13 @@ def read_photometry(path: Path, custom_id: str) -> pd.DataFrame:
 # ── fetch ─────────────────────────────────────────────────────────────────────
 
 def fetch(limit: Optional[int] = None, raw_dir: Path = RAW_DIR,
-          phot_dir: Path = CUSTOM_PHOT_DIR,
+          root: Path = followup.FOLLOWUP_DIR,
           radius_arcsec: float = MATCH_RADIUS_ARCSEC) -> pd.DataFrame:
     """Attach every source to its nearest photometry file within `radius`."""
     positions = _base.load_positions(limit=limit)
-    files = file_positions(phot_dir)
+    files = file_positions(root)
     if files.empty:
-        print(f'{SURVEY}: no photometry files in {phot_dir}')
+        print(f'{SURVEY}: no photometry in {root}')
         return pd.DataFrame()
 
     src = SkyCoord(positions['ra'].to_numpy(), positions['dec'].to_numpy(), unit='deg')
