@@ -52,6 +52,11 @@ const SEARCH_DEBOUNCE_MS = 300
 export const W1W2_MODES = ['Any', `≥ ${W1W2_CUT}`, `< ${W1W2_CUT}`] as const
 export type W1W2Mode = (typeof W1W2_MODES)[number]
 
+/** Duplicates are detections sharing a `group_id`: the same object found in
+ *  overlapping fields (within 1"). Ungrouped rows carry -1. */
+export const DUPLICATE_MODES = ['Any', 'Duplicates', 'No duplicates'] as const
+export type DuplicateMode = (typeof DUPLICATE_MODES)[number]
+
 export interface FilterState {
   search: string
   setSearch: (v: string) => void
@@ -82,6 +87,11 @@ export interface FilterState {
   setW1w2: (v: W1W2Mode) => void
   w1w2KeepMissing: boolean
   setW1w2KeepMissing: (v: boolean) => void
+  /** Keep only, or drop, sources that are one of several detections of an object. */
+  duplicates: DuplicateMode
+  setDuplicates: (v: DuplicateMode) => void
+  /** Whether this release has `group_id` to filter on. */
+  hasGroups: boolean
   /** Reset every control in the Filters card. The column-filter builder has
    *  its own reset, so it is deliberately left alone. */
   clearFilters: () => void
@@ -153,15 +163,18 @@ export function FilterProvider({ member, children }:
   // Which match columns exist: a release built before a catalog was added has
   // none, and a clause naming a missing column would fail the whole query.
   const [matchCatalogs, setMatchCatalogs] = useState<string[]>([])
+  const [hasGroups, setHasGroups] = useState(false)
   useEffect(() => {
     const ac = new AbortController()
     getFilterSchema(ac.signal).then((schema) => {
       const have = new Set(schema.groups.flatMap((g) => g.columns.map((c) => c.name)))
       setMatchCatalogs(MATCH_CATALOGS.filter(([, col]) => have.has(col)).map(([name]) => name))
+      setHasGroups(have.has('group_id'))
     }).catch(() => {})
     return () => ac.abort()
   }, [])
   const [w1w2, setW1w2] = useState<W1W2Mode>('Any')
+  const [duplicates, setDuplicates] = useState<DuplicateMode>('Any')
   // Off by default, matching the cut's own logic: a source with no colour has
   // not passed or failed Stern+12, so it is not part of either answer.
   const [w1w2KeepMissing, setW1w2KeepMissing] = useState(false)
@@ -198,7 +211,7 @@ export function FilterProvider({ member, children }:
 
   const clearFilters = useCallback(() => {
     setBucketFilter({}); setStatusFilter({}); setClassFilter({}); setMatchFilter({})
-    setW1w2('Any'); setW1w2KeepMissing(false)
+    setW1w2('Any'); setW1w2KeepMissing(false); setDuplicates('Any')
   }, [])
 
   const pick = (m: Record<string, 'in' | 'out'>, want: 'in' | 'out') => {
@@ -219,6 +232,10 @@ export function FilterProvider({ member, children }:
       const want = matchFilter[name]
       if (want) clauses.push({ column, op: want === 'in' ? 'is_true' : 'is_false' })
     }
+    if (duplicates !== 'Any' && hasGroups) {
+      clauses.push({ column: 'group_id', op: duplicates === 'Duplicates' ? '>' : '<=',
+                     value: 0 })
+    }
     if (w1w2 !== 'Any') {
       clauses.push({
         // `wise_w1w2_mean`, not `wise_w1w2`: the first is the visit-binned
@@ -237,7 +254,8 @@ export function FilterProvider({ member, children }:
     if (columnFilter) clauses.push(columnFilter)
     if (!clauses.length) return null
     return clauses.length === 1 ? clauses[0] : { op: 'and', clauses }
-  }, [classFilter, matchFilter, w1w2, w1w2KeepMissing, columnFilter])
+  }, [classFilter, matchFilter, duplicates, hasGroups, w1w2, w1w2KeepMissing,
+      columnFilter])
 
   const query = useMemo<SourceQuery>(() => {
     // Assigned to a typed local before being returned, deliberately: a literal
@@ -252,9 +270,10 @@ export function FilterProvider({ member, children }:
       bucket_out: pick(bucketFilter, 'out'),
       status_in: pick(statusFilter, 'in'),
       status_out: pick(statusFilter, 'out'),
+      one_per_object: hasGroups || undefined,
     }
     return q
-  }, [catalog, debouncedSearch, filterDoc, bucketFilter, statusFilter])
+  }, [catalog, debouncedSearch, filterDoc, bucketFilter, statusFilter, hasGroups])
 
   const value = useMemo<FilterState>(() => ({
     search, setSearch, catalog, setCatalog,
@@ -262,11 +281,12 @@ export function FilterProvider({ member, children }:
     labelState, setLabelState, columnFilter, setColumnFilter, query,
     classFilter, setClassFilter, matchFilter, setMatchFilter, matchCatalogs,
     w1w2, setW1w2, w1w2KeepMissing, setW1w2KeepMissing, clearFilters,
+    duplicates, setDuplicates, hasGroups,
     labels, labelColors, labelCounts, setLabels, setLabelColors, takeLabels,
     reloadLabels, addBucket, deleteBucket,
   }), [search, catalog, bucketFilter, statusFilter, labelState, columnFilter,
        classFilter, matchFilter, matchCatalogs, w1w2, w1w2KeepMissing, clearFilters,
-       query, labels, labelColors, labelCounts, takeLabels, reloadLabels,
+       duplicates, hasGroups, query, labels, labelColors, labelCounts, takeLabels, reloadLabels,
        addBucket, deleteBucket])
 
   return <Context.Provider value={value}>{children}</Context.Provider>

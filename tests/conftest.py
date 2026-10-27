@@ -135,6 +135,8 @@ def built_db(tmp_path_factory, monkeypatch_session) -> Path:
         'some_float': [1.5, 2.5, 3.5, 4.5, 5.5],
         'sdss_matched': [True, False, False, False, False],
         'sdss_specobjid': [SDSS_SPECOBJID, None, None, None, None],
+        # UUIDS[0] and UUIDS[2] are the same object seen in two fields.
+        'group_id': [7, -1, 7, -1, -1],
     }).to_parquet(out / 'sources.parquet', index=False)
 
     with _base.BucketedWriter(out) as w:

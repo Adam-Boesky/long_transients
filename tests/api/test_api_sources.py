@@ -390,3 +390,33 @@ def test_one_authors_label_does_not_advance_another(client):
 
 def test_next_unlabelled_requires_an_author(client):
     assert client.get('/api/sources-next-unlabelled').status_code == 422
+
+
+def test_group_lists_every_detection_of_the_object(client):
+    members = client.get(f'/api/sources/{UUIDS[0]}/group').json()['members']
+    assert [m['source_uuid'] for m in members] == sorted([UUIDS[0], UUIDS[2]])
+    # Asked from the other member, the same group comes back.
+    assert client.get(f'/api/sources/{UUIDS[2]}/group').json()['members'] == members
+
+
+def test_an_ungrouped_source_has_no_members(client):
+    assert client.get(f'/api/sources/{UUIDS[1]}/group').json() == {'members': []}
+
+
+def test_one_per_object_lists_each_group_once(client):
+    """UUIDS[0] and UUIDS[2] are one object; the lower uuid stands for it."""
+    page = client.get('/api/sources', params={'one_per_object': True, 'limit': 50}).json()
+    shown = {s['source_uuid'] for s in page['items']}
+    assert page['total'] == len(UUIDS) - 1
+    assert UUIDS[0] in shown and UUIDS[2] not in shown
+    loc = client.get('/api/sources-locate', params={'target': UUIDS[2], 'one_per_object': True})
+    assert loc.json()['offset'] is None
+
+
+def test_a_filtered_out_detection_hands_over_to_its_group_mate(client):
+    """The pick happens after the filter, so the object does not vanish."""
+    doc = {'column': 'source_uuid', 'op': 'not_in', 'value': [UUIDS[0]]}
+    page = client.get('/api/sources', params={'one_per_object': True, 'limit': 50,
+                                              'filter': json.dumps(doc)}).json()
+    assert UUIDS[2] in {s['source_uuid'] for s in page['items']}
+

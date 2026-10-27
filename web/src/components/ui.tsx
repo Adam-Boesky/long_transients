@@ -7,6 +7,7 @@
  */
 import { useEffect, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
+import type { GroupMember } from '../api/types'
 
 export const TONE: Record<string, string> = {
   blue: '#3b82f6', green: '#16a34a', violet: '#8b5cf6',
@@ -194,6 +195,43 @@ export function NavBar(p: NavBarProps) {
         {p.labelled} / {p.total} bucketed
       </span>
     </Card>
+  )
+}
+
+export interface GroupNavProps {
+  /** Every detection of the object, this one included, in a fixed order. */
+  members: GroupMember[]
+  current: string
+  onGo: (uuid: string) => void
+}
+
+/** Steps through the other detections of the same object -- overlapping
+ *  fields find it more than once. A pill beside the name, styled like the
+ *  catalog tag before it; hidden when the source has no group. */
+export function GroupNav({ members, current, onGo }: GroupNavProps) {
+  const i = members.findIndex((m) => m.source_uuid === current)
+  if (members.length < 2 || i < 0) return null
+  const n = members.length
+  const go = (k: number) => onGo(members[(k + n) % n].source_uuid)
+  const arrow: CSSProperties = {
+    font: 'inherit', fontSize: 18, lineHeight: 1, padding: '0 5px', border: 0,
+    background: 'none', color: 'inherit', cursor: 'pointer', opacity: 0.7,
+  }
+  return (
+    <span title={'Same object, found in overlapping fields:\n'
+                 + members.map((m) => m.coord_slug ?? m.source_uuid).join('\n')}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 2,
+                   marginLeft: 6, padding: '2px 5px', borderRadius: 4,
+                   fontSize: 15, whiteSpace: 'nowrap',
+                   background: 'rgba(136, 136, 136, 0.18)' }}>
+      <button onClick={() => go(i - 1)} style={arrow}
+              aria-label="Previous detection of this object">‹</button>
+      <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+        detection {i + 1} of {n}
+      </span>
+      <button onClick={() => go(i + 1)} style={arrow}
+              aria-label="Next detection of this object">›</button>
+    </span>
   )
 }
 

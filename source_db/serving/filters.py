@@ -438,11 +438,13 @@ class CatalogFilters:
 
     def _compile_group(self, doc: dict, params: list[Any]) -> str:
         op = str(doc.get('op', 'and')).lower()
-        if op not in ('and', 'or', 'not'):
+        if op not in ('and', 'or', 'not', 'first_of_group'):
             raise FilterError(f'unknown group operator {op!r}')
         clauses = doc.get('clauses') or []
         if not isinstance(clauses, list):
             raise FilterError("'clauses' must be a list")
+        if op == 'first_of_group':
+            return self._compile_first_of_group(clauses, params)
         if not clauses:
             # An empty AND matches everything and an empty OR matches nothing,
             # which is what those mean and also what a half-built UI filter
@@ -458,6 +460,24 @@ class CatalogFilters:
             return f'(NOT COALESCE({parts[0]}, FALSE))'
         joiner = ' AND ' if op == 'and' else ' OR '
         return '(' + joiner.join(parts) + ')'
+
+    def _compile_first_of_group(self, clauses: list, params: list[Any]) -> str:
+        """Rows matching `clauses`, keeping one per `group_id` (several detections
+        of one object): the lowest uuid among the group's rows that match.
+
+        The match is re-evaluated inside the subquery, where unqualified columns
+        bind to the group-mate `_g`, so a mate the filter drops cannot stand in.
+        """
+        inner: list[Any] = []
+        where = self._compile({'op': 'and', 'clauses': clauses}, inner)
+        params.extend(inner)
+        if 'group_id' not in self._parquet_columns():
+            return where
+        params.extend(inner)
+        u = _quote(UUID)
+        return (f'({where} AND NOT EXISTS (SELECT 1 FROM catalog AS _g '
+                f'WHERE catalog.group_id > 0 AND _g.group_id = catalog.group_id '
+                f'AND _g.{u} < catalog.{u} AND {where}))')
 
     def _compile_leaf(self, doc: dict, params: list[Any]) -> str:
         name = doc.get('column')
@@ -649,6 +669,21 @@ class CatalogFilters:
         return cur.execute(
             f'SELECT COUNT(*) FROM catalog WHERE {where} AND ({before})',
             [*params, *extra]).fetchone()[0]
+
+    def group_members(self, target: str) -> list[dict[str, Any]]:
+        """Every source sharing `target`'s `group_id` (the same object found in
+        overlapping fields), target included, ordered by uuid. Empty when it
+        has no group, or the release has no `group_id` column.
+        """
+        if 'group_id' not in self._parquet_columns():
+            return []
+        cols = [UUID] + [c for c in ('coord_slug',) if c in self._parquet_columns()]
+        rows = self._cursor().execute(
+            f'SELECT {", ".join(_quote(c) for c in cols)} FROM catalog '
+            f'WHERE group_id > 0 AND group_id = '
+            f'(SELECT group_id FROM catalog WHERE {_quote(UUID)} = ?) '
+            f'ORDER BY {_quote(UUID)}', [target]).fetchall()
+        return [dict(zip(cols, r)) for r in rows]
 
     def rank_before(self, target: str, doc: Any = None, *, sort: str = UUID,
                     desc: bool = False) -> int:

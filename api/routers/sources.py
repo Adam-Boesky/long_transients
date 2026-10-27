@@ -14,7 +14,8 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from api.catalog_filters import (BAD_FILTER, CATALOG_OF_TIER, CATALOG_TIERS,
-                                 combine, get_filters, legacy_filter)
+                                 combine, get_filters, legacy_filter,
+                                 one_per_object as _one_per_object)
 from api.db import get_annotations, get_science
 from api.annotation_filters import annotation_filter
 from api.derive import class_redshifts_of, classes_of, redshifts_of
@@ -70,7 +71,7 @@ def _labelled_uuids(ann, author: str) -> list[str]:
 
 def _build(doc, *, author=None, unlabelled_only=False, ann=None,
            bucket_in=None, bucket_out=None, status_in=None, status_out=None,
-           **legacy):
+           one_per_object=False, **legacy):
     """Everything the caller asked for, as one filter document.
 
     The legacy query parameters, the user's own filter, and "not yet labelled
@@ -82,8 +83,13 @@ def _build(doc, *, author=None, unlabelled_only=False, ann=None,
     verdicts = annotation_filter(ann, bucket_in=bucket_in, bucket_out=bucket_out,
                                  status_in=status_in, status_out=status_out)
     try:
-        return combine(legacy_filter(exclude_uuids=exclude, **legacy), doc,
-                       verdicts)
+        # One row per object is picked on the catalog side only, so labels
+        # then apply to that row: labelling it takes the object out of an
+        # "unbucketed" queue rather than promoting its group-mate.
+        scope = combine(legacy_filter(**legacy), doc)
+        if one_per_object:
+            scope = _one_per_object(scope)
+        return combine(scope, legacy_filter(exclude_uuids=exclude), verdicts)
     except BAD_FILTER as e:
         raise HTTPException(422, str(e)) from e
 
@@ -143,6 +149,7 @@ def list_sources(
     unlabelled_only: bool = Query(False, description='requires `author`'),
     q: str | None = Query(None, description='substring of coord_slug, or a uuid prefix'),
     filter: str | None = Query(None, description='a filter document, JSON-encoded'),
+    one_per_object: bool = Query(False, description='one detection per duplicate group'),
     bucket_in: list[str] | None = Query(None),
     bucket_out: list[str] | None = Query(None),
     status_in: list[str] | None = Query(None),
@@ -167,7 +174,7 @@ def list_sources(
                  status_in=status_in, status_out=status_out,
                  survey=survey, min_epochs=min_epochs,
                  has_lightcurve=has_lightcurve, has_spectrum=has_spectrum,
-                 catalog=catalog, q=q)
+                 catalog=catalog, q=q, one_per_object=one_per_object)
     try:
         window = cat.page(doc, sort=_sort_column(sort), desc=desc,
                           limit=limit, offset=offset)
@@ -210,6 +217,14 @@ def list_sources(
                       n_labelled=n_labelled, items=items)
 
 
+@router.get('/sources/{source_uuid}/group')
+def get_group(source_uuid: str, cat: CatalogFilters = Depends(get_filters)):
+    """The other detections of the same object: rows within 1\" of each other
+    from overlapping fields share a `group_id`. `members` includes this source
+    and is empty when it has no group."""
+    return {'members': cat.group_members(source_uuid)}
+
+
 @router.get('/sources-locate')
 def locate_source(
     target: str = Query(..., description='find this source_uuid in the filtered order'),
@@ -222,6 +237,7 @@ def locate_source(
     has_spectrum: bool = False,
     q: str | None = None,
     filter: str | None = None,
+    one_per_object: bool = False,
     author: str | None = None,
     unlabelled_only: bool = False,
     bucket_in: list[str] | None = Query(None),
@@ -246,7 +262,7 @@ def locate_source(
                  status_in=status_in, status_out=status_out,
                  survey=survey, min_epochs=min_epochs,
                  has_lightcurve=has_lightcurve, has_spectrum=has_spectrum,
-                 catalog=catalog, q=q)
+                 catalog=catalog, q=q, one_per_object=one_per_object)
     try:
         offset = cat.locate(target, doc, sort=_sort_column(sort), desc=desc)
     except BAD_FILTER as e:
@@ -267,6 +283,7 @@ def next_unlabelled(
     has_spectrum: bool = False,
     q: str | None = None,
     filter: str | None = None,
+    one_per_object: bool = False,
     bucket_in: list[str] | None = Query(None),
     bucket_out: list[str] | None = Query(None),
     status_in: list[str] | None = Query(None),
@@ -285,7 +302,7 @@ def next_unlabelled(
                   bucket_in=bucket_in, bucket_out=bucket_out,
                   status_in=status_in, status_out=status_out,
                   has_lightcurve=has_lightcurve, has_spectrum=has_spectrum,
-                  catalog=catalog, q=q, ann=ann)
+                  catalog=catalog, q=q, ann=ann, one_per_object=one_per_object)
     mine = _labelled_uuids(ann, author)
     unlabelled = combine(base, {'column': UUID, 'op': 'not_in', 'value': mine}
                          if mine else None)

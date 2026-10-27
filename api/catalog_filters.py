@@ -371,6 +371,13 @@ def legacy_filter(*, survey: str | None = None, min_epochs: int | None = None,
 
 
 
+def one_per_object(doc: Any) -> dict[str, Any]:
+    """`doc`, keeping one detection of each object: overlapping fields find
+    some objects more than once, and those rows share a `group_id`. The kept
+    row is the group's lowest uuid among the rows `doc` matches."""
+    return {'op': 'first_of_group', 'clauses': [doc] if doc else []}
+
+
 def combine(*docs: Any) -> dict[str, Any] | None:
     """AND together the documents that are actually present."""
     present = [d for d in docs if d]

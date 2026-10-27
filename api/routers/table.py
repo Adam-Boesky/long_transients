@@ -25,7 +25,7 @@ import threading
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
-from api.catalog_filters import BAD_FILTER, combine, get_filters, legacy_filter
+from api.catalog_filters import BAD_FILTER, combine, get_filters, legacy_filter, one_per_object as _one_per_object
 from api.db import get_annotations, get_science
 from api.ztforce_store import get_ztforce_store
 from api.derive import CLASS_SOURCES, MATCHED_COLUMN, classes_of
@@ -175,6 +175,7 @@ def table_rows(request: Request,
                has_spectrum: bool = False,
                q: str | None = None,
                filter: str | None = None,
+               one_per_object: bool = False,
                label_state: str | None = None,
                author: str | None = None,
                bucket_in: list[str] | None = Query(None),
@@ -196,6 +197,8 @@ def table_rows(request: Request,
     """
     doc = _table_filter(filter, survey=None, min_epochs=min_epochs,
                         has_spectrum=has_spectrum, catalog=catalog, q=q)
+    if one_per_object:
+        doc = _one_per_object(doc)
     doc = combine(doc, _label_filter(ann, label_state, author),
                   annotation_filter(ann, bucket_in=bucket_in,
                                     bucket_out=bucket_out,

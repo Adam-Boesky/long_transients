@@ -17,12 +17,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
-  ApiError, getCutouts, getLightCurve, getSource,
+  ApiError, getCutouts, getGroup, getLightCurve, getSource,
   getSpectra, isAbort, locateSource, nextUnlabelled, putAnnotation,
   reorderLabels, setLabelColor,
 } from '../api/client'
 import type {
-  CatalogSchema, Cutouts, FollowupStatus, LightCurve, SourceDetail,
+  CatalogSchema, Cutouts, FollowupStatus, GroupMember, LightCurve, SourceDetail,
   SourceQuery,
   Spectra,
   ZtforceResult,
@@ -45,7 +45,7 @@ import { XRayPanel } from '../components/XRayPanel'
 import { isTrue } from '../lib/format'
 import { usePrefetchCache } from '../lib/usePrefetchCache'
 import { PageHeader } from '../components/chrome'
-import { Badge, Card, NavBar, SORT_OPTIONS } from '../components/ui'
+import { Badge, Card, GroupNav, NavBar, SORT_OPTIONS } from '../components/ui'
 import { NONE_VALUE, Sidebar } from '../components/Sidebar'
 import { imageLinks, tnsLink } from '../lib/links'
 
@@ -167,8 +167,20 @@ export function ClassifyPage({ member, schema }:
     if (!want) { setLocated(true); return }
     const ac = new AbortController()
     locateSource(want, query, ac.signal)
-      .then((r) => {
+      .then(async (r) => {
         if (r.offset !== null) { setPosition(r.offset); setLocated(true); return }
+        // A detection the queue lists under another member of its group: land
+        // on that member and show the linked detection in its place.
+        if (query.one_per_object) {
+          const { members } = await getGroup(want, ac.signal)
+          for (const m of members) {
+            if (m.source_uuid === want) continue
+            const at = await locateSource(m.source_uuid, query, ac.signal)
+            if (at.offset !== null) {
+              setPosition(at.offset); setLocated(true); setPendingView(want); return
+            }
+          }
+        }
         // Links from before the tab was stored in the URL: widen to every
         // tab once, and the query change re-runs this lookup.
         if (!deepLink.current.has('catalog') && catalog !== 'all') { setCatalog('all'); return }
@@ -218,7 +230,17 @@ export function ClassifyPage({ member, schema }:
   }, [win.total])
 
   // ── the current source's data ──────────────────────────────────────────────
-  const uuid = current?.source_uuid
+  // The queue lists each object once; the group toggle can put one of its
+  // other detections on screen in place, without moving the queue.
+  const [viewing, setViewing] = useState<string | null>(null)
+  // A deep link to a non-listed detection, applied once its object is on screen.
+  const [pendingView, setPendingView] = useState<string | null>(null)
+  useEffect(() => {
+    if (pendingView && selected && pendingView !== selected) {
+      setViewing(pendingView); setPendingView(null)
+    } else setViewing(null)
+  }, [selected])  // eslint-disable-line react-hooks/exhaustive-deps
+  const uuid = viewing ?? current?.source_uuid
   // Two effects, not one. `stretch` and `percent` are display parameters of
   // the stamps, so folding them in here meant changing either refetched the
   // detail, light curve and spectra, blanked those panels mid-read, dropped
@@ -254,6 +276,23 @@ export function ClassifyPage({ member, schema }:
     }).catch((e) => { if (!isAbort(e)) setErr(String(e)) })
     return () => ac.abort()
   }, [uuid, member])
+
+  // Other detections of the same object, for the toggle under Prev/Next.
+  const [group, setGroup] = useState<GroupMember[]>([])
+  useEffect(() => {
+    setGroup([])
+    if (!selected) return
+    const ac = new AbortController()
+    getGroup(selected, ac.signal).then((r) => setGroup(r.members))
+      .catch((e) => { if (!isAbort(e)) setGroup([]) })
+    return () => ac.abort()
+  }, [selected])
+  // What is on screen: the queue's source, or the group-mate swapped in.
+  const shown = viewing
+    ? { coord_slug: group.find((m) => m.source_uuid === viewing)?.coord_slug ?? null,
+        ra: detail?.ra ?? null, dec: detail?.dec ?? null }
+    : { coord_slug: current?.coord_slug ?? null, ra: current?.ra ?? null,
+        dec: current?.dec ?? null }
 
   // Prefetch the next source while the human reads this one. This, not raw
   // query speed, is what makes flipping feel instant -- and it matters most
@@ -475,12 +514,14 @@ export function ClassifyPage({ member, schema }:
             search for on disk. Falls back to the uuid for a source with no
             coordinates, which has no slug.
 
-            Navigation rides in the header's `right` slot rather than sitting
-            at the foot of the page: Prev/Next is the control you reach for
-            most, and it should not need a scroll to find. */}
+            Three fixed rows: which object (name, and which of its
+            detections), then the queue (Prev/Next, on its own row so it never
+            jumps beside or below the name with the window width), then what
+            the catalogs say. Navigation stays at the top rather than the foot
+            of the page: it is the control you reach for most. */}
         <PageHeader
           title={current
-                   ? (current.coord_slug ?? current.source_uuid.slice(0, 8))
+                   ? (shown.coord_slug ?? (uuid ?? current.source_uuid).slice(0, 8))
                    : win.ready && total === 0
                      ? 'No candidates' : ''}
           // Which sub-catalogue this source is from, in the sidebar
@@ -494,7 +535,7 @@ export function ClassifyPage({ member, schema }:
               {current.catalog}
             </span>
           )}
-          afterTitle={current && (
+          afterTitle={current && (<>
             <button
               title="Copy link to this source" aria-label="Copy link"
               onClick={() => {
@@ -512,8 +553,17 @@ export function ClassifyPage({ member, schema }:
                 <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
               </svg>
             </button>
-          )}
-          right={current ? (
+            {/* Which detection of this object is on screen: it belongs to
+                the name, not to the queue controls below. */}
+            <GroupNav members={group} current={uuid ?? current.source_uuid}
+              onGo={(target) => {
+                flushComment()
+                setViewing(target === current.source_uuid ? null : target)
+              }} />
+          </>)} />
+
+        {current && (
+          <div style={{ marginBottom: 10 }}>
             <NavBar
               position={position} total={total} labelled={labelled}
               onPrev={() => { flushComment(); goTo(position - 1) }}
@@ -540,7 +590,8 @@ export function ClassifyPage({ member, schema }:
                   .catch((e) => { if (!isAbort(e)) setFlash(String(e)) })
               }}
             />
-          ) : undefined} />
+          </div>
+        )}
 
         {flash && (
           <div style={{ marginBottom: 8, padding: '6px 10px', borderRadius: 5,
@@ -561,7 +612,7 @@ export function ClassifyPage({ member, schema }:
             <div style={{ display: 'flex', gap: 10, alignItems: 'center',
                           flexWrap: 'wrap', marginBottom: 10, opacity: 0.9 }}>
               <span style={{ opacity: 0.75 }}>
-                RA, Dec {current.ra?.toFixed(5)}, {current.dec?.toFixed(5)}
+                RA, Dec {shown.ra?.toFixed(5)}, {shown.dec?.toFixed(5)}
               </span>
               <Classifications classes={detail?.classes ?? null}
                                redshifts={detail?.redshifts ?? null}
@@ -572,7 +623,7 @@ export function ClassifyPage({ member, schema }:
               {/* With the other classifications: it answers the same question
                   they do -- has anyone already typed this source? */}
               {(() => {
-                const t = tnsLink(current.ra, current.dec)
+                const t = tnsLink(shown.ra, shown.dec)
                 return t && (
                   <a href={t.url} target="_blank" rel="noreferrer" title={t.help}
                      style={{ padding: '2px 8px', borderRadius: 5, fontSize: 12,
@@ -592,20 +643,20 @@ export function ClassifyPage({ member, schema }:
                           pixelArcsec={cutouts?.pixel_arcsec ?? null}
                           stretch={stretch} onStretch={setStretch}
                           percent={percent} onPercent={setPercent}
-                          links={imageLinks(current.ra, current.dec)} />
+                          links={imageLinks(shown.ra, shown.dec)} />
               <LightCurveChart lightcurve={lcWithZtforce} title="Optical"
                                defaultSurveys={DEFAULT_OPTICAL_SURVEYS}
                                yAxisTitle="Mag"
                                clickableSurveys={EPOCH_IMAGE_SURVEYS}
                                onEpochClick={onEpochClick} />
-              {epoch && selected && (
-                <EpochImageDialog sourceUuid={selected} epoch={epoch}
+              {epoch && uuid && (
+                <EpochImageDialog sourceUuid={uuid} epoch={epoch}
                                   referenceUrl={cutouts?.images?.[epoch.survey]?.[epoch.band] ?? null}
                                   referencePixelArcsec={cutouts?.pixel_arcsec?.[epoch.survey] ?? null}
                                   stretch={stretch} percent={percent}
                                   onClose={() => setEpoch(null)} />
               )}
-              <ZtforcePanel key={selected ?? 'none'} sourceUuid={selected}
+              <ZtforcePanel key={uuid ?? 'none'} sourceUuid={uuid ?? null}
                             onResult={setZtf}
                             window={ztfWindow} onWindow={setZtfWindow} />
               {/* 2:1, matching the analysis page's 8-and-4 of its 26-column
@@ -621,7 +672,7 @@ export function ClassifyPage({ member, schema }:
                 <WiseColorCurveChart lightcurve={lc} />
                 <div style={{ alignSelf: 'center' }}>
                   <XRayPanel catalog={detail?.catalog ?? null}
-                             ra={current.ra ?? null} dec={current.dec ?? null} />
+                             ra={shown.ra} dec={shown.dec} />
                 </div>
               </div>
               <SpectrumChart spectra={spectra} />

@@ -173,6 +173,10 @@ export interface SourceQuery {
   /** A filter document, JSON-encoded. Sent in the URL rather than a body so
    *  that a filtered view stays a link you can paste to someone. */
   filter?: string
+  /** List each object once: detections sharing a `group_id` (the same object
+   *  in overlapping fields) collapse to one row; the classify page steps
+   *  through the rest in place. */
+  one_per_object?: boolean
   /** Verdict cuts, resolved server-side against `annotations.sqlite`. These
    *  were sent but never declared: an object literal assigned through a
    *  generic type argument is not excess-property-checked, so the one object
@@ -271,6 +275,10 @@ export interface TableQuery {
   catalog?: string
   q?: string
   filter?: string
+  /** List each object once: detections sharing a `group_id` (the same object
+   *  in overlapping fields) collapse to one row; the classify page steps
+   *  through the rest in place. */
+  one_per_object?: boolean
   /** Cut server-side so the window is drawn from the matching sources, not
    *  filtered after the fact. 'Labeled by me' / 'Unlabeled by me' need
    *  `author`. */
@@ -460,4 +468,10 @@ export interface FilterPreview {
   scope_total: number
   clauses: { clause: FilterNode; matches?: number; error?: string }[]
   sql: string
+}
+
+/** One detection of a grouped object, as `/api/sources/{uuid}/group` lists it. */
+export interface GroupMember {
+  source_uuid: string
+  coord_slug?: string | null
 }

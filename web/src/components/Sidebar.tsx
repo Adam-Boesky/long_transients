@@ -12,9 +12,9 @@ import type { ReactNode } from 'react'
 import { FOLLOWUP_STATUSES } from '../api/types'
 import type { FollowupStatus } from '../api/types'
 import {
-  LABEL_STATES, UNIFIED_CLASSES, W1W2_MODES, useFilters,
+  DUPLICATE_MODES, LABEL_STATES, UNIFIED_CLASSES, W1W2_MODES, useFilters,
 } from '../lib/filterState'
-import type { CatalogFilter, LabelState, W1W2Mode } from '../lib/filterState'
+import type { CatalogFilter, DuplicateMode, LabelState, W1W2Mode } from '../lib/filterState'
 import {
   CardTitle, Label, SegmentedControl, TONE, TriChecklist, field,
 } from './ui'
@@ -85,6 +85,7 @@ export function Sidebar(p: SidebarProps) {
     classFilter, setClassFilter, matchFilter, setMatchFilter, matchCatalogs,
     labelState, setLabelState,
     w1w2, setW1w2, w1w2KeepMissing, setW1w2KeepMissing, clearFilters,
+    duplicates, setDuplicates, hasGroups,
     labels, labelColors, labelCounts, reloadLabels, addBucket,
   } = useFilters()
   // Classify-only handlers, defaulted so the dozen uses below need no guard.
@@ -127,6 +128,7 @@ export function Sidebar(p: SidebarProps) {
               || Object.keys(classFilter).length > 0
               || Object.keys(matchFilter).length > 0
               || w1w2 !== W1W2_MODES[0]
+              || duplicates !== DUPLICATE_MODES[0]
   const filtersSection = (
       <section style={{ border: '1px solid var(--border-strong)',
                         borderRadius: 7, padding: '10px 10px 12px',
@@ -166,6 +168,14 @@ export function Sidebar(p: SidebarProps) {
           <TriChecklist title="Matched" options={matchCatalogs}
                         value={matchFilter}
                         onChange={setMatchFilter} />
+        )}
+        {hasGroups && (
+          <div style={{ marginTop: 10 }}>
+            {/* The same object found again in an overlapping field. */}
+            <Label>Duplicates</Label>
+            <SegmentedControl options={[...DUPLICATE_MODES]} value={duplicates}
+                              onChange={(v) => setDuplicates(v as DuplicateMode)} />
+          </div>
         )}
         <div style={{ marginTop: 10 }}>
           <Label>W1 - W2</Label>

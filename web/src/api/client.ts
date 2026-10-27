@@ -7,7 +7,7 @@
  */
 import type {
   Annotation, CatalogSchema, ColumnStats, Cutouts, EpochImage, FilterNode, FilterPreview,
-  FilterSchema, Label, LightCurve, Progress, SourceDetail, SourcePage,
+  FilterSchema, GroupMember, Label, LightCurve, Progress, SourceDetail, SourcePage,
   SourceQuery, Spectra, TableAnnotations, TablePayload, TableQuery, ZtforceQueue,
   ZtforceResult,
 } from './types'
@@ -114,6 +114,12 @@ export const listSources = (q: SourceQuery = {}, signal?: AbortSignal) =>
 export const locateSource = (target: string, q: SourceQuery = {},
                              signal?: AbortSignal) =>
   get<{ offset: number | null }>('/api/sources-locate', { ...q, target }, signal)
+
+/** Every detection of the same object (rows from overlapping fields that
+ *  share a `group_id`), this one included. Empty when it has no group. */
+export const getGroup = (uuid: string, signal?: AbortSignal) =>
+  get<{ members: GroupMember[] }>(
+    `/api/sources/${encodeURIComponent(uuid)}/group`, {}, signal)
 
 /** Offset of the next source `author` has not labelled, searching from
  *  `after` and wrapping once. Null when everything in the filter is done. */
