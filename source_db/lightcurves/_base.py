@@ -50,7 +50,7 @@ LIGHTCURVE_COLUMNS = ['source_uuid', 'survey', 'band', 'mjd',
 
 # Per-survey extras kept alongside the shared schema, because they are needed
 # to reproduce what the pages plot and cannot be recovered without re-fetching.
-# ZTF: `catflags` drives the quality cut (catflags & 6141, ZTF Explanatory
+# ZTF: `catflags` drives the quality cut (catflags & (6141 | 32768), ZTF Explanatory
 # Supplement 10.3, see Source_Analysis.ZTF_Local_LC) and `clrcoeff` is carried
 # through by that same reader.
 # Documentation only -- nothing reads this. Each module's `normalise` decides
@@ -75,7 +75,7 @@ SURVEY_EXTRA_COLUMNS = {
 # parameterised, so baking it in would freeze the choice and make the
 # underlying measurements unrecoverable without re-fetching.
 #
-#   ztf              drop epochs where `catflags & 6141` (ZTF Explanatory
+#   ztf              drop epochs where `catflags & (6141 | 32768)` (ZTF Explanatory
 #                    Supplement 10.3; see Source_Analysis.ZTF_Local_LC)
 #   wise, neowise    group exposures into visits with
 #                    Light_Curve._cluster_by_gap(mjd, max_gap=5.0) before
@@ -86,7 +86,7 @@ SURVEY_EXTRA_COLUMNS = {
 #                    Light_Curve.get_lc() output.
 #   ptf, gaia        none
 RENDER_TIME_REDUCTIONS = {
-    'ztf': 'catflags & 6141 == 0',
+    'ztf': 'catflags & (6141 | 32768) == 0',
     'wise': '_cluster_by_gap(max_gap=5.0)',
     'neowise': '_cluster_by_gap(max_gap=5.0)',
 }

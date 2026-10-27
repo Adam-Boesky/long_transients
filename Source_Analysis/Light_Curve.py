@@ -16,7 +16,7 @@ from astropy.coordinates import SkyCoord
 from concurrent.futures import ThreadPoolExecutor
 
 from Extracting.utils import get_pstarr_lc_from_coord, get_pstarr_lc_from_id, img_flux_to_ab_mag, get_data_path, throttled_sdss_query
-from Source_Analysis.ZTF_Local_LC import ZTF_LC
+from Source_Analysis.ZTF_Local_LC import ZTF_LC, BAD_CATFLAG_MASK
 
 # Diagnostic: log SDSS's raw response body when it fails to parse, so we can see
 # *why* (rate limit, server error, etc.) instead of just the resulting parse exception.
@@ -507,7 +507,7 @@ class Light_Curve:
                             self.ra,
                             self.dec,
                             self.query_rad_arcsec,
-                            BAD_CATFLAGS_MASK=6141,
+                            BAD_CATFLAGS_MASK=BAD_CATFLAG_MASK,
                         ).data
                     )
                     lightcurve_tab = lightcurve_tab[desired_colnames]

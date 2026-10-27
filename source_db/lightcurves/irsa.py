@@ -57,7 +57,7 @@ individual exposures unrecoverable without re-fetching.
 
 **Anything rendering WISE or NEOWISE from this database must apply
 `Light_Curve._cluster_by_gap(max_gap=5.0)` to match the current pages.**
-This is the same kind of consumer-side step as ZTF's `catflags & 6141` cut.
+This is the same kind of consumer-side step as ZTF's `catflags & (6141 | 32768)` cut.
 """
 from __future__ import annotations
 

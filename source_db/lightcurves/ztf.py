@@ -321,7 +321,7 @@ def normalise(raw: pd.DataFrame) -> pd.DataFrame:
     """Raw ZTF epochs -> the shared light-curve schema.
 
     `catflags` is carried through rather than applied. The quality cut
-    (`catflags & 6141`, ZTF Explanatory Supplement 10.3, see
+    (`catflags & (6141 | 32768)`, ZTF Explanatory Supplement 10.3, see
     `Source_Analysis.ZTF_Local_LC`) belongs to the consumer: baking it in here
     would make the stored light curves unrecoverable if the mask changed.
     """

@@ -3,7 +3,7 @@
  * `source_db.lightcurves._base.RENDER_TIME_REDUCTIONS` records what the
  * database leaves undone, because each step is lossy and parameterised:
  *
- *   ztf            drop epochs failing `catflags & 6141`
+ *   ztf            drop epochs failing `catflags & (6141 | 32768)`
  *   wise, neowise  average exposures into visits, gap <= 5 days
  *
  * Doing them here rather than at write time keeps the raw measurements
@@ -11,8 +11,9 @@
  */
 import type { BandSeries } from '../api/types'
 
-/** ZTF Explanatory Supplement 10.3, BAD_CATFLAG_MASK. */
-export const BAD_CATFLAG_MASK = 6141
+/** ZTF Explanatory Supplement 10.3, plus bit 15 (32768): cloud- or
+ *  moon-affected epochs (DR23 release notes 9b). */
+export const BAD_CATFLAG_MASK = 6141 | 32768
 
 /** WISE revisits a field ~12 times over ~36 h; 5 days spans a visit with
  *  margin while staying far below the ~180-day revisit cadence. */

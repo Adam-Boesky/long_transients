@@ -14,7 +14,7 @@ because the keys are written once instead of once per epoch.
                        "snr": [...]}}}}
 
 Reductions are deliberately *not* applied. `_base.RENDER_TIME_REDUCTIONS`
-lists what the pages must do at draw time -- the ZTF `catflags & 6141` cut and
+lists what the pages must do at draw time -- the ZTF `catflags & (6141 | 32768)` cut and
 the WISE/NEOWISE visit binning -- and the flags needed to do it travel in the
 payload. Baking them in would freeze the choice and lose the measurements.
 """

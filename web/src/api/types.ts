@@ -103,7 +103,7 @@ export interface BandSeries {
   mag: number[]
   magerr: number[]
   snr?: number[]
-  /** ZTF only. The `catflags & 6141` cut is the consumer's job. */
+  /** ZTF only. The `catflags & (6141 | 32768)` cut is the consumer's job. */
   catflags?: number[]
   /** ZTF only: the DR objectid, which encodes the field/ccd/quadrant. */
   catalog_id?: (string | null)[]
