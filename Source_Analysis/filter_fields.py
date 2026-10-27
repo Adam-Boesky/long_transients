@@ -1,6 +1,6 @@
 import os
 
-from source_db.constants import PSTARR_UPPER_LIM
+from source_db.constants import PSTARR_UPPER_LIM, SIGMA_CAP
 import sys
 import shutil
 import requests
@@ -36,7 +36,6 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
 
 BANDS = ['g', 'r', 'i']
-SIGMA_CAP = 8.0  # |Δmag sigma| beyond what the envelope grid resolves is reported as the cap, with a flag
 CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Coverage'}
 GAIA_OBS_EPOCH = 2021.0  # representative epoch of ZTF detections, used to propagate Gaia positions forward from ref_epoch (J2016.0) before crossmatching
 EXTRACTED_CATALOG_DIR = 'catalog_results/field_results' # 'debugging'
@@ -416,8 +415,13 @@ class Envelope_KDE:
         c = ((1 - w) * ((1 - u) * cdf[i0, j0] + u * cdf[i0, j0 + 1]) +
              w * ((1 - u) * cdf[i0 + 1, j0] + u * cdf[i0 + 1, j0 + 1]))
         p_cap = norm.cdf(-SIGMA_CAP)
-        capped = ((c < p_cap) | (c > 1 - p_cap) | (dmag < dg[0]) | (dmag > dg[-1])) & ~bad & np.isfinite(c)
+        low = (c < p_cap) | (dmag < dg[0])
+        high = (c > 1 - p_cap) | (dmag > dg[-1])
+        capped = (low | high) & ~bad & np.isfinite(c)
         z = norm.ppf(np.clip(c, p_cap, 1 - p_cap))
+        # Off the Δmag grid the CDF above is the grid edge's, not the cap; report the cap.
+        z[capped & low] = -SIGMA_CAP
+        z[capped & high] = SIGMA_CAP
         z[bad | ~np.isfinite(c)] = np.nan
         return z, capped
 

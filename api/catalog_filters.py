@@ -23,7 +23,7 @@ from typing import Any
 
 from api.derive import CLASS_SOURCES, MATCHED_COLUMN
 from source_db.serving.filters import UUID, CatalogFilters, FilterError
-from source_db.constants import PSTARR_UPPER_LIM
+from source_db.constants import PSTARR_UPPER_LIM, SIGMA_CAP
 
 # The columns counted at serving-build time, which therefore live in
 # `science.sqlite` rather than in the parquet.
@@ -133,11 +133,22 @@ def _mean_abs_dmag_sigma_sql(available: set[str]) -> str:
     `{band}_dmag_sigma` is the significance of each band's Δmag against its
     field's KDE envelope, written by filtering (capped at 8). NULL when no band
     has one, as for releases built before the column existed.
+
+    A band flagged `{band}_dmag_sigma_capped` counts as the cap: filtering
+    before the Envelope_KDE.sigma fix stored the grid edge's value for a Δmag
+    off the grid, so the most extreme sources ranked below moderate ones.
     """
-    cols = [f'"{b}_dmag_sigma"' for b in 'gri' if f'{b}_dmag_sigma' in available]
-    if not cols:
+    parts = []
+    for b in 'gri':
+        if f'{b}_dmag_sigma' not in available:
+            continue
+        sig = f'abs({_finite(f'"{b}_dmag_sigma"')})'
+        if f'{b}_dmag_sigma_capped' in available:
+            sig = f'CASE WHEN {sig} IS NOT NULL AND CAST("{b}_dmag_sigma_capped" AS BOOLEAN) THEN {SIGMA_CAP} ELSE {sig} END'
+        parts.append(sig)
+    if not parts:
         return 'CAST(NULL AS DOUBLE)'
-    return f'list_avg(list_filter([{", ".join(f"abs({_finite(c)})" for c in cols)}], x -> x IS NOT NULL))'
+    return f'list_avg(list_filter([{", ".join(parts)}], x -> x IS NOT NULL))'
 
 
 # The pipeline's sub-catalogues, as tagged in `catalog_tier` by
