@@ -1584,9 +1584,10 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
         ],
         inplace=True,
     )
-    # Merging duplicates runs on the combined tables, after every filter
-    last = stats_df.index.get_level_values('filter') == 'merge_duplicates'
-    stats_df = pd.concat([stats_df[~last], stats_df[last]])
+    # Merging duplicates runs on the combined tables, after every filter of its branch
+    is_merge = stats_df.index.get_level_values('filter') == 'merge_duplicates'
+    order = np.lexsort((is_merge, stats_df.index.get_level_values('branch')))  # stable: keeps the order above
+    stats_df = stats_df.iloc[order]
 
     # The 1-3" association splits off the wide-association branch ('in_both'); without it, one chain
     all_branches = stats_df.index.get_level_values('branch')

@@ -111,16 +111,19 @@ def _band_sets(tab: Table) -> np.ndarray:
     return np.array([''.join(b for b in 'gri' if det[b][k]) for k in range(len(tab))])
 
 
-def add_merge_duplicates_step(stats: pd.DataFrame, tab: Table) -> pd.DataFrame:
-    """Append a final flowchart step collapsing each `group_id` to one object.
+def add_merge_duplicates_step(stats: pd.DataFrame, tab: Table, branch: str = None) -> pd.DataFrame:
+    """Append a final flowchart step to `branch` collapsing each `group_id` to one object.
 
     Every earlier step is summed over fields, so objects in overlap regions count once per field. This
     step's counts are unique objects; a group whose detections differ in band set takes the one with the
-    most bands. Replaces an existing step, so it can be re-run on a combined stats table.
+    most bands. Replaces an existing step, so it can be re-run on a combined stats table. `branch` defaults
+    to the candidates' own branch, the last one (after the wide-association branch, 'in_both').
     """
     if set(stats.index.names) != {'filter', 'branch'}:  # combine_stats leaves a single field ungrouped
         stats = stats.groupby(['filter', 'branch']).sum()
-    stats = stats.drop(index=MERGE_STEP, level='filter', errors='ignore')
+    if branch is None:
+        branch = sorted(set(stats.index.get_level_values('branch')))[-1]
+    stats = stats.drop(index=(MERGE_STEP, branch), errors='ignore')
     sets = _band_sets(tab) if len(tab) else np.array([], dtype=str)
     gid = np.asarray(tab['group_id']) if len(tab) else np.array([], dtype=np.int64)
     # Most bands first (gri), then file order; keep the first row of each group
@@ -129,8 +132,6 @@ def add_merge_duplicates_step(stats: pd.DataFrame, tab: Table) -> pd.DataFrame:
     kept = np.zeros(len(sets), dtype=bool)
     kept[order[~dup]] = True
 
-    # The candidates' own branch: the last one, after the wide-association ('in_both') branch
-    branch = sorted(set(stats.index.get_level_values('branch')))[-1]
     row = pd.Series(0.0, index=stats.columns)
     for b in BAND_SETS:
         row[f'n_{b}_before'] = np.sum(sets == b)
