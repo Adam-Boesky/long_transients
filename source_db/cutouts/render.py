@@ -86,10 +86,13 @@ def _irsa_auth() -> Optional[str]:
     be an `<img src>` straight to IRSA and has to come through us.
     """
     path = Path.home() / 'vault' / 'irsa_login.txt'
-    if not path.exists():
-        return None
-    parts = path.read_text().split()
-    if len(parts) < 2:
+    if path.exists():
+        parts = path.read_text().split()
+    else:
+        # On a host there is no vault; the same login ztforce uses, from .env.
+        parts = [os.environ.get('ZTFORCE_IRSA_USER', ''),
+                 os.environ.get('ZTFORCE_IRSA_PASS', '')]
+    if len(parts) < 2 or not all(parts[:2]):
         return None
     return 'Basic ' + b64encode(f'{parts[0]}:{parts[1]}'.encode()).decode()
 
