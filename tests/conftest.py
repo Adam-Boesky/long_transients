@@ -202,7 +202,16 @@ def filter_engine(built_db, science_con):
 
 
 @pytest.fixture
-def client(science_con, annotations_con, filter_engine, ztforce_con):
+def coord_lists_con(tmp_path):
+    """A fresh store of uploaded coordinate lists per test."""
+    from api import coord_lists
+    con = coord_lists.connect(tmp_path / 'coord_lists.sqlite')
+    yield con
+    con.close()
+
+
+@pytest.fixture
+def client(science_con, annotations_con, filter_engine, ztforce_con, coord_lists_con):
     """TestClient with all three tiers overridden.
 
     `dependency_overrides` is the supported seam for this; it avoids having to
@@ -214,6 +223,7 @@ def client(science_con, annotations_con, filter_engine, ztforce_con):
     app.dependency_overrides[api_db.get_annotations] = lambda: annotations_con
     app.dependency_overrides[api_filters.get_filters] = lambda: filter_engine
     app.dependency_overrides[ztforce_store.get_ztforce_store] = lambda: ztforce_con
+    app.dependency_overrides[api_db.get_coord_lists] = lambda: coord_lists_con
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

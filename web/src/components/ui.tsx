@@ -116,6 +116,8 @@ export interface NavBarProps {
   /** Which column the queue is ordered by, and which way. */
   sort: string; desc: boolean
   onSort: (key: string, desc: boolean) => void
+  /** Orderings the applied coordinate list brought with it (`list:<column>`). */
+  extraSorts?: readonly { key: string; label: string; desc: boolean }[]
 }
 
 export function NavBar(p: NavBarProps) {
@@ -174,7 +176,8 @@ export function NavBar(p: NavBarProps) {
         <span>sort</span>
         <select value={p.sort} style={{ ...field, width: 'auto' }}
                 onChange={(e) => {
-                  const next = SORT_OPTIONS.find((o) => o.key === e.target.value)
+                  const next = [...SORT_OPTIONS, ...(p.extraSorts ?? [])]
+                    .find((o) => o.key === e.target.value)
                   // Each column carries the direction that makes it useful --
                   // brightest change first, lowest RA first -- so picking one
                   // does not also mean picking a direction.
@@ -183,6 +186,13 @@ export function NavBar(p: NavBarProps) {
           {SORT_OPTIONS.map((o) => (
             <option key={o.key} value={o.key}>{o.label}</option>
           ))}
+          {p.extraSorts && p.extraSorts.length > 0 && (
+            <optgroup label="from the coordinate list">
+              {p.extraSorts.map((o) => (
+                <option key={o.key} value={o.key}>{o.label}</option>
+              ))}
+            </optgroup>
+          )}
         </select>
         <button onClick={() => p.onSort(p.sort, !p.desc)}
                 title={p.desc ? 'Largest first' : 'Smallest first'}

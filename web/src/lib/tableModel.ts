@@ -31,12 +31,22 @@ export interface DisplayRow {
   /** 'yes' when ztforce has a stored result, else '' so it sorts last. */
   ztforce: string
   comments: string
+  /** The applied coordinate list's value columns, by name. */
+  listValues: Record<string, number | null>
   /** Everything above, lowercased, for the free-text filter. */
   search: string
 }
 
+/** A column key, or `list:<column>` for a value column of the applied
+ *  coordinate list, which the server orders by under the same name. */
 export type SortKey = 'file' | 'catalog' | 'sigma' | 'dmag' | 'ra' | 'dec' | 'w1w2'
-  | 'classification' | 'bucket' | 'status' | 'ztforce' | 'comments'
+  | 'classification' | 'bucket' | 'status' | 'ztforce' | 'comments' | `list:${string}`
+
+export const LIST_SORT_PREFIX = 'list:'
+
+export function listColumnOf(key: string): string | null {
+  return key.startsWith(LIST_SORT_PREFIX) ? key.slice(LIST_SORT_PREFIX.length) : null
+}
 
 /** Which catalog column a sort key is, for the columns the server can order.
  *
@@ -63,6 +73,12 @@ export const SERVER_SORT: Partial<Record<SortKey, string>> = {
   // AllWISE coadd while displaying the binned light-curve colour put the
   // rows in an order the numbers beside them did not explain.
   w1w2: 'wise_w1w2_mean',
+}
+
+/** The server's name for a sort key, or undefined for the columns it cannot
+ *  order by. A list value column is sent as it is. */
+export function serverSortKey(key: SortKey): string | undefined {
+  return listColumnOf(key) !== null ? key : SERVER_SORT[key]
 }
 
 const filed = (a: { label: string | null }) => (a.label ?? '').trim()
@@ -111,6 +127,7 @@ export function buildRow(row: TableRow): DisplayRow {
     status: statuses.join(' / '),
     ztforce: row.ztforce ? 'yes' : '',
     comments,
+    listValues: row.list_values ?? {},
     search: '',
   }
   out.search = [
@@ -141,8 +158,10 @@ export function triageOrder(rows: DisplayRow[]): DisplayRow[] {
 
 export function sortRows(rows: DisplayRow[], key: SortKey,
                          desc: boolean): DisplayRow[] {
+  const column = listColumnOf(key)
+  const value = (r: DisplayRow) => (column !== null ? r.listValues[column] ?? null : r[key as Exclude<SortKey, `list:${string}`>])
   return [...rows].sort((x, y) => {
-    const a = x[key], b = y[key]
+    const a = value(x), b = value(y)
     // Missing values sort last whichever way the column is pointing, so a
     // blank cell never takes the top of the table.
     const aEmpty = a === null || a === ''

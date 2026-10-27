@@ -43,7 +43,8 @@ import threading
 from collections.abc import Iterator
 from pathlib import Path
 
-from api.config import ANNOTATIONS_PATH, SCIENCE_PATH
+from api import coord_lists
+from api.config import ANNOTATIONS_PATH, COORD_LISTS_PATH, SCIENCE_PATH
 from source_db.serving.schema import ANNOTATIONS_SCHEMA
 
 # The annotations schema and its WAL setting are applied once per process
@@ -115,6 +116,15 @@ def get_science() -> Iterator[sqlite3.Connection]:
 def get_annotations() -> Iterator[sqlite3.Connection]:
     """Read-write handle on the annotation database, for one request."""
     con = connect_annotations(ANNOTATIONS_PATH)
+    try:
+        yield con
+    finally:
+        con.close()
+
+
+def get_coord_lists() -> Iterator[sqlite3.Connection]:
+    """Read-write handle on the uploaded coordinate lists, for one request."""
+    con = coord_lists.connect(COORD_LISTS_PATH)
     try:
         yield con
     finally:

@@ -17,6 +17,8 @@ ANNOTATIONS_PATH = Path(os.environ.get('LT_ANNOTATIONS_DB',
 # forced photometry. Kept out of science.sqlite (read-only on the server) and out
 # of annotations.sqlite (the irreplaceable master copy of labels).
 ZTFORCE_PATH = Path(os.environ.get('LT_ZTFORCE_DB', DEFAULT_OUT_DIR / 'ztforce.sqlite'))
+# Uploaded coordinate lists (`api.coord_lists`): writable and regenerable, so also kept out of both.
+COORD_LISTS_PATH = Path(os.environ.get('LT_COORD_LISTS_DB', DEFAULT_OUT_DIR / 'coord_lists.sqlite'))
 # Sources carrying this annotation label (from any author) are queued for ztforce.
 ZTFORCE_LABEL = os.environ.get('LT_ZTFORCE_LABEL', 'Run ztforce')
 # Run the queue worker inside the API process. Set to 0 to turn it off (the tests do).

@@ -28,7 +28,7 @@ from api.config import (
     WEB_DIST,
 )
 from api.db import connect_annotations, connect_science
-from api.routers import annotations, cutouts, filters, sources, table, ztforce
+from api.routers import annotations, coord_lists, cutouts, filters, sources, table, ztforce
 
 
 @contextlib.asynccontextmanager
@@ -85,6 +85,7 @@ app.include_router(cutouts.router, prefix='/api', tags=['cutouts'])
 app.include_router(table.router, prefix='/api', tags=['table'])
 app.include_router(annotations.router, prefix='/api', tags=['annotations'])
 app.include_router(ztforce.router, prefix='/api', tags=['ztforce'])
+app.include_router(coord_lists.router, prefix='/api', tags=['coord_lists'])
 
 
 @app.get('/api/health', tags=['meta'])

@@ -13,10 +13,11 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
+from api import coord_lists
 from api.catalog_filters import (BAD_FILTER, CATALOG_OF_TIER, CATALOG_TIERS,
                                  combine, get_filters, legacy_filter,
                                  one_per_object as _one_per_object)
-from api.db import get_annotations, get_science
+from api.db import get_annotations, get_coord_lists, get_science
 from api.annotation_filters import annotation_filter
 from api.derive import class_redshifts_of, classes_of, redshifts_of
 from source_db.serving.filters import UUID, CatalogFilters, FilterError, restrict_to
@@ -24,6 +25,7 @@ from api import catalog_schema
 from api.config import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from api.models import SourceDetail, SourcePage, SourceSummary
 from api.routers.annotations import _row_to_annotation
+from api.routers.coord_lists import coord_list_filter
 
 router = APIRouter()
 
@@ -41,6 +43,35 @@ SORT_ALIASES = {
 
 def _sort_column(sort: str) -> str:
     return SORT_ALIASES.get(sort, sort)
+
+
+# `sort=list:<column>` orders by a value column of the applied coordinate list.
+LIST_SORT_PREFIX = 'list:'
+
+
+def _resolve_sort(sort: str, cat: CatalogFilters, store: sqlite3.Connection,
+                  coord_list: str | None) -> str:
+    """What the engine orders by: an alias, a catalog column, or a list value.
+
+    A list's values are registered with the engine the first time a request
+    sorts by them, under a name made of the list id and the column, so every
+    later request -- and every endpoint that has to agree on the order --
+    reuses the same table.
+    """
+    if not sort.startswith(LIST_SORT_PREFIX):
+        return _sort_column(sort)
+    column = sort[len(LIST_SORT_PREFIX):]
+    if not coord_list:
+        raise HTTPException(422, f'sorting by {sort!r} needs a coordinate list (coord_list=)')
+    found = coord_lists.values(store, coord_list)
+    if found is None:
+        raise HTTPException(404, f'no coordinate list {coord_list}; it may have been deleted')
+    if column not in found['columns']:
+        raise HTTPException(422, f'coordinate list has no column {column!r}; '
+                                 f'it has {found["columns"] or "none"}')
+    i = found['columns'].index(column)
+    return cat.register_values(f'coordlist_{coord_list}_{column}',
+                               {u: row[i] for u, row in found['rows'].items()})
 
 
 def _parse_filter(raw: str | None):
@@ -156,6 +187,8 @@ def list_sources(
     status_out: list[str] | None = Query(None),
     sci: sqlite3.Connection = Depends(get_science),
     ann: sqlite3.Connection = Depends(get_annotations),
+    coord_list: str | None = Query(None, description='id from POST /coord-lists: only those sources'),
+    store: sqlite3.Connection = Depends(get_coord_lists),
     cat: CatalogFilters = Depends(get_filters),
 ):
     """One page of the candidate list.
@@ -168,7 +201,7 @@ def list_sources(
     if unlabelled_only and not author:
         raise HTTPException(400, 'unlabelled_only requires author')
 
-    doc = _build(_parse_filter(filter), author=author,
+    doc = _build(combine(_parse_filter(filter), coord_list_filter(store, coord_list)), author=author,
                  unlabelled_only=unlabelled_only, ann=ann,
                  bucket_in=bucket_in, bucket_out=bucket_out,
                  status_in=status_in, status_out=status_out,
@@ -176,7 +209,7 @@ def list_sources(
                  has_lightcurve=has_lightcurve, has_spectrum=has_spectrum,
                  catalog=catalog, q=q, one_per_object=one_per_object)
     try:
-        window = cat.page(doc, sort=_sort_column(sort), desc=desc,
+        window = cat.page(doc, sort=_resolve_sort(sort, cat, store, coord_list), desc=desc,
                           limit=limit, offset=offset)
     except BAD_FILTER as e:
         raise HTTPException(422, str(e)) from e
@@ -245,6 +278,8 @@ def locate_source(
     status_in: list[str] | None = Query(None),
     status_out: list[str] | None = Query(None),
     ann: sqlite3.Connection = Depends(get_annotations),
+    coord_list: str | None = Query(None, description='id from POST /coord-lists: only those sources'),
+    store: sqlite3.Connection = Depends(get_coord_lists),
     cat: CatalogFilters = Depends(get_filters),
 ):
     """The offset of `target` within the current filter, or null if filtered out.
@@ -256,7 +291,7 @@ def locate_source(
     Counting the rows that sort before the target, rather than scanning for
     it, is what keeps this O(filter) instead of O(offset).
     """
-    doc = _build(_parse_filter(filter), author=author,
+    doc = _build(combine(_parse_filter(filter), coord_list_filter(store, coord_list)), author=author,
                  unlabelled_only=unlabelled_only, ann=ann,
                  bucket_in=bucket_in, bucket_out=bucket_out,
                  status_in=status_in, status_out=status_out,
@@ -264,7 +299,7 @@ def locate_source(
                  has_lightcurve=has_lightcurve, has_spectrum=has_spectrum,
                  catalog=catalog, q=q, one_per_object=one_per_object)
     try:
-        offset = cat.locate(target, doc, sort=_sort_column(sort), desc=desc)
+        offset = cat.locate(target, doc, sort=_resolve_sort(sort, cat, store, coord_list), desc=desc)
     except BAD_FILTER as e:
         raise HTTPException(422, str(e)) from e
     return {'offset': offset}
@@ -289,6 +324,8 @@ def next_unlabelled(
     status_in: list[str] | None = Query(None),
     status_out: list[str] | None = Query(None),
     ann: sqlite3.Connection = Depends(get_annotations),
+    coord_list: str | None = Query(None, description='id from POST /coord-lists: only those sources'),
+    store: sqlite3.Connection = Depends(get_coord_lists),
     cat: CatalogFilters = Depends(get_filters),
 ):
     """Offset of the next source this author has not labelled, wrapping once.
@@ -298,7 +335,8 @@ def next_unlabelled(
     goes in as a `not_in` clause and the engine does the rest -- the answer is
     the first row of the filter-plus-unlabelled order at or after `after`.
     """
-    base = _build(_parse_filter(filter), survey=survey, min_epochs=min_epochs,
+    base = _build(combine(_parse_filter(filter), coord_list_filter(store, coord_list)),
+                  survey=survey, min_epochs=min_epochs,
                   bucket_in=bucket_in, bucket_out=bucket_out,
                   status_in=status_in, status_out=status_out,
                   has_lightcurve=has_lightcurve, has_spectrum=has_spectrum,
@@ -306,7 +344,7 @@ def next_unlabelled(
     mine = _labelled_uuids(ann, author)
     unlabelled = combine(base, {'column': UUID, 'op': 'not_in', 'value': mine}
                          if mine else None)
-    key = _sort_column(sort)
+    key = _resolve_sort(sort, cat, store, coord_list)
     try:
         # Positions are offsets into the *filtered* order, which still counts
         # the labelled ones -- that is the order the client is paging through.

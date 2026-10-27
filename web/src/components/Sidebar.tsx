@@ -10,6 +10,7 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { FOLLOWUP_STATUSES } from '../api/types'
+import { CoordListDialog } from './CoordListDialog'
 import type { FollowupStatus } from '../api/types'
 import {
   DUPLICATE_MODES, LABEL_STATES, UNIFIED_CLASSES, W1W2_MODES, useFilters,
@@ -85,9 +86,10 @@ export function Sidebar(p: SidebarProps) {
     classFilter, setClassFilter, matchFilter, setMatchFilter, matchCatalogs,
     labelState, setLabelState,
     w1w2, setW1w2, w1w2KeepMissing, setW1w2KeepMissing, clearFilters,
-    duplicates, setDuplicates, hasGroups,
+    duplicates, setDuplicates, hasGroups, coordList, coordListId, setCoordList,
     labels, labelColors, labelCounts, reloadLabels, addBucket,
   } = useFilters()
+  const [coordDialog, setCoordDialog] = useState(false)
   // Classify-only handlers, defaulted so the dozen uses below need no guard.
   const othersByLabel = p.othersByLabel ?? {}
   const onLabel = p.onLabel ?? (() => {})
@@ -392,6 +394,39 @@ export function Sidebar(p: SidebarProps) {
                             onChange={(v) => setCatalog(v as CatalogFilter)}
                             format={(v) => CATALOG_LABEL[v as CatalogFilter]} />
         </div>
+        {/* A list of positions narrows everything else, so it sits with the
+            scope controls rather than among the filters. */}
+        {coordListId ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6,
+                        padding: '4px 8px', borderRadius: 5, fontSize: 12,
+                        border: `1px solid ${TONE.blue}66`, background: `${TONE.blue}18` }}>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  title={coordList?.name}>
+              Coordinates: {coordList ? `${coordList.name} (${coordList.n_sources.toLocaleString()})` : '…'}
+            </span>
+            <button onClick={() => setCoordDialog(true)}
+                    style={{ marginLeft: 'auto', border: 0, background: 'none', font: 'inherit',
+                             color: 'inherit', opacity: 0.75, cursor: 'pointer', padding: 0 }}>
+              edit
+            </button>
+            <button onClick={() => setCoordList(null)} aria-label="Remove coordinate filter"
+                    title="Remove coordinate filter"
+                    style={{ border: 0, background: 'none', font: 'inherit', color: 'inherit',
+                             opacity: 0.75, cursor: 'pointer', padding: 0 }}>
+              ✕
+            </button>
+          </div>
+        ) : (
+          <button onClick={() => setCoordDialog(true)}
+                  style={{ ...field, marginTop: 6, cursor: 'pointer', textAlign: 'left',
+                           opacity: 0.85 }}>
+            Filter by coordinates…
+          </button>
+        )}
+        {coordDialog && (
+          <CoordListDialog current={coordList} catalog={catalog} onApply={setCoordList}
+                           onClose={() => setCoordDialog(false)} />
+        )}
       </section>
 
       {sourceCard}

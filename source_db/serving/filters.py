@@ -52,6 +52,9 @@ CATALOG_PARQUET = Path(os.environ.get('LT_CATALOG_PARQUET',
 # Every source carries one; it is the join key back to `science.sqlite` and the
 # tiebreaker that makes any sort a total order.
 UUID = 'source_uuid'
+# A sort key that names a table of registered per-uuid values rather than a
+# catalog column: `register_values('x', ...)` returns `'@x'`.
+VALUES_PREFIX = '@'
 
 # Caps for the embedded engine, overridable per instance. Deliberately modest:
 # the whole point is that these queries are milliseconds on one core.
@@ -202,6 +205,7 @@ class CatalogFilters:
         self._literal = str(self.parquet).replace("'", "''")
         self._attached: dict[str, list[str]] = {}
         self._derived: dict[str, str] = {}
+        self._values: set[str] = set()
         self._columns: dict[str, ColumnInfo] | None = None
         self._lock = threading.Lock()
         self._build_view()
@@ -294,6 +298,60 @@ class CatalogFilters:
                 self._build_view()
             finally:
                 self._con.unregister('_attach_src')
+
+    def register_values(self, name: str, values: dict[str, Any]) -> str:
+        """Numbers per uuid to *order by*, without becoming a catalog column.
+
+        For rankings that arrive from outside the catalog -- a statistic
+        computed in a notebook and uploaded beside the positions it belongs
+        to. They are not part of the catalog view: `columns()` does not list
+        them, nothing filters on them, and defining them would rebuild the
+        view underneath in-flight readers. They live in their own small
+        table, and the returned key (`'@' + name`) is accepted wherever a
+        sort column is; sources without a value sort last, as NULLs do.
+
+        Idempotent per name: the first call stores the table, later ones
+        return the key. So name it by what it is derived from (a list id and
+        a column), not by the request.
+        """
+        if not isinstance(name, str) or not name.isidentifier():
+            raise FilterError(f'{name!r} is not a usable sort name')
+        key = VALUES_PREFIX + name
+        if name in self._values:
+            return key
+        import pyarrow as pa
+
+        table = pa.table({
+            UUID: pa.array([str(u) for u in values], pa.string()),
+            'value': pa.array([None if v is None else float(v) for v in values.values()],
+                              pa.float64()),
+        })
+        with self._lock:
+            if name not in self._values:
+                self._con.register('_values_src', table)
+                try:
+                    self._con.execute(
+                        f'CREATE OR REPLACE TABLE {_quote(self._values_table(name))} AS '
+                        f'SELECT * FROM _values_src')
+                finally:
+                    self._con.unregister('_values_src')
+                self._values.add(name)
+        return key
+
+    @staticmethod
+    def _values_table(name: str) -> str:
+        return f'_values_{name}'
+
+    def _sort_key(self, sort: str) -> str:
+        """The SQL a sort name orders by, validated: a catalog column, or a registered values table."""
+        if sort.startswith(VALUES_PREFIX):
+            name = sort[len(VALUES_PREFIX):]
+            if name not in self._values:
+                raise FilterError(f'unknown sort key {sort!r}')
+            return (f'(SELECT v.value FROM {_quote(self._values_table(name))} v '
+                    f'WHERE v.{_quote(UUID)} = catalog.{_quote(UUID)})')
+        self.column(sort)
+        return _quote(sort)
 
     def _parquet_columns(self) -> set[str]:
         return {r[0] for r in self._cursor().execute(
@@ -612,11 +670,10 @@ class CatalogFilters:
         # and it orders fine (everything ties, the uuid tiebreak decides).
         # Refusing it turned "this build has no photometry" into a 422 on the
         # table's default sort.
-        self.column(sort)
         direction = 'DESC' if desc else 'ASC'
         if sort == UUID:
             return f'{_quote(UUID)} {direction}'
-        return f'{_quote(sort)} {direction} NULLS LAST, {_quote(UUID)} ASC'
+        return f'{self._sort_key(sort)} {direction} NULLS LAST, {_quote(UUID)} ASC'
 
     def count(self, doc: Any = None) -> int:
         """How many sources match. Cheap enough to call on every UI keystroke."""
@@ -707,18 +764,23 @@ class CatalogFilters:
         descending sort the nulls are still at the *end*, so a null-keyed
         target has every non-null row before it in both directions.
         """
-        self._order_by(sort, desc)              # validates `sort`
         uuid_col = _quote(UUID)
         if sort == UUID:
             cmp = '<' if not desc else '>'
             return f'{uuid_col} {cmp} ?', [target]
 
-        key = _quote(sort)
-        value = self._cursor().execute(
-            f'SELECT {key} FROM catalog WHERE {uuid_col} = ?', [target]).fetchone()
-        if value is None:
-            raise FilterError(f'no source {target!r}')
-        value = value[0]
+        key = self._sort_key(sort)              # validates `sort`
+        if sort.startswith(VALUES_PREFIX):
+            # Absent from the values table is the same as a NULL value.
+            row = self._cursor().execute(
+                f'SELECT value FROM {_quote(self._values_table(sort[len(VALUES_PREFIX):]))} '
+                f'WHERE {uuid_col} = ?', [target]).fetchone()
+        else:
+            row = self._cursor().execute(
+                f'SELECT {key} FROM catalog WHERE {uuid_col} = ?', [target]).fetchone()
+            if row is None:
+                raise FilterError(f'no source {target!r}')
+        value = None if row is None else row[0]
         if value is None:
             # The target is in the NULLS LAST tail: everything with a value
             # precedes it, and within the tail it is uuid order.

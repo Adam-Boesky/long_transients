@@ -6,7 +6,7 @@
  * drives explicitly, not something a cache heuristic should be guessing at.
  */
 import type {
-  Annotation, CatalogSchema, ColumnStats, Cutouts, EpochImage, FilterNode, FilterPreview,
+  Annotation, CatalogSchema, ColumnStats, CoordListPreview, CoordListSummary, Cutouts, EpochImage, FilterNode, FilterPreview,
   FilterSchema, GroupMember, Label, LightCurve, Progress, SourceDetail, SourcePage,
   SourceQuery, Spectra, TableAnnotations, TablePayload, TableQuery, ZtforceQueue,
   ZtforceResult,
@@ -235,6 +235,46 @@ export async function putAnnotation(
   if (!res.ok) throw new ApiError(res.status, url, `${res.status} ${res.statusText}`)
   return res.json()
 }
+
+// ── coordinate lists ──────────────────────────────────────────────────────────
+
+/** A JSON request whose error carries the server's `detail`, which says what to fix. */
+async function send<T>(method: string, path: string, body?: object): Promise<T> {
+  const url = `${API_BASE}${path}`
+  const res = await apiFetch(url, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  if (!res.ok) {
+    const detail = await res.json().then((b) => b.detail).catch(() => null)
+    throw new ApiError(res.status, url, detail ?? `${res.status} ${res.statusText}`)
+  }
+  return res.json()
+}
+
+/** What positions (the text of a .txt) would match, without saving anything. */
+export const previewCoordList = (text: string, radiusArcsec: number) =>
+  send<CoordListPreview>('POST', '/api/coord-lists/preview',
+                         { text, radius_arcsec: radiusArcsec })
+
+/** Match and save a list everyone can see. */
+export const createCoordList = (text: string, name: string, radiusArcsec: number) =>
+  send<CoordListSummary>('POST', '/api/coord-lists',
+                         { text, name, radius_arcsec: radiusArcsec })
+
+export const listCoordLists = (signal?: AbortSignal) =>
+  get<CoordListSummary[]>('/api/coord-lists', {}, signal)
+
+export const getCoordList = (id: string, signal?: AbortSignal) =>
+  get<CoordListSummary>(`/api/coord-lists/${encodeURIComponent(id)}`, {}, signal)
+
+/** Anyone may rename or delete a list; deleting only hides it. */
+export const renameCoordList = (id: string, name: string) =>
+  send<CoordListSummary>('PATCH', `/api/coord-lists/${encodeURIComponent(id)}`, { name })
+
+export const deleteCoordList = (id: string) =>
+  send<{ deleted: string }>('DELETE', `/api/coord-lists/${encodeURIComponent(id)}`)
 
 // ── labels ────────────────────────────────────────────────────────────────────
 // Shared by everyone, in the order they were added.

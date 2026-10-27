@@ -12,8 +12,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState }
   from 'react'
 import type { ReactNode } from 'react'
-import { addLabel, ApiError, deleteLabel, getFilterSchema, getLabels } from '../api/client'
-import type { FilterNode, Label, SourceQuery } from '../api/types'
+import { addLabel, ApiError, deleteLabel, getCoordList, getFilterSchema, getLabels } from '../api/client'
+import type { CoordListSummary, FilterNode, Label, SourceQuery } from '../api/types'
 import type { LabelState } from './tableModel'
 
 
@@ -92,6 +92,12 @@ export interface FilterState {
   setDuplicates: (v: DuplicateMode) => void
   /** Whether this release has `group_id` to filter on. */
   hasGroups: boolean
+  /** An uploaded coordinate list: only the sources it matched are shown. */
+  coordList: CoordListSummary | null
+  /** Its id, which is what the queries carry; set before the summary arrives
+   *  when a link opens with `?coords=`. */
+  coordListId: string | null
+  setCoordList: (v: CoordListSummary | null) => void
   /** Reset every control in the Filters card. The column-filter builder has
    *  its own reset, so it is deliberately left alone. */
   clearFilters: () => void
@@ -155,6 +161,25 @@ export function FilterProvider({ member, children }:
       return null          // a mangled link filters nothing rather than erroring
     }
   })
+
+  // Seeded from the address bar like `filter`, so a link to a coordinate-list
+  // view opens on it. The summary is fetched; an id the server no longer has
+  // is dropped rather than leaving every list request failing.
+  const [coordListId, setCoordListId] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get('coords'))
+  const [coordList, setCoordListState] = useState<CoordListSummary | null>(null)
+  const setCoordList = useCallback((v: CoordListSummary | null) => {
+    setCoordListState(v)
+    setCoordListId(v?.id ?? null)
+  }, [])
+  useEffect(() => {
+    if (!coordListId || coordList?.id === coordListId) return
+    const ac = new AbortController()
+    getCoordList(coordListId, ac.signal).then(setCoordListState).catch((e) => {
+      if (e instanceof ApiError && e.status === 404) setCoordListId(null)
+    })
+    return () => ac.abort()
+  }, [coordListId, coordList])
 
   const [classFilter, setClassFilter] =
     useState<Record<string, 'in' | 'out'>>({})
@@ -264,6 +289,7 @@ export function FilterProvider({ member, children }:
     // silently dropped from the URL. Through a `const q: SourceQuery` it errors.
     const q: SourceQuery = {
       catalog: catalog === 'all' ? undefined : catalog,
+      coord_list: coordListId ?? undefined,
       q: debouncedSearch.trim() || undefined,
       filter: filterDoc ? JSON.stringify(filterDoc) : undefined,
       bucket_in: pick(bucketFilter, 'in'),
@@ -273,7 +299,7 @@ export function FilterProvider({ member, children }:
       one_per_object: hasGroups || undefined,
     }
     return q
-  }, [catalog, debouncedSearch, filterDoc, bucketFilter, statusFilter, hasGroups])
+  }, [catalog, coordListId, debouncedSearch, filterDoc, bucketFilter, statusFilter, hasGroups])
 
   const value = useMemo<FilterState>(() => ({
     search, setSearch, catalog, setCatalog,
@@ -281,12 +307,12 @@ export function FilterProvider({ member, children }:
     labelState, setLabelState, columnFilter, setColumnFilter, query,
     classFilter, setClassFilter, matchFilter, setMatchFilter, matchCatalogs,
     w1w2, setW1w2, w1w2KeepMissing, setW1w2KeepMissing, clearFilters,
-    duplicates, setDuplicates, hasGroups,
+    duplicates, setDuplicates, hasGroups, coordList, coordListId, setCoordList,
     labels, labelColors, labelCounts, setLabels, setLabelColors, takeLabels,
     reloadLabels, addBucket, deleteBucket,
   }), [search, catalog, bucketFilter, statusFilter, labelState, columnFilter,
        classFilter, matchFilter, matchCatalogs, w1w2, w1w2KeepMissing, clearFilters,
-       duplicates, hasGroups, query, labels, labelColors, labelCounts, takeLabels, reloadLabels,
+       duplicates, hasGroups, coordList, coordListId, setCoordList, query, labels, labelColors, labelCounts, takeLabels, reloadLabels,
        addBucket, deleteBucket])
 
   return <Context.Provider value={value}>{children}</Context.Provider>

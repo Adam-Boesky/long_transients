@@ -25,7 +25,8 @@ import { useStableValue } from '../lib/useStableValue'
 import type { TableAnnotations, TableRow } from '../api/types'
 import { PageHeader } from '../components/chrome'
 import {
-  buildRow, SERVER_SORT, sortRows, triageOrder, w1w2Text,
+  buildRow, LIST_SORT_PREFIX, listColumnOf, serverSortKey, sortRows,
+  triageOrder, w1w2Text,
 } from '../lib/tableModel'
 import type { DisplayRow, SortKey } from '../lib/tableModel'
 
@@ -80,6 +81,12 @@ const COLUMNS: Column[] = [
   { key: 'ztforce', label: 'ztforce', width: 64, cell: (r) => r.ztforce },
   { key: 'comments', label: 'Comments', width: 360, cell: (r) => r.comments },
 ]
+/** A value column of the applied coordinate list, shown beside W1-W2. */
+function listColumn(name: string): Column {
+  return { key: `${LIST_SORT_PREFIX}${name}`, label: name, width: 90, numeric: true,
+           cell: (r) => { const v = r.listValues[name]; return v == null ? '' : v.toFixed(3) } }
+}
+const LIST_COLUMNS_AFTER = COLUMNS.findIndex((c) => c.key === 'w1w2') + 1
 const PAGE_SIZES = [50, 100, 250, 500, 1000, 5000]
 const PAGE_SIZE_KEY = 'table-page-size'
 
@@ -126,10 +133,21 @@ export function TablePage({ member }: { member: string }) {
   // reaches it through `query`, and the sidebar sets it from the provider
   // directly rather than through twenty props forwarded from here.
   const { labelState, columnFilter, setColumnFilter,
-          query: sharedQuery } = useFilters()
+          query: sharedQuery, coordList } = useFilters()
+  // The applied list's value columns sit beside the catalog's, and sort
+  // across the whole list like them; they go when the list does.
+  const listColumns = coordList?.columns ?? []
+  const columns = useMemo(() => [
+    ...COLUMNS.slice(0, LIST_COLUMNS_AFTER), ...listColumns.map(listColumn),
+    ...COLUMNS.slice(LIST_COLUMNS_AFTER),
+  ], [listColumns])
   const [scrollTop, setScrollTop] = useState(0)
   const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>(
     { key: 'sigma', desc: true })
+  useEffect(() => {
+    const column = listColumnOf(sort.key)
+    if (column !== null && !listColumns.includes(column)) setSort({ key: 'sigma', desc: true })
+  }, [sort.key, listColumns])
   const [widths, setWidths] = useState(loadWidths)
   useEffect(() => {
     try { localStorage.setItem(WIDTHS_KEY, JSON.stringify(widths)) } catch { /* private window */ }
@@ -143,7 +161,7 @@ export function TablePage({ member }: { member: string }) {
     const x0 = e.clientX
     const w0 = widths[key]
     const move = (ev: MouseEvent) => setWidths((w) => (
-      { ...w, [key]: Math.max(MIN_COL_WIDTH, w0 + ev.clientX - x0) }))
+      { ...w, [key]: Math.max(MIN_COL_WIDTH, (w0 ?? MIN_COL_WIDTH) + ev.clientX - x0) }))
     const up = () => {
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
@@ -153,8 +171,9 @@ export function TablePage({ member }: { member: string }) {
     window.addEventListener('mouseup', up)
   }
   // Comments takes any spare width, but never less than its own.
-  const minTableWidth = 54 + COLUMNS.reduce((n, c) => n + widths[c.key], 0)
-  const serverKey = SERVER_SORT[sort.key]
+  const widthOf = (c: Column) => widths[c.key] ?? c.width ?? MIN_COL_WIDTH
+  const minTableWidth = 54 + columns.reduce((n, c) => n + widthOf(c), 0)
+  const serverKey = serverSortKey(sort.key)
   // The catalog toggle goes to the server too. It used to cut the window
   // after it arrived, so picking tier 0 showed 3,826 of 186,970 tier-0
   // sources -- the tier-0 members of a window chosen across every tier.
@@ -175,7 +194,7 @@ export function TablePage({ member }: { member: string }) {
   const page = pageState.key === pageKey ? pageState.n : 0
   const setPage = (n: number) => setPageState({ key: pageKey, n })
   const nPages = Math.max(1, Math.ceil(total / pageSize))
-  const activeLabel = COLUMNS.find((c) => c.key === sort.key)?.label ?? sort.key
+  const activeLabel = columns.find((c) => c.key === sort.key)?.label ?? sort.key
 
   // Two fetches on separate schedules, joined below. The catalog half is a
   // window into a static release and depends on the sort, the page and the
@@ -330,17 +349,17 @@ export function TablePage({ member }: { member: string }) {
                             minWidth: minTableWidth, tableLayout: 'fixed' }}>
               <colgroup>
                 <col style={{ width: 54 }} />
-                {COLUMNS.map((c) => (
+                {columns.map((c) => (
                   <col key={c.key} style={c.key === 'comments' ? undefined
-                                          : { width: widths[c.key] }} />
+                                          : { width: widthOf(c) }} />
                 ))}
               </colgroup>
               <thead>
                 <tr>
                   <th style={head(false)} />
-                  {COLUMNS.map((c) => {
+                  {columns.map((c) => {
                     const active = sort.key === c.key
-                    const whole = SERVER_SORT[c.key] !== undefined
+                    const whole = serverSortKey(c.key) !== undefined
                     return (
                       <th key={c.key} style={head(c.numeric)}
                           onClick={() => {
@@ -361,7 +380,7 @@ export function TablePage({ member }: { member: string }) {
                               onMouseDown={(e) => startResize(c.key, e)}
                               onDoubleClick={(e) => {
                                 e.stopPropagation()
-                                setWidths((w) => ({ ...w, [c.key]: DEFAULT_WIDTHS[c.key] }))
+                                setWidths((w) => ({ ...w, [c.key]: DEFAULT_WIDTHS[c.key] ?? c.width ?? MIN_COL_WIDTH }))
                               }} />
                       </th>
                     )
@@ -373,7 +392,7 @@ export function TablePage({ member }: { member: string }) {
                     height, so the scrollbar still measures the whole list. */}
                 {firstVisible > 0 && (
                   <tr style={{ height: firstVisible * ROW_HEIGHT }} aria-hidden>
-                    <td colSpan={COLUMNS.length + 1} />
+                    <td colSpan={columns.length + 1} />
                   </tr>
                 )}
                 {visible.map((r) => (
@@ -385,7 +404,7 @@ export function TablePage({ member }: { member: string }) {
                         open
                       </Link>
                     </td>
-                    {COLUMNS.map((c) => {
+                    {columns.map((c) => {
                       const text = c.cell(r)
                       return (
                         <td key={c.key} style={cell(c.numeric)} title={text}>
@@ -398,7 +417,7 @@ export function TablePage({ member }: { member: string }) {
                 {lastVisible < shown.length && (
                   <tr style={{ height: (shown.length - lastVisible) * ROW_HEIGHT }}
                       aria-hidden>
-                    <td colSpan={COLUMNS.length + 1} />
+                    <td colSpan={columns.length + 1} />
                   </tr>
                 )}
               </tbody>

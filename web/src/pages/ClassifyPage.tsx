@@ -72,8 +72,18 @@ export function ClassifyPage({ member, schema }:
   const {
     catalog, setCatalog,
     columnFilter, setColumnFilter, bucketFilter, deleteBucket, reloadLabels,
-    setLabels, setLabelColors, takeLabels, query: sharedQuery,
+    setLabels, setLabelColors, takeLabels, query: sharedQuery, coordListId, coordList,
   } = useFilters()
+  // A list uploaded with value columns can order the queue by them. They go
+  // when the list does, and a sort left pointing at one falls back to the
+  // default rather than failing every request.
+  const extraSorts = useMemo(() => (coordList?.columns ?? []).map((c) => (
+    { key: `list:${c}`, label: c, desc: true })), [coordList])
+  useEffect(() => {
+    if (sort.key.startsWith('list:') && !extraSorts.some((o) => o.key === sort.key)) {
+      setSort({ key: SORT_OPTIONS[0].key, desc: SORT_OPTIONS[0].desc })
+    }
+  }, [sort.key, extraSorts])
 
   const [detail, setDetail] = useState<SourceDetail | null>(null)
   const [lc, setLc] = useState<LightCurve | null>(null)
@@ -212,10 +222,12 @@ export function ClassifyPage({ member, schema }:
     const now = new URLSearchParams(window.location.search)
     const filter = columnFilter ? JSON.stringify(columnFilter) : null
     if (now.get('page') === selected && now.get('catalog') === catalog
-        && (now.get('filter') ?? null) === filter) return
-    setParams(filter ? { page: selected, catalog, filter } : { page: selected, catalog },
+        && (now.get('filter') ?? null) === filter
+        && (now.get('coords') ?? null) === coordListId) return
+    setParams({ page: selected, catalog, ...(filter ? { filter } : {}),
+                ...(coordListId ? { coords: coordListId } : {}) },
               { replace: true })
-  }, [selected, catalog, columnFilter, setParams])
+  }, [selected, catalog, columnFilter, coordListId, setParams])
 
   // Navigation is now a clamp on an integer rather than a lookup: the target
   // row may not be in the window yet, and the window follows the position, so
@@ -569,7 +581,7 @@ export function ClassifyPage({ member, schema }:
               onPrev={() => { flushComment(); goTo(position - 1) }}
               onNext={() => { flushComment(); goTo(position + 1) }}
               onJump={(i) => { flushComment(); goTo(i) }}
-              sort={sort.key} desc={sort.desc}
+              sort={sort.key} desc={sort.desc} extraSorts={extraSorts}
               onSort={(key, desc) => { flushComment(); setSort({ key, desc }) }}
               onNextUnlabelled={() => {
                 flushComment()

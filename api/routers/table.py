@@ -26,11 +26,13 @@ import orjson
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from api.catalog_filters import BAD_FILTER, combine, get_filters, legacy_filter, one_per_object as _one_per_object
-from api.db import get_annotations, get_science
+from api.db import get_annotations, get_coord_lists, get_science
+from api.routers.coord_lists import coord_list_filter
 from api.ztforce_store import get_ztforce_store
 from api.derive import CLASS_SOURCES, MATCHED_COLUMN, classes_of
 from api.annotation_filters import annotation_filter
-from api.routers.sources import _parse_filter, _sort_column
+from api import coord_lists
+from api.routers.sources import _parse_filter, _resolve_sort
 from source_db.serving.filters import UUID, CatalogFilters, FilterError, restrict_to
 from source_db.constants import PSTARR_UPPER_LIM
 
@@ -145,14 +147,15 @@ _CACHE_LOCK = threading.Lock()
 _CACHE_MAX = 16
 
 
-def _derive(row: dict) -> dict:
+def _derive(row: dict, list_values: dict | None = None) -> dict:
     """One table row from one catalog row.
 
     Every lookup is a `.get`, because the selected columns are whatever this
     release actually has -- a catalog written without `catalog_tier` should
-    render a blank cell, not 500 the page.
+    render a blank cell, not 500 the page. `list_values` is the applied
+    coordinate list's value columns, shown (and sorted) beside the catalog's.
     """
-    return {
+    out = {
         'source_uuid': row['source_uuid'], 'coord_slug': row.get('coord_slug'),
         'ra': row.get('ra'), 'dec': row.get('dec'),
         'catalog_tier': row.get('catalog_tier'),
@@ -162,6 +165,10 @@ def _derive(row: dict) -> dict:
         'matched': {p: bool(row.get(f'{p}_matched')) for p in CATALOG_PREFIXES},
         'classes': classes_of(row),
     }
+    if list_values and list_values['columns']:
+        vals = list_values['rows'].get(row['source_uuid']) or []
+        out['list_values'] = dict(zip(list_values['columns'], vals))
+    return out
 
 
 @router.get('/table')
@@ -175,6 +182,7 @@ def table_rows(request: Request,
                has_spectrum: bool = False,
                q: str | None = None,
                filter: str | None = None,
+               coord_list: str | None = None,
                one_per_object: bool = False,
                label_state: str | None = None,
                author: str | None = None,
@@ -183,7 +191,8 @@ def table_rows(request: Request,
                status_in: list[str] | None = Query(None),
                status_out: list[str] | None = Query(None),
                cat: CatalogFilters = Depends(get_filters),
-               ann: sqlite3.Connection = Depends(get_annotations)):
+               ann: sqlite3.Connection = Depends(get_annotations),
+               store: sqlite3.Connection = Depends(get_coord_lists)):
     """Every source in the window as one compact row, without verdicts.
 
     Verdicts live at `/table/annotations`: they are the only part that
@@ -197,14 +206,18 @@ def table_rows(request: Request,
     """
     doc = _table_filter(filter, survey=None, min_epochs=min_epochs,
                         has_spectrum=has_spectrum, catalog=catalog, q=q)
+    doc = combine(doc, coord_list_filter(store, coord_list))
     if one_per_object:
         doc = _one_per_object(doc)
     doc = combine(doc, _label_filter(ann, label_state, author),
                   annotation_filter(ann, bucket_in=bucket_in,
                                     bucket_out=bucket_out,
                                     status_in=status_in, status_out=status_out))
+    # Part of the key because two lists can match the same sources with
+    # different values beside them.
+    list_values = coord_lists.values(store, coord_list) if coord_list else None
     try:
-        key = (_catalog_stamp(cat), offset, limit, sort, desc,
+        key = (_catalog_stamp(cat), offset, limit, sort, desc, coord_list,
                orjson.dumps(doc, option=orjson.OPT_SORT_KEYS) if doc else b'')
     except (TypeError, ValueError) as e:
         # `orjson.dumps` refuses past 254 levels of nesting.
@@ -213,14 +226,15 @@ def table_rows(request: Request,
     blob = _CACHE.get(key)
     if blob is None:
         try:
-            rows = cat.select(doc, _table_columns(cat), sort=_sort_column(sort),
+            rows = cat.select(doc, _table_columns(cat),
+                              sort=_resolve_sort(sort, cat, store, coord_list),
                               desc=desc, limit=limit, offset=offset)
             total = cat.count(doc)
         except BAD_FILTER as e:
             raise HTTPException(422, str(e)) from e
         blob = gzip.compress(orjson.dumps({
             'total': total, 'offset': offset, 'limit': limit,
-            'rows': [_derive(r) for r in rows],
+            'rows': [_derive(r, list_values) for r in rows],
         }), 6)
         with _CACHE_LOCK:
             if len(_CACHE) >= _CACHE_MAX:

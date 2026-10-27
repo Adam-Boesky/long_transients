@@ -13,6 +13,7 @@ population.
 """
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
 
 import orjson
@@ -20,6 +21,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from api.catalog_filters import BAD_FILTER, combine, get_filters, legacy_filter
 from api import catalog_schema
+from api.db import get_coord_lists
+from api.routers.coord_lists import coord_list_filter
 from source_db.serving.filters import (MISSING_POLICIES, OPERATORS,
                                        CatalogFilters, FilterError)
 
@@ -75,6 +78,8 @@ def preview(doc: Any = Body(None, description='a filter document'),
             has_lightcurve: bool = False,
             has_spectrum: bool = False,
             q: str | None = None,
+            coord_list: str | None = None,
+            store: sqlite3.Connection = Depends(get_coord_lists),
             cat: CatalogFilters = Depends(get_filters)):
     """How many sources match, and how many each top-level clause keeps alone.
 
@@ -92,6 +97,7 @@ def preview(doc: Any = Body(None, description='a filter document'),
         scope = legacy_filter(survey=survey, min_epochs=min_epochs,
                               has_lightcurve=has_lightcurve,
                               has_spectrum=has_spectrum, catalog=catalog, q=q)
+        scope = combine(scope, coord_list_filter(store, coord_list))
         clauses = doc.get('clauses') if isinstance(doc, dict) else None
         if not clauses:
             clauses = [doc] if doc else []

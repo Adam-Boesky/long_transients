@@ -165,6 +165,8 @@ export interface SourceQuery {
   desc?: boolean
   /** Sub-catalogue: 'in_both', 'in_ztf' or 'in_ztf_wide'; omit for all. */
   catalog?: string
+  /** An uploaded coordinate list's id: only the sources it matched. */
+  coord_list?: string
   author?: string
   /** Substring of `coord_slug`, or a uuid prefix. Matched server-side: the
    *  client holds only a window of the list, so filtering what it has would
@@ -253,6 +255,9 @@ export interface TableRow {
   annotations: TableAnnotation[]
   /** Whether ztforce has a stored result for this source. */
   ztforce: boolean
+  /** The applied coordinate list's value columns for this source; only
+   *  present when a list with columns is applied. */
+  list_values?: Record<string, number | null>
 }
 
 export interface TablePayload {
@@ -273,6 +278,7 @@ export interface TableQuery {
   sort?: string
   desc?: boolean
   catalog?: string
+  coord_list?: string
   q?: string
   filter?: string
   /** List each object once: detections sharing a `group_id` (the same object
@@ -474,4 +480,34 @@ export interface FilterPreview {
 export interface GroupMember {
   source_uuid: string
   coord_slug?: string | null
+}
+
+/** What a list of positions matches (`POST /api/coord-lists/preview`). */
+export interface CoordListPreview {
+  radius_arcsec: number
+  /** Lines that parsed as a position. */
+  n_coords: number
+  n_unparsed: number
+  /** The first unparsed lines, verbatim. */
+  unparsed: string[]
+  /** Positions with at least one source within the radius. */
+  n_matched_coords: number
+  n_unmatched: number
+  /** The first unmatched positions, as 'ra dec'. */
+  unmatched: string[]
+  /** Distinct sources matched. */
+  n_sources: number
+  /** Matched sources per sub-catalogue ('in_both', 'in_ztf', 'in_ztf_wide', 'other'). */
+  by_catalog: Record<string, number>
+  /** Value columns the file declared in a header (`name ra dec stetson_J`).
+   *  The list endpoints order by one with `sort=list:<column>`. */
+  columns: string[]
+}
+
+/** A saved, shared coordinate list (`/api/coord-lists`). */
+export interface CoordListSummary extends CoordListPreview {
+  id: string
+  name: string
+  /** ISO time it was saved (UTC). */
+  created: string
 }
