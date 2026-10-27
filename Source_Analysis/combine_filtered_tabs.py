@@ -101,6 +101,44 @@ def add_group_ids(tables: Iterable[Table], radius_arcsec: float = GROUP_RADIUS_A
         start += len(t)
 
 
+BAND_SETS = ('gri', 'gr', 'gi', 'ri')
+MERGE_STEP = 'merge_duplicates'
+
+
+def _band_sets(tab: Table) -> np.ndarray:
+    """Each row's detected band set ('gri', 'gr', ...), as the filter stats count it (Source.in_g etc.)."""
+    det = {b: np.isfinite(np.asarray(tab[f'ZTF_{b}_ra'], dtype=float)) for b in 'gri'}
+    return np.array([''.join(b for b in 'gri' if det[b][k]) for k in range(len(tab))])
+
+
+def add_merge_duplicates_step(stats: pd.DataFrame, tab: Table) -> pd.DataFrame:
+    """Append a final flowchart step collapsing each `group_id` to one object.
+
+    Every earlier step is summed over fields, so objects in overlap regions count once per field. This
+    step's counts are unique objects; a group whose detections differ in band set takes the one with the
+    most bands. Replaces an existing step, so it can be re-run on a combined stats table.
+    """
+    if set(stats.index.names) != {'filter', 'branch'}:  # combine_stats leaves a single field ungrouped
+        stats = stats.groupby(['filter', 'branch']).sum()
+    stats = stats.drop(index=MERGE_STEP, level='filter', errors='ignore')
+    sets = _band_sets(tab) if len(tab) else np.array([], dtype=str)
+    gid = np.asarray(tab['group_id']) if len(tab) else np.array([], dtype=np.int64)
+    # Most bands first (gri), then file order; keep the first row of each group
+    order = np.lexsort((np.arange(len(sets)), -np.char.str_len(sets.astype(str))))
+    dup = pd.Series(gid[order]).duplicated().to_numpy() & (gid[order] > 0)
+    kept = np.zeros(len(sets), dtype=bool)
+    kept[order[~dup]] = True
+
+    # The candidates' own branch: the last one, after the wide-association ('in_both') branch
+    branch = sorted(set(stats.index.get_level_values('branch')))[-1]
+    row = pd.Series(0.0, index=stats.columns)
+    for b in BAND_SETS:
+        row[f'n_{b}_before'] = np.sum(sets == b)
+        row[f'n_{b}_after'] = np.sum(kept & (sets == b))
+    stats.loc[(MERGE_STEP, branch), :] = row
+    return stats
+
+
 def combine_filtered_tabs(add_filtered_out: bool = False,
                           processes: int = 1,
                           max_arcsec: float = filtered_out_summary.DEFAULT_MATCH_ARCSEC,
@@ -222,6 +260,7 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
     if not os.path.exists(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir)):
         os.makedirs(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir))
     for cat in (0, 1):  # PS1-only branch (2) disabled
+        stat_dfs[cat] = add_merge_duplicates_step(stat_dfs[cat], tabs[cat])
         stat_dfs[cat].to_csv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}_filter_stats.csv'))
         if cat != 2:  # TODO: temporary for bad pstarr extraction
             prepare_table_for_write(tabs[cat]).write(
