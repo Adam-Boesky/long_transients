@@ -1,4 +1,6 @@
 import os
+
+from source_db.constants import PSTARR_UPPER_LIM, SIGMA_CAP
 import sys
 import shutil
 import requests
@@ -36,9 +38,19 @@ Gaia.MAIN_GAIA_TABLE = 'gaiadr3.gaia_source'
 BANDS = ['g', 'r', 'i']
 CATALOG_KEY = {0: 'ZTF and Pan-STARRS', 1: 'ZTF', 2: 'Pan-STARRS', 3: 'Out of Coverage'}
 GAIA_OBS_EPOCH = 2021.0  # representative epoch of ZTF detections, used to propagate Gaia positions forward from ref_epoch (J2016.0) before crossmatching
-PSTARR_UPPER_LIM = {'g': 23.3, 'r': 23.2, 'i': 23.1}
 EXTRACTED_CATALOG_DIR = 'catalog_results/field_results' # 'debugging'
-FILTER_RESULT_DIR = 'filter_results_9_13_2026_full_catalog'  # 'filter_results_kde_sep_flag'  # 'debugging/filter_results'  # 'filter_results_gemini'
+# PS1 DR2 regions with no ObjectThin sources, (dec_min, dec_max, ra_min, ra_max) in deg.
+# From https://outerspace.stsci.edu/display/PANSTARRS/PS1+DR2+caveats
+PS1_DR2_MISSING_REGIONS = [
+    (35.46, 35.499, 189.0, 267.7),
+    (35.46, 35.499, 0.0, 25.31),
+    (35.46, 35.499, 25.88, 47.25),
+    (76.88, 78.11, 123.34, 126.66),
+    (75.47, 76.40, 342.51, 345.00),
+    (73.60, 74.06, 343.50, 345.00),
+    (-27.18, -26.72, 76.40, 76.91),
+]
+FILTER_RESULT_DIR = os.environ.get('FILTER_RESULT_DIR', 'filter_results_final_10_22_2026')  # previous: 'filter_results_9_21_2026_full_catalog_fixed_pm'
 
 def _is_flag(flags: np.ndarray, flag: Union[int, Iterable[int]]) -> np.ndarray:
     """
@@ -262,7 +274,8 @@ def _match_sources_to_gaia(
     gaia_table: Table,
     max_arcsec: float = 5.0,
     obs_epoch: float = GAIA_OBS_EPOCH,
-) -> np.ndarray:
+    return_sep: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """Match srcs to gaia_table by sky position.
 
     Gaia positions are given at ref_epoch (J2016.0) and drift by pmra/pmdec
@@ -275,7 +288,8 @@ def _match_sources_to_gaia(
     with and are matched at their static ref_epoch position.
 
     Returns an array of row indices into gaia_table (length = len(srcs)).
-    Entries are -1 where no match exists within max_arcsec.
+    Entries are -1 where no match exists within max_arcsec. With return_sep,
+    also returns the separation to the nearest Gaia source in arcsec.
     """
     src_coords = srcs.coords
 
@@ -298,7 +312,53 @@ def _match_sources_to_gaia(
     idx, sep2d, _ = match_coordinates_sky(src_coords, gaia_coords)
     idx = idx.copy()
     idx[sep2d.arcsec > max_arcsec] = -1
+    if return_sep:
+        return idx, sep2d.arcsec
     return idx
+
+
+def annotate_gaia(srcs: Sources, gaia_table: Table, max_arcsec: float = 5.0) -> Sources:
+    """Write each source's nearest Gaia match onto its data row; the Gaia filters read these columns.
+
+    gaia_has_astrometry is False for a match with no published pm/parallax (a 2p solution).
+    The value columns are NaN wherever there is nothing to report.
+    """
+    if len(srcs) == 0:
+        return srcs
+    idx, sep = _match_sources_to_gaia(srcs, gaia_table, max_arcsec=max_arcsec, return_sep=True)
+    matched = idx >= 0
+    rows = gaia_table[np.where(matched, idx, 0)]
+
+    def _value(col):
+        c = rows[col]
+        vals = np.ma.filled(np.ma.asarray(c, dtype=float), np.nan)
+        return np.where(matched, vals, np.nan)
+
+    pm_sig = _value('pm') / (_value('pmra_error') + _value('pmdec_error'))
+    poe = _value('parallax_over_error')
+    cols = {
+        'gaia_matched': matched,
+        'gaia_sep_arcsec': np.where(matched, sep, np.nan),
+        'gaia_astrometric_params_solved': _value('astrometric_params_solved'),
+        'gaia_has_astrometry': matched & np.isfinite(pm_sig) & np.isfinite(poe),
+        'gaia_parallax_over_error': poe,
+        'gaia_pm_sig': pm_sig,
+    }
+
+    # Build the rows in bulk first; Sources slicing rebuilds .data from each Source's row,
+    # so the columns have to land on the per-source rows as well
+    data = srcs.data
+    for col, vals in cols.items():
+        data[col] = vals
+        for src, v in zip(srcs.sources, vals):
+            src.data[col] = [v]
+    return srcs
+
+
+def _gaia_column(srcs: Sources, col: str) -> np.ndarray:
+    if col not in srcs.data.colnames:
+        raise KeyError(f'{col} missing from the source table; run annotate_gaia on these sources first.')
+    return np.asarray(srcs.data[col], dtype=float)
 
 
 class Envelope_KDE:
@@ -334,6 +394,58 @@ class Envelope_KDE:
         ])
 
         return results[0] if scalar else results
+
+    def sigma(self, mag: np.ndarray, dmag: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Signed sigma of each (mag, Δmag): Φ^-1 of the Δmag CDF at mag, bilinear on the grid; NaN where undefined.
+
+        Returns (sigma, capped). Negative = brighter in ZTF than PS1. |sigma| beyond what the grid resolves is
+        reported as ±SIGMA_CAP with capped=True.
+        """
+        mag, dmag = np.asarray(mag, float), np.asarray(dmag, float)
+        ys = np.nan_to_num(self.kde_ys, nan=0.0)
+        tot = ys.sum(axis=1, keepdims=True)
+        cdf = np.divide(np.cumsum(ys, axis=1), tot, out=np.full_like(ys, np.nan), where=tot > 0)
+        mg, dg = self.mag_grid, self.dmag_grid
+        fi = np.clip((mag - mg[0]) / (mg[1] - mg[0]), 0, len(mg) - 1 - 1e-9)
+        fj = np.clip((dmag - dg[0]) / (dg[1] - dg[0]), 0, len(dg) - 1 - 1e-9)
+        bad = ~np.isfinite(mag) | ~np.isfinite(dmag)
+        fi, fj = np.nan_to_num(fi), np.nan_to_num(fj)
+        i0, j0 = fi.astype(int), fj.astype(int)
+        w, u = fi - i0, fj - j0
+        c = ((1 - w) * ((1 - u) * cdf[i0, j0] + u * cdf[i0, j0 + 1]) +
+             w * ((1 - u) * cdf[i0 + 1, j0] + u * cdf[i0 + 1, j0 + 1]))
+        p_cap = norm.cdf(-SIGMA_CAP)
+        low = (c < p_cap) | (dmag < dg[0])
+        high = (c > 1 - p_cap) | (dmag > dg[-1])
+        capped = (low | high) & ~bad & np.isfinite(c)
+        z = norm.ppf(np.clip(c, p_cap, 1 - p_cap))
+        # Off the Δmag grid the CDF above is the grid edge's, not the cap; report the cap.
+        z[capped & low] = -SIGMA_CAP
+        z[capped & high] = SIGMA_CAP
+        z[bad | ~np.isfinite(c)] = np.nan
+        return z, capped
+
+
+def annotate_dmag_sigma(tabs: Dict[str, Table], envelopes: Dict[str, 'Envelope_KDE']) -> Dict[str, Table]:
+    """Write {band}_dmag, {band}_dmag_sigma and {band}_dmag_sigma_capped onto each band's table, in place.
+
+    One-sided rows use the other catalogue's limit (flag 1: PS1 upper limit; flag 2: ZTF limiting mag). sigma is NaN
+    where Δmag can't be evaluated from the row itself (no PS1 mag, PS1 mag <= 14, or no envelope for the band).
+    """
+    for band, tab in tabs.items():
+        if band not in envelopes or len(tab) == 0:
+            continue
+        flag_col = f'{band}_Catalog_Flag' if f'{band}_Catalog_Flag' in tab.colnames else 'Catalog_Flag'
+        flag = np.asarray(tab[flag_col], float)
+        pstarr = np.where(flag == 1, PSTARR_UPPER_LIM[band], np.asarray(tab[f'PSTARR_{band}PSFMag'], float))
+        ztf = np.where(flag == 2, np.asarray(tab[f'ZTF_{band}_mag_limit'], float), np.asarray(tab[f'ZTF_{band}PSFMag'], float))
+        dmag = ztf - pstarr
+        z, capped = envelopes[band].sigma((pstarr + ztf) / 2, dmag)
+        z[(pstarr <= 14.0) | (pstarr == -999) | ~np.isfinite(pstarr)] = np.nan
+        tab[f'{band}_dmag'] = dmag
+        tab[f'{band}_dmag_sigma'] = z
+        tab[f'{band}_dmag_sigma_capped'] = capped & np.isfinite(z)
+    return tabs
 
 
 def build_kde_envelopes(
@@ -428,9 +540,11 @@ class Filters():
             'parallax_filter': self.parallax_filter,
             'proper_motion_filter': self.proper_motion_filter,
             'no_nearby_source_filter': self.no_nearby_source_filter,
+            'ps1_missing_region_filter': self.ps1_missing_region_filter,
             'pstarr_mag_less_than': self.pstarr_mag_less_than,
             'dec_greater_than': self.dec_greater_than,
             'pstarr_not_saturated': self.pstarr_not_saturated,
+            'ps1_offset_counterpart_filter': self.ps1_offset_counterpart_filter,
             'pstarr_quality_filter': self.pstarr_quality_filter,
         }
         self.reset_filter_stats()
@@ -653,17 +767,12 @@ class Filters():
         return good_tabs, bad_tabs
 
     def sep_extraction_filter(self, tabs: Dict[str, Table], copy: bool = True, *args, **kwargs) -> Table:
-        # flags here: https://sextractor.readthedocs.io/en/latest/Flagging.html
-        # Flag 1 (neighbour biases aperture photometry) is no longer rejected here;
-        # extended_source_artifact_filter uses PSF-Kron magnitude to distinguish genuine
-        # artifacts from real sources near bright neighbours.
-        # Flag 2 (deblended) is also allowed.
+        # SEP object flags (not SExtractor's), see sep.h: 1 OBJ_MERGED (deblended), 2 OBJ_TRUNC
+        # (touches array edge), 4 OBJ_DOVERFLOW, 8 OBJ_SINGU (deblended core one pixel wide).
+        # Only 8 ever fires here: borders are NaN so 2 can't, 4 aborts extraction instead, and
+        # 16-128 are aperture flags that sep.extract never sets (they live in ZTF_{band}KronFlag).
         good_tabs = {}
         bad_tabs = {}
-        # Reject sources with truly bad extraction flags (saturation, truncation,
-        # aperture/isophotal corruption, memory overflow).  Flags 1 (has neighbours)
-        # and 2 (originally blended) are NOT rejected — those can legitimately arise
-        # for transients near host-galaxy flux or in moderately crowded fields.
         bad_flags = [4, 8, 16, 32, 64, 128]
         for band in tabs.keys():
             tab = tabs[band]
@@ -674,11 +783,9 @@ class Filters():
         return good_tabs, bad_tabs
 
     def extended_source_artifact_filter(self, tabs: Dict[str, Table], copy: bool = True, *args, **kwargs) -> Table:
-        # Rejects spurious detections near bright extended halos: SEP flag bit 0 set
-        # (aperture contaminated by a neighbour's NaN-masked pixels) AND
-        # PSFMag − KronMag > 1.5 (Kron aperture integrates into the bright halo,
-        # making KronMag >> PSFMag).  Validated: 17/17 artifacts caught, 0/87 real
-        # sources rejected.
+        # Rejects spurious detections near bright extended halos: SEP flag 1 set (OBJ_MERGED,
+        # i.e. deblended from a neighbour) AND PSFMag − KronMag > 1.5 (Kron aperture integrates
+        # into the bright halo).  Validated: 17/17 artifacts caught, 0/87 real sources rejected.
         PSF_KRON_THRESH = 1.5
         good_tabs = {}
         bad_tabs = {}
@@ -767,6 +874,12 @@ class Filters():
                 pstarr_kron_mask = (pstarr_kron_snr > snr_min) & np.logical_not(kron_mask)
                 pstarr_mask = np.logical_or(pstarr_psf_mask, pstarr_kron_mask) & np.logical_not(both_mask)
 
+                # Each catalogue detected the row, but in different photometry types (PSF vs Kron): send it only to
+                # the side with PSF SNR > 5, since Δmag uses PSF mags (plan_filter_review.md #8)
+                in_both_sets = ztf_mask & pstarr_mask
+                ztf_mask &= ~in_both_sets | (ztf_psf_snr > snr_min)
+                pstarr_mask &= ~in_both_sets | (pstarr_psf_snr > snr_min)
+
                 # Fill in tabs
                 ztf_tabs[band] = tab[ztf_mask]
                 pstarr_tabs[band] = tab[pstarr_mask]
@@ -841,39 +954,20 @@ class Filters():
             *args,
             **kwargs,
         ) -> Tuple[Table, Table, Dict[str, Envelope_KDE]]:
-        """Keep sources whose Δmag lies outside the KDE sigma envelope."""
+        """Keep detections whose Δmag is more than sigma_boundary from the field's envelope (|Δmag sigma| > sigma_boundary).
+
+        Annotates each table with {band}_dmag / _dmag_sigma / _dmag_sigma_capped first (plan_filter_review.md #14).
+        """
         if len(tabs) == 0:
             return {}, {}, {}
 
+        annotate_dmag_sigma(tabs, envelopes)
         good_tabs = {}
         bad_tabs = {}
-        percentiles = [norm.cdf(-sigma_boundary), norm.cdf(sigma_boundary)]
-        min_mag = 14.0  # matches the KDE grid start
-
-        for band in tabs.keys():
-            tab = tabs[band]
-
-            # Resolve catalog-flag-aware mag columns
-            if f'{band}_Catalog_Flag' in tab.colnames:
-                pstarr_mags = np.where(tab[f'{band}_Catalog_Flag'] == 1, PSTARR_UPPER_LIM[band], tab[f'PSTARR_{band}PSFMag'])
-                ztf_mags = np.where(tab[f'{band}_Catalog_Flag'] == 2, tab[f'ZTF_{band}_mag_limit'], tab[f'ZTF_{band}PSFMag'])
-            else:
-                pstarr_mags = np.where(tab['Catalog_Flag'] == 1, PSTARR_UPPER_LIM[band], tab[f'PSTARR_{band}PSFMag'])
-                ztf_mags = np.where(tab['Catalog_Flag'] == 2, tab[f'ZTF_{band}_mag_limit'], tab[f'ZTF_{band}PSFMag'])
-
-            upper_lims = pstarr_mags == -999
-
-            mag = np.mean([pstarr_mags, ztf_mags], axis=0)
-            dmag = ztf_mags - pstarr_mags
-
-            # Evaluate per-source KDE percentile bounds
-            vals = envelopes[band].get_percentile(mag, percentiles)
-            outside_mask = (dmag < vals[0]) | (dmag > vals[1])
-
-            # Only consider sources with valid mags above the KDE grid floor
-            outside_mask &= pstarr_mags > min_mag
-            outside_mask &= ~upper_lims
-
+        for band, tab in tabs.items():
+            col = f'{band}_dmag_sigma'
+            z = np.asarray(tab[col], float) if col in tab.colnames else np.full(len(tab), np.nan)
+            outside_mask = np.abs(z) > sigma_boundary  # NaN (not evaluable) compares False
             good_tabs[band] = tab[outside_mask]
             bad_tabs[band] = tab[~outside_mask]
 
@@ -979,32 +1073,29 @@ class Filters():
             n: int = 2,
             sigma_boundary: float = 3.0,
             envelopes: Optional[Dict[str, Envelope_KDE]] = None,
+            wide: bool = False,
             *args,
             **kwargs,
         ) -> Tuple[Sources, Sources]:
-        """Keep sources with a significant delta mag in at least n bands.
-        Reuses only_big_dmag to evaluate per-band significance from source data."""
+        """Keep sources with |Δmag sigma| > sigma_boundary in at least n bands.
+
+        With wide, the bands in the catalog must be 1-3" PS1 associations, so ordinary in_both rows can't pass.
+
+        Reads each band's {band}_dmag_sigma, which comes from that band's own row (annotated on the all-quality
+        tables before the sources are built), so a band is never judged on values borrowed from another band's row.
+        """
         good_sources = {}
         bad_sources = {}
         for key in sources.keys():
             srcs = sources[key]
-
-            # Tag rows with their index so we can recover the per-band masks after filtering
-            data = srcs.data.copy()
-            data['_row_idx'] = np.arange(len(data))
-
-            # Run only_big_dmag on all bands using the same source data table
-            # (each band reads its own band-prefixed columns, e.g. ZTF_gPSFMag)
-            good_tabs, _, _ = self.only_big_dmag(
-                {band: data for band in BANDS},
-                sigma_boundary=sigma_boundary,
-                envelopes=envelopes,
-            )
+            data = srcs.data
 
             # Count how many bands each source has big dmag in
             n_big_dmag = np.zeros(len(data), dtype=int)
-            for gtab in good_tabs.values():
-                n_big_dmag[gtab['_row_idx']] += 1
+            for band in BANDS:
+                col = f'{band}_dmag_sigma'
+                if col in data.colnames:
+                    n_big_dmag += np.abs(np.asarray(data[col], float)) > sigma_boundary
 
             mask = n_big_dmag >= n
 
@@ -1016,6 +1107,10 @@ class Filters():
                 data[f'{band}_Catalog_Flag'] for band in BANDS
             ])
             in_catalog_mask = in_catalog_matrix == catalog_int
+            if wide:
+                in_catalog_mask &= np.column_stack([
+                    np.nan_to_num(np.asarray(data[f'{band}_association_separation_arcsec'], float)) > 1.0 for band in BANDS
+                ])
             mask &= np.sum(in_catalog_mask, axis=1) > 1
 
             good_sources[key] = srcs[mask]
@@ -1023,28 +1118,11 @@ class Filters():
 
         return good_sources, bad_sources
 
-    def _parallax_in_srcs(
-        self,
-        srcs: Sources,
-        gaia_table: Optional[Table] = None,
-    ) -> Tuple[Sources, Sources]:
+    def _parallax_in_srcs(self, srcs: Sources) -> Tuple[Sources, Sources]:
+        # NaN (no Gaia match, or no published parallax) compares False, so those are kept
         mask = np.ones(len(srcs), dtype=bool)
-
-        if gaia_table is not None and len(srcs) > 0:
-            idx = _match_sources_to_gaia(srcs, gaia_table)
-            for i in range(len(srcs)):
-                if idx[i] == -1:
-                    continue
-                poe = gaia_table[idx[i]]['parallax_over_error']
-                if not np.ma.is_masked(poe) and poe >= 5.0:
-                    mask[i] = False
-        else:
-            for i, src in enumerate(srcs):
-                if len(src.GAIA_info) > 0:
-                    mask[i] = (
-                        src.GAIA_info[0]['parallax_over_error'] < 5.0
-                        or src.GAIA_info['parallax_over_error'].mask[0]
-                    )
+        if len(srcs) > 0:
+            mask = ~(_gaia_column(srcs, 'gaia_parallax_over_error') >= 5.0)
 
         return srcs[mask], srcs[~mask]
 
@@ -1052,55 +1130,23 @@ class Filters():
         self,
         sources: Union[Sources, Dict[str, Sources]],
         *args,
-        gaia_table: Optional[Table] = None,
         **kwargs,
     ) -> Union[Tuple[Dict[str, Sources], Dict[str, Sources]], Tuple[Sources, Sources]]:
         if isinstance(sources, Dict):
             good_sources = {}
             bad_sources = {}
             for band in sources.keys():
-                good_sources[band], bad_sources[band] = self._parallax_in_srcs(
-                    sources[band], gaia_table=gaia_table
-                )
+                good_sources[band], bad_sources[band] = self._parallax_in_srcs(sources[band])
             return good_sources, bad_sources
         else:
-            return self._parallax_in_srcs(sources, gaia_table=gaia_table)
+            return self._parallax_in_srcs(sources)
 
-    def _proper_motion_in_srcs(
-        self,
-        srcs: Sources,
-        gaia_table: Optional[Table] = None,
-    ) -> Tuple[Sources, Sources]:
+    def _proper_motion_in_srcs(self, srcs: Sources) -> Tuple[Sources, Sources]:
+        # 2p (position-only) solutions publish no pm, so gaia_pm_sig is NaN and the source is kept:
+        # missing pm is no evidence of motion (Lindegren et al. 2021 Eq. 21 has no pm term)
         mask = np.ones(len(srcs), dtype=bool)
-
-        if gaia_table is not None and len(srcs) > 0:
-            idx = _match_sources_to_gaia(srcs, gaia_table)
-            for i in range(len(srcs)):
-                if idx[i] == -1:
-                    continue
-                row = gaia_table[idx[i]]
-                pm, pmra_e, pmdec_e = row['pm'], row['pmra_error'], row['pmdec_error']
-                if np.ma.is_masked(pm) or np.ma.is_masked(pmra_e) or np.ma.is_masked(pmdec_e):
-                    # 2p (position-only) solutions have no pm published at all, so there is
-                    # nothing to threshold. 2p is a data-quality fallback, not a kinematic
-                    # one -- Lindegren et al. 2021 Eq. 21 keys on G, N_vpu and sigma5d_max,
-                    # with no pm term. Missing pm is no evidence of motion, so keep, as
-                    # parallax_filter already does for the NULL parallax on these sources.
-                    continue
-                elif pm / (pmra_e + pmdec_e) >= 5.0:
-                    mask[i] = False
-        else:
-            for i, src in enumerate(srcs):
-                if len(src.GAIA_info) > 0:
-                    mask[i] = (
-                        src.GAIA_info[0]['pm'] / (
-                            src.GAIA_info[0]['pmra_error'] + src.GAIA_info[0]['pmdec_error']
-                        ) < 5.0
-                    ) or (
-                        src.GAIA_info['pm'].mask[0]
-                        or src.GAIA_info['pmra_error'].mask[0]
-                        or src.GAIA_info['pmdec_error'].mask[0]
-                    )
+        if len(srcs) > 0:
+            mask = ~(_gaia_column(srcs, 'gaia_pm_sig') >= 5.0)
 
         return srcs[mask], srcs[~mask]
 
@@ -1108,20 +1154,44 @@ class Filters():
             self,
             sources: Union[Sources, Dict[str, Sources]],
             *args,
-            gaia_table: Optional[Table] = None,
             **kwargs,
         ) -> Union[Tuple[Dict[str, Sources], Dict[str, Sources]], Sources]:
         if isinstance(sources, Dict):
             good_sources = {}
             bad_sources = {}
             for band in sources.keys():
-                good_sources[band], bad_sources[band] = self._proper_motion_in_srcs(
-                    sources[band], gaia_table=gaia_table
-                )
+                good_sources[band], bad_sources[band] = self._proper_motion_in_srcs(sources[band])
             return good_sources, bad_sources
         else:
-            return self._proper_motion_in_srcs(sources, gaia_table=gaia_table)
+            return self._proper_motion_in_srcs(sources)
     
+    def _ps1_missing_region_in_srcs(self, srcs: Sources) -> Sources:
+        coords = srcs.coords
+        ra, dec = coords.ra.deg, coords.dec.deg
+        in_gap = np.zeros(len(ra), dtype=bool)
+        for dec_min, dec_max, ra_min, ra_max in PS1_DR2_MISSING_REGIONS:
+            in_gap |= (dec >= dec_min) & (dec <= dec_max) & (ra >= ra_min) & (ra <= ra_max)
+        return srcs[~in_gap], srcs[in_gap]
+
+    def ps1_missing_region_filter(
+            self,
+            sources: Union[Sources, Dict[str, Sources]],
+            *args,
+            **kwargs,
+        ) -> Union[Tuple[Dict[str, Sources], Dict[str, Sources]], Sources]:
+        """Drop sources inside the regions where PS1 DR2 has no ObjectThin sources.
+
+        A ZTF source there has no PS1 counterpart because the catalog is missing, not
+        because the source is new. The boxes are MAST's list of DR2 missing regions:
+        https://outerspace.stsci.edu/display/PANSTARRS/PS1+DR2+caveats
+        """
+        if isinstance(sources, Dict):
+            good_sources, bad_sources = {}, {}
+            for band in sources.keys():
+                good_sources[band], bad_sources[band] = self._ps1_missing_region_in_srcs(sources[band])
+            return good_sources, bad_sources
+        return self._ps1_missing_region_in_srcs(sources)
+
     def _no_nearby_source_in_srcs(self, srcs: Sources, n_nearby_max: int) -> Sources:
         all_coords = srcs.coords
         seps = all_coords.separation(all_coords[:, None])
@@ -1205,6 +1275,24 @@ class Filters():
 
         return good_tabs, bad_tabs
 
+    def ps1_offset_counterpart_filter(
+            self,
+            tabs: Dict[str, Table],
+            pstarr_tabs: Dict[str, Table],
+            min_sep: float = 1.0,
+            max_sep: float = 3.0,
+            *args,
+            **kwargs,
+        ) -> Tuple[Dict[str, Table], Dict[str, Table]]:
+        """Drop ZTF-only detections with a Pan-STARRS source between min_sep and max_sep arcsec (an offset counterpart)."""
+        good_tabs = {}
+        bad_tabs = {}
+        for band in tabs.keys():
+            bad_tabs[band], good_tabs[band] = associate_in_btwn_distance(tabs[band], pstarr_tabs[band], min_sep=min_sep, max_sep=max_sep)
+            print(f'Associated {len(bad_tabs[band])} / {len(tabs[band])} more sources in {band} band between {min_sep} and {max_sep} from eachother.')
+        self.diverted = bad_tabs  # evaluated by the wide-association branch
+        return good_tabs, bad_tabs
+
     def pstarr_quality_filter(self, tabs: Dict[str, Table], *args, **kwargs) -> Tuple[Dict[str, Table], Dict[str, Table]]:
         """Filter out Pan-STARRS sources with bad quality flags or object info flags.
         Flags defined here: https://outerspace.stsci.edu/display/PANSTARRS/PS1+Object+Flags#PS1ObjectFlags-ColumnXinfoFlag(Xoneofg,r,i,z,y)inStackObjectThin
@@ -1240,15 +1328,13 @@ def associate_in_btwn_distance(table1: Table, table2: Table, min_sep: float = 1.
     idx, sep2d, _ = match_coordinates_sky(coords1, coords2)
     mask = (sep2d.arcsecond <= max_sep) & (sep2d.arcsecond > min_sep)
 
-    # Fill in the values appropriately
+    # Take only the PS1 columns from the counterpart; ZTF, position and field columns stay the detection's own
     associated_table = table1[mask]
     for col in table2.colnames:
-        try:
-            if col not in ('Catalog', 'ra', 'dec', 'ZTF_g_upper_lim_flag', 'ZTF_r_upper_lim_flag', 'ZTF_i_upper_lim_flag'):
-                if np.any(np.logical_not(np.isnan(table2[idx[mask]][col].value))):
-                    associated_table[col] = table2[idx[mask]][col]
-        except:
-            print(col)
+        if col.startswith('PSTARR_'):
+            associated_table[col] = table2[col][idx[mask]]
+    associated_table['Catalog_Flag'] = 0
+    associated_table['Catalog'] = 'Both'
 
     # Add the angular separations
     associated_table['association_separation_arcsec'] = sep2d[mask].arcsecond
@@ -1379,7 +1465,7 @@ def add_decision_from_counts(
     d += decision
 
     # Add the yes and no boxes, sized to fit their text
-    arrow = Arrow().right(d.unit*3/4).at(decision.E)
+    arrow = Arrow().right(d.unit*2).at(decision.E)  # room for the Yes branch's arrow labels
     d += arrow
     yes_box = Box(w=_box_width_for_text(stats_yes)).label(stats_yes)
     d += yes_box
@@ -1423,8 +1509,32 @@ def add_final_filt(filt_name: str, srcs: Sources, d: schemdraw.Drawing) -> schem
     return d
 
 
+def _with_passthrough_rows(df: pd.DataFrame, template: pd.DataFrame) -> pd.DataFrame:
+    """`df` with any (filter, branch) step of `template` it lacks inserted as a no-op.
+
+    A field filtered before a step was added has no row for it; the step removed
+    nothing there, so its counts before and after are the previous step's after.
+    """
+    have = {(f, b): i for i, (f, b) in enumerate(zip(df['filter'], df['branch']))}
+    after = [c for c in df.columns if c.startswith('n_') and c.endswith('_after')]
+    rows, prev = [], None
+    for f, b in zip(template['filter'], template['branch']):
+        if (f, b) in have:
+            row = df.iloc[have[(f, b)]].copy()
+        else:
+            row = prev.copy()
+            row['filter'], row['branch'] = f, b
+            for c in after:
+                row[c.replace('_after', '_before')] = prev[c]
+        rows.append(row); prev = row
+    return pd.DataFrame(rows).reset_index(drop=True)
+
+
 def combine_stats(stats_dfs: Iterable[pd.DataFrame]) -> pd.DataFrame:
     """Function to combine (sum) the stats of several given flowchart dataframes."""
+    # Fields run before a filter step was added lack its row; fill it in as a no-op
+    template = max(stats_dfs, key=len)
+    stats_dfs = [df if len(df) == len(template) else _with_passthrough_rows(df, template) for df in stats_dfs]
     combined_df = stats_dfs[0]
 
     # Ensure that the filters and branches of each df are the same
@@ -1478,19 +1588,19 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
         ],
         inplace=True,
     )
+    # Merging duplicates runs on the combined tables, after every filter of its branch
+    is_merge = stats_df.index.get_level_values('filter') == 'merge_duplicates'
+    order = np.lexsort((is_merge, stats_df.index.get_level_values('branch')))  # stable: keeps the order above
+    stats_df = stats_df.iloc[order]
 
-    # Try to automatically detect a decision structure in the graph
-    if decision is None:
-        all_branches = stats_df.index.get_level_values('branch')
+    # The 1-3" association splits off the wide-association branch ('in_both'); without it, one chain
+    all_branches = stats_df.index.get_level_values('branch')
+    if decision is None and 'in_both' in all_branches:
         no_branch = all_branches[~all_branches.isin(['in_both', ''])]
-        if len(no_branch) == 0:
-            no_branch = None
-        else:
-            no_branch = no_branch[0]
         decision = {
-            'text': r'Within 1-3$^{\prime\prime}$',
+            'text': 'PS1 source\n1–3$^{\\prime\\prime}$ away',
             'yes': 'in_both',
-            'no': no_branch,
+            'no': no_branch[0] if len(no_branch) else None,
         }
 
     with schemdraw.Drawing(show=False) as d:
@@ -1529,31 +1639,21 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
                 index={lab: lab.replace('n_', '').replace('_after', '') for lab in after_labs}
             ).astype(int).to_dict()
 
-            # Deal with decisions in the graph
-            if branch in decision.values() and not branched:
-                decision_text = decision['text']
-                yes_counts = stats_df.loc[(slice(None), decision['yes']), before_labs].iloc[0].rename(
-                    index={
-                        lab: lab.replace('n_', '').replace('_after', '').replace('_before', '') for lab in before_labs
-                    }
-                ).astype(int).to_dict()
-                no_counts = stats_df.loc[(slice(None), decision['no']), before_labs].iloc[0].rename(
-                    index={
-                        lab: lab.replace('n_', '').replace('_after', '').replace('_before', '') for lab in before_labs
-                    }
-                ).astype(int).to_dict()
+            # Draw the decision before the first branched step, then start each branch from its box
+            if decision is not None and branch in (decision['yes'], decision['no']) and not branched:
+                def _branch_counts(b):
+                    first = stats_df.loc[(slice(None), b), unmerged_before_labs].iloc[0]
+                    return {lab[2]: int(v) for lab, v in first.items()}
                 d, previous_element, other_branch_element = add_decision_from_counts(
-                    decision_text,
-                    yes_counts,
-                    no_counts,
+                    decision['text'],
+                    _branch_counts(decision['yes']),
+                    _branch_counts(decision['no']),
                     d,
                     init_counts=init_counts,
                     previous_element=previous_element,
                 )
                 branched = True
-
-            # Handle whether we want to use the previous element, or start the other branch
-            if (prev_branch != branch) and (prev_branch != ''):
+            if branched and prev_branch != branch and prev_branch != '':
                 previous_element = other_branch_element
             prev_branch = branch
 
@@ -1564,15 +1664,18 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
                 'snr_filter': r'$\rm{SNR} > 5$',
                 'shape_filter': 'Axis ratio',
                 'psf_fit_filter': 'PSF fit',
-                'only_big_dmag': r'$\Delta \rm{mag} > 5 \sigma$',
-                'at_least_n_bands': r'$\Delta \rm{mag} > 5 \sigma$ in $>1$ band',
-                'at_least_n_big_dmag_bands': r'$\Delta \rm{mag} > 5 \sigma$ in $>1$ band',
+                'only_big_dmag': r'$\Delta \rm{mag} > 3 \sigma$',
+                'at_least_n_bands': r'$\Delta \rm{mag} > 3 \sigma$ in $>1$ band',
+                'at_least_n_big_dmag_bands': r'$\Delta \rm{mag} > 3 \sigma$ in $>1$ band',
+                'ps1_missing_region_filter': 'Outside PS1 DR2 missing regions',
                 'no_nearby_source_filter': r'$<5$ sources within $200^{\prime\prime}$',
                 'proper_motion_filter': 'Proper motion ' + r'$\frac{\rm{value}}{\sigma} < 5$',
                 'parallax_filter': 'Parallax ' + r'$\frac{\rm{value}}{\sigma} < 5$',
                 'pstarr_mag_less_than': 'Pan-STARRS ' + r'$\rm{mag} < 22.5$',
                 'dec_greater_than': r'$\rm{Dec} > -29.5$',
                 'pstarr_quality_filter': 'Pan-STARRS quality flags',
+                'pstarr_not_saturated': r'PS1 not saturated $+$ ZTF $\rm{mag} > 13.5$',
+                'merge_duplicates': r'Merge duplicates ($<1^{\prime\prime}$)',
             }
 
             if filter_name in filter_map:
@@ -1587,8 +1690,53 @@ def create_filter_flowchart(stats_df: pd.DataFrame, decision: Optional[Dict[str,
         return d
 
 
-def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool = False):
-    """Filter a field, save flowchart plots, and save candidates."""
+def filter_wide_association(
+        wide_tabs: Dict[str, Table],
+        all_quality_source_tabs: Dict[str, Table],
+        envelopes: Dict[str, Envelope_KDE],
+        sigma_boundary: float,
+        field_gaia_table: Table,
+        filter_result_dirpath: str,
+    ) -> pd.DataFrame:
+    """Run the in_both cuts on ZTF-only detections with a PS1 source 1-3" away, compared with that source.
+
+    Saves 1_wide_association.hdf5 and its filtered-out tables, and returns the stats on branch 'in_both'.
+    """
+    filters = Filters()
+    branch = 'in_both'
+    wide_tabs = {band: tab.copy() for band, tab in wide_tabs.items()}
+    wide_tabs = filters.filter(wide_tabs, 'pstarr_not_saturated', branch=branch)
+    wide_tabs, _, _ = filters.filter(wide_tabs, 'snr_filter', snr_min=5, both_cat=True, branch=branch)
+    wide_tabs, _ = filters.filter(wide_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
+
+    # Sources are built from the all-quality rows, so swap each detection's ZTF-only row for its associated row
+    field_catalogs = {}
+    for band, tab in all_quality_source_tabs.items():
+        wide = wide_tabs[band].copy() if band in wide_tabs else tab[:0]
+        for col in tab.colnames:  # an earlier Sources build band-prefixed some all-quality columns in place
+            for old in (col.replace(f'ZTF_{band}_', 'ZTF_', 1), col.replace(f'{band}_', '', 1)):
+                if col not in wide.colnames and old in wide.colnames:
+                    wide.rename_column(old, col)
+        replaced = np.isin(np.asarray(tab['ra']) + 1j * np.asarray(tab['dec']), np.asarray(wide['ra']) + 1j * np.asarray(wide['dec']))
+        field_catalogs[band] = vstack([tab[~replaced], wide[tab.colnames]])
+
+    merged_coords = get_merged_tab_coords(wide_tabs, max_arcsec=3.0)
+    sources = Sources(ras=merged_coords['ra'], decs=merged_coords['dec'], field_catalogs=field_catalogs, verbose=0)
+    sources = annotate_gaia(sources, field_gaia_table)
+    sources = filters.filter(sources, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, wide=True, branch=branch)
+    sources = filters.filter(sources, 'proper_motion_filter', branch=branch)
+    sources = filters.filter(sources, 'parallax_filter', branch=branch)
+
+    sources.save(os.path.join(filter_result_dirpath, '1_wide_association.hdf5'))
+    filters.save_filtered_out(filter_result_dirpath, '1_wide_association')
+    return filters.filter_stats
+
+
+def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool = False, wide_only: bool = False):
+    """Filter a field, save flowchart plots, and save candidates.
+
+    wide_only saves just the filter stats and the wide-association outputs (a rerun of that branch alone).
+    """
     filter_result_dirpath = os.path.join(get_data_path(), f'{FILTER_RESULT_DIR}/{field_name}')
     if os.path.exists(filter_result_dirpath) and not overwrite:
         print(f'Field {field_name} already exists. Use `overwrite=True` to overwrite it.')
@@ -1685,11 +1833,12 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'shape_filter')
     all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'pstarr_not_saturated')
     all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'psf_fit_filter')
-    all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'dec_greater_than', min_dec=min_dec)
+    # all_quality_source_tabs = _qfilters.filter(all_quality_source_tabs, 'dec_greater_than', min_dec=min_dec)  # dec cut disabled (plan_filter_review.md #13): applied by hand afterwards
 
     # Build (or load cached) KDE envelopes from quality-filtered sources
     in_both_quality_tabs = {band: tab[tab['Catalog_Flag'] == 0] for band, tab in all_quality_source_tabs.items()}
     envelopes = load_or_build_kde_envelopes(field_name, in_both_quality_tabs)
+    annotate_dmag_sigma(all_quality_source_tabs, envelopes)  # candidate rows take each band's sigma from these (#14)
     del in_both_quality_tabs
     sigma_boundary = 3.0
 
@@ -1710,7 +1859,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     tabs = filters.filter(tabs, 'psf_fit_filter')
 
     # Drop sources with dec < -29.5
-    tabs = filters.filter(tabs, 'dec_greater_than', min_dec=min_dec)
+    # tabs = filters.filter(tabs, 'dec_greater_than', min_dec=min_dec)  # dec cut disabled (plan_filter_review.md #13): applied by hand afterwards
 
     # Drop all sources with snr < 5
     tabs, ztf_tabs_low_snr, pstarr_tabs_low_snr = filters.filter(tabs, 'snr_filter', snr_min=5, both_cat=True)
@@ -1721,6 +1870,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Converting to sources
     merged_coords = get_merged_tab_coords(tabs)
     sources = Sources(ras=merged_coords['ra'], decs=merged_coords['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
+    sources = annotate_gaia(sources, field_gaia_table)
 
     # Check for big dmag in >1 bands
     sources = filters.filter(sources, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes)
@@ -1730,19 +1880,20 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
         sources.save(os.path.join(filter_result_dirpath, f'0_pre_gaia.ecsv'))
 
     # Check for proper motion
-    sources = filters.filter(sources, 'proper_motion_filter', gaia_table=field_gaia_table)
+    sources = filters.filter(sources, 'proper_motion_filter')
 
     # Check for parallax
-    sources = filters.filter(sources, 'parallax_filter', gaia_table=field_gaia_table)
+    sources = filters.filter(sources, 'parallax_filter')
     #---------------------------------------------------------------#
 
     # Save the sources and flowchart figure
-    sources.save(os.path.join(filter_result_dirpath, f'0.hdf5'))
-    d = create_filter_flowchart(filters.filter_stats)
-    d.save(os.path.join(filter_result_dirpath, '0_flowchart.pdf'))
+    if not wide_only:
+        sources.save(os.path.join(filter_result_dirpath, f'0.hdf5'))
+        d = create_filter_flowchart(filters.filter_stats)
+        d.save(os.path.join(filter_result_dirpath, '0_flowchart.pdf'))
 
-    # Save the filtered out tables
-    filters.save_filtered_out(filter_result_dirpath, 0)
+        # Save the filtered out tables
+        filters.save_filtered_out(filter_result_dirpath, 0)
     del tabs
 
     ################################################################################
@@ -1784,45 +1935,17 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     in_ztf_tabs = filters.filter(in_ztf_tabs, 'psf_fit_filter')
 
     # Drop sources with dec < -29.5
-    in_ztf_tabs = filters.filter(in_ztf_tabs, 'dec_greater_than', min_dec=min_dec)
+    # in_ztf_tabs = filters.filter(in_ztf_tabs, 'dec_greater_than', min_dec=min_dec)  # dec cut disabled (plan_filter_review.md #13): applied by hand afterwards
 
     # Double check ZTF sources that are a little more than 1 arcsec from PanSTARRS sources
-    min_sep, max_sep = 1.0, 3.0
-    in_both_tabs = {}
-    for band, tab in in_ztf_tabs.items():
-        in_both_tabs[band], in_ztf_tabs[band] = associate_in_btwn_distance(in_ztf_tabs[band], in_pstarr_tabs[band], min_sep=min_sep, max_sep=max_sep)
-        print(f'Associated {len(in_both_tabs[band])} / {len(in_ztf_tabs[band]) + len(in_both_tabs[band])} more sources in {band} band between {min_sep} and {max_sep} from eachother.')
+    # Divert detections with a PS1 source 1-3" away to the wide-association branch
+    in_ztf_tabs = filters.filter(in_ztf_tabs, 'ps1_offset_counterpart_filter', pstarr_tabs=in_pstarr_tabs, min_sep=1.0, max_sep=3.0)
 
-    ######################################################################
-    ##### DEAL WITH THE SOURCES THAT ARE POTENTIALLY IN BOTH CATALOGS#####
-    ######################################################################
-    branch = 'in_both'        
-
-    # Drop all sources with snr < 5
-    in_both_tabs = filters.filter(in_both_tabs, 'snr_filter', snr_min=5, branch=branch)
-    
-    # Delta mag > n sigma
-    for band in in_both_tabs.keys():
-        in_both_tabs[band]['Catalog_Flag'] = 0
-    in_both_tabs, _ = filters.filter(in_both_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
-
-    # Converting to sources
-    merged_coords_in_both = get_merged_tab_coords(in_both_tabs, max_arcsec=3.0)
-    sources_in_both = Sources(ras=merged_coords_in_both['ra'], decs=merged_coords_in_both['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
-
-    # Check for big dmag in >1 bands
-    sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
-
-    # Store pre-gaia filteration if requested
-    if store_pre_gaia:
-        sources_in_both.save(os.path.join(filter_result_dirpath, f'1_in_both_pre_gaia.ecsv'))
-
-    # Check for proper motion
-    sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch, gaia_table=field_gaia_table)
-
-    # Check for parallax
-    sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch, gaia_table=field_gaia_table)
-    sources_in_both.save(os.path.join(filter_result_dirpath, f'1_wide_association.ecsv'))
+    # The diverted detections, evaluated against that PS1 source; drawn as the flowchart's other branch and
+    # saved as 1_wide_association.
+    diverted = getattr(filters, 'diverted', {band: tab[:0] for band, tab in in_ztf_tabs.items()})
+    filters.filter_stats = pd.concat([filters.filter_stats, filter_wide_association(
+        diverted, all_quality_source_tabs, envelopes, sigma_boundary, field_gaia_table, filter_result_dirpath)])
 
     ######################################################################
     ##### DEAL WITH THE SOURCES THAT ARE NOT IN BOTH CATALOGS#####
@@ -1835,6 +1958,7 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Converting to sources
     merged_coords_in_ztf = get_merged_tab_coords(in_ztf_tabs, max_arcsec=3.0)
     sources_in_ztf = Sources(ras=merged_coords_in_ztf['ra'], decs=merged_coords_in_ztf['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
+    sources_in_ztf = annotate_gaia(sources_in_ztf, field_gaia_table)
 
     # Check for big dmag in >1 bands
     sources_in_ztf = filters.filter(sources_in_ztf, 'at_least_n_big_dmag_bands', catalog='in_ztf', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
@@ -1842,159 +1966,169 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     # Check for big dmag in >1 bands
     sources_in_ztf = filters.filter(sources_in_ztf, 'no_nearby_source_filter', n_nearby_max=5, branch=branch)
 
+    # Drop sources in the regions PS1 DR2 has no catalog for. After no_nearby: the gap floods
+    # are what make no_nearby remove their edge sources just outside MAST's boxes.
+    sources_in_ztf = filters.filter(sources_in_ztf, 'ps1_missing_region_filter', branch=branch)
+
     # Store pre-gaia filteration if requested
     if store_pre_gaia:
         sources_in_ztf.save(os.path.join(filter_result_dirpath, f'1_pre_gaia.ecsv'))
 
     # Check for proper motion
-    sources_in_ztf = filters.filter(sources_in_ztf, 'proper_motion_filter', branch=branch, gaia_table=field_gaia_table)
+    sources_in_ztf = filters.filter(sources_in_ztf, 'proper_motion_filter', branch=branch)
 
     # Check for parallax
-    sources_in_ztf = filters.filter(sources_in_ztf, 'parallax_filter', branch=branch, gaia_table=field_gaia_table)
+    sources_in_ztf = filters.filter(sources_in_ztf, 'parallax_filter', branch=branch)
     #---------------------------------------------------------------#
 
     # Save the sources and flowchart figure
-    sources_in_ztf.save(os.path.join(filter_result_dirpath, f'1.hdf5'))
-    d = create_filter_flowchart(filters.filter_stats)
-    d.save(os.path.join(filter_result_dirpath, '1_flowchart.pdf'))
+    if not wide_only:
+        sources_in_ztf.save(os.path.join(filter_result_dirpath, f'1.hdf5'))
+        d = create_filter_flowchart(filters.filter_stats)
+        d.save(os.path.join(filter_result_dirpath, '1_flowchart.pdf'))
 
-    # Save the filtered out tables
-    filters.save_filtered_out(filter_result_dirpath, 1)
-    del in_ztf_tabs, in_pstarr_tabs, in_both_tabs, sources_in_both, sources_in_ztf
+        # Save the filtered out tables
+        filters.save_filtered_out(filter_result_dirpath, 1)
+    del in_ztf_tabs, in_pstarr_tabs, sources_in_ztf
 
-    ################################################################################
-    ################################################################################
-    ############### FILTERING FOR SOURCES DETECTED IN PAN-STARRS ONLY ###############
-    ################################################################################
-    ################################################################################
-    filters = Filters(filter_stat_fname=os.path.join(filter_result_dirpath, '2_filter_stats.csv'))
-    print(f'Building flowchart for {CATALOG_KEY[2]} graph...')
-    in_ztf_tabs = {band: tab[tab['Catalog_Flag'] == 1] for band, tab in tables.items()}
-    in_pstarr_tabs = {band: tab[tab['Catalog_Flag'] == 2] for band, tab in tables.items()}
-
-    # Concat SNR < 5 non-detections
-    in_ztf_tabs = {band: vstack([in_ztf_tabs[band], ztf_tabs_low_snr[band]]) for band in in_ztf_tabs.keys()}
-    in_pstarr_tabs = {band: vstack([in_pstarr_tabs[band], pstarr_tabs_low_snr[band]]) for band in in_ztf_tabs.keys()}
+    # PS1-only branch disabled: nothing downstream uses these sources (they were never combined).
     del ztf_tabs_low_snr, pstarr_tabs_low_snr
 
-    # Set the Catalog_Flag columns now that we added the low SNR sources
-    for band in in_ztf_tabs.keys():
-        in_ztf_tabs[band]['Catalog_Flag'] = 1
-        in_pstarr_tabs[band]['Catalog_Flag'] = 2
+    # ################################################################################
+    # ################################################################################
+    # ############### FILTERING FOR SOURCES DETECTED IN PAN-STARRS ONLY ###############
+    # ################################################################################
+    # ################################################################################
+    # filters = Filters(filter_stat_fname=os.path.join(filter_result_dirpath, '2_filter_stats.csv'))
+    # print(f'Building flowchart for {CATALOG_KEY[2]} graph...')
+    # in_ztf_tabs = {band: tab[tab['Catalog_Flag'] == 1] for band, tab in tables.items()}
+    # in_pstarr_tabs = {band: tab[tab['Catalog_Flag'] == 2] for band, tab in tables.items()}
 
-    #---------------------------------------------------------------#
-    # Initial stats
-    init_counts = {band: len(tab) for band, tab in in_pstarr_tabs.items()}
+    # # Concat SNR < 5 non-detections
+    # in_ztf_tabs = {band: vstack([in_ztf_tabs[band], ztf_tabs_low_snr[band]]) for band in in_ztf_tabs.keys()}
+    # in_pstarr_tabs = {band: vstack([in_pstarr_tabs[band], pstarr_tabs_low_snr[band]]) for band in in_ztf_tabs.keys()}
+    # del ztf_tabs_low_snr, pstarr_tabs_low_snr
 
-    # Make sure that the Pan-STARRS magnitude is less than max_mag
-    max_mag = 22.5
-    in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'pstarr_mag_less_than', max_mag=max_mag)
+    # # Set the Catalog_Flag columns now that we added the low SNR sources
+    # for band in in_ztf_tabs.keys():
+    #     in_ztf_tabs[band]['Catalog_Flag'] = 1
+    #     in_pstarr_tabs[band]['Catalog_Flag'] = 2
 
-    # Pan-STARRS not saturated
-    in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'pstarr_not_saturated')
+    # #---------------------------------------------------------------#
+    # # Initial stats
+    # init_counts = {band: len(tab) for band, tab in in_pstarr_tabs.items()}
 
-    # Pan-STARRS quality filter
-    in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'pstarr_quality_filter')
+    # # Make sure that the Pan-STARRS magnitude is less than max_mag
+    # max_mag = 22.5
+    # in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'pstarr_mag_less_than', max_mag=max_mag)
 
-    # Drop all sources with snr < 5
-    in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'snr_filter', snr_min=5)
+    # # Pan-STARRS not saturated
+    # in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'pstarr_not_saturated')
 
-    # Drop sources with dec < -29.5
-    in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'dec_greater_than', min_dec=min_dec)
+    # # Pan-STARRS quality filter
+    # in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'pstarr_quality_filter')
 
-    # Double check ZTF sources that are a little more than 1 arcsec from PanSTARRS sources
-    min_sep, max_sep = 1.0, 3.0
-    in_both_tabs = {}
-    for band, tab in in_pstarr_tabs.items():
-        in_both_tabs[band], in_pstarr_tabs[band] = associate_in_btwn_distance(in_pstarr_tabs[band], in_ztf_tabs[band], min_sep=min_sep, max_sep=max_sep)
-        print(f'Associated {len(in_both_tabs[band])} / {len(in_pstarr_tabs[band]) + len(in_both_tabs[band])} more sources in {band} band between {min_sep} and {max_sep} from eachother.')
+    # # Drop all sources with snr < 5
+    # in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'snr_filter', snr_min=5)
 
-    ######################################################################
-    ##### DEAL WITH THE SOURCES THAT ARE POTENTIALLY IN BOTH CATALOGS#####
-    branch = 'in_both'
+    # # Drop sources with dec < -29.5
+    # # in_pstarr_tabs = filters.filter(in_pstarr_tabs, 'dec_greater_than', min_dec=min_dec)  # dec cut disabled (plan_filter_review.md #13): applied by hand afterwards
 
-    for band in in_pstarr_tabs.keys():
-        in_both_tabs[band]['Catalog_Flag'] = 0
+    # # Double check ZTF sources that are a little more than 1 arcsec from PanSTARRS sources
+    # min_sep, max_sep = 1.0, 3.0
+    # in_both_tabs = {}
+    # for band, tab in in_pstarr_tabs.items():
+    #     in_both_tabs[band], in_pstarr_tabs[band] = associate_in_btwn_distance(in_pstarr_tabs[band], in_ztf_tabs[band], min_sep=min_sep, max_sep=max_sep)
+    #     print(f'Associated {len(in_both_tabs[band])} / {len(in_pstarr_tabs[band]) + len(in_both_tabs[band])} more sources in {band} band between {min_sep} and {max_sep} from eachother.')
 
-    # Drop all sources with bad SEP extraction flags
-    in_both_tabs = filters.filter(in_both_tabs, 'sep_extraction_filter', branch=branch)
+    # # Wide-association evaluation disabled (plan_filter_review.md #4): it never worked and only found extended, offset or otherwise uninteresting objects. The 1-3" diversion above stays.
+    # # ######################################################################
+    # # ##### DEAL WITH THE SOURCES THAT ARE POTENTIALLY IN BOTH CATALOGS#####
+    # # branch = 'in_both'
 
-    # Drop all sources with snr < 5
-    in_both_tabs = filters.filter(in_both_tabs, 'snr_filter', snr_min=5, branch=branch)
+    # # for band in in_pstarr_tabs.keys():
+    # #     in_both_tabs[band]['Catalog_Flag'] = 0
 
-    # Axis ratio filter
-    in_both_tabs = filters.filter(in_both_tabs, 'shape_filter', branch=branch)
+    # # # Drop all sources with bad SEP extraction flags
+    # # in_both_tabs = filters.filter(in_both_tabs, 'sep_extraction_filter', branch=branch)
 
-    # Drop bad PSF fits
-    in_both_tabs = filters.filter(in_both_tabs, 'psf_fit_filter', branch=branch)
+    # # # Drop all sources with snr < 5
+    # # in_both_tabs = filters.filter(in_both_tabs, 'snr_filter', snr_min=5, branch=branch)
 
-    # Delta mag > n sigma
-    in_both_tabs, _ = filters.filter(in_both_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
+    # # # Axis ratio filter
+    # # in_both_tabs = filters.filter(in_both_tabs, 'shape_filter', branch=branch)
 
-    # Converting to sources
-    merged_coords_in_both = get_merged_tab_coords(in_both_tabs, max_arcsec=3.0)
-    sources_in_both = Sources(ras=merged_coords_in_both['ra'], decs=merged_coords_in_both['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
+    # # # Drop bad PSF fits
+    # # in_both_tabs = filters.filter(in_both_tabs, 'psf_fit_filter', branch=branch)
 
-    # Check for big dmag in >1 bands
-    sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
+    # # # Delta mag > n sigma
+    # # in_both_tabs, _ = filters.filter(in_both_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
-    # Store pre-gaia filtration if requested
-    if store_pre_gaia:
-        sources_in_both.save(os.path.join(filter_result_dirpath, f'2_in_both_pre_gaia.ecsv'))
+    # # # Converting to sources
+    # # merged_coords_in_both = get_merged_tab_coords(in_both_tabs, max_arcsec=3.0)
+    # # sources_in_both = Sources(ras=merged_coords_in_both['ra'], decs=merged_coords_in_both['dec'], field_catalogs=all_quality_source_tabs, verbose=0)
+    # # sources_in_both = annotate_gaia(sources_in_both, field_gaia_table)
 
-    # Check for proper motion
-    sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch, gaia_table=field_gaia_table)
+    # # # Check for big dmag in >1 bands
+    # # sources_in_both = filters.filter(sources_in_both, 'at_least_n_big_dmag_bands', catalog='in_both', n=2, sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
-    # Check for parallax
-    sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch, gaia_table=field_gaia_table)
+    # # # Store pre-gaia filtration if requested
+    # # if store_pre_gaia:
+    # #     sources_in_both.save(os.path.join(filter_result_dirpath, f'2_in_both_pre_gaia.ecsv'))
 
-    sources_in_both.save(os.path.join(filter_result_dirpath, f'2_wide_association.ecsv'))
+    # # # Check for proper motion
+    # # sources_in_both = filters.filter(sources_in_both, 'proper_motion_filter', branch=branch)
 
-    ######################################################################
-    ##### DEAL WITH THE SOURCES THAT ARE NOT IN BOTH CATALOGS#####
-    branch = 'in_pstarr'
+    # # # Check for parallax
+    # # sources_in_both = filters.filter(sources_in_both, 'parallax_filter', branch=branch)
 
-    # Delta mag > n sigma
-    in_pstarr_tabs, _ = filters.filter(in_pstarr_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
+    # # sources_in_both.save(os.path.join(filter_result_dirpath, f'2_wide_association.ecsv'))
 
-    #### TESTING ####
-    # SAVE SO WE CAN SEE THE DATA
-    for band, tab in in_pstarr_tabs.items():
-        prepare_table_for_write(tab).write(os.path.join(filter_result_dirpath, f'2_{band}_test.ecsv'), overwrite=True)
+    # ######################################################################
+    # ##### DEAL WITH THE SOURCES THAT ARE NOT IN BOTH CATALOGS#####
+    # branch = 'in_pstarr'
 
-    # # Converting to sources
-    # sources_in_pstarr: Dict[str, Sources] = {
-    #     band: Sources(ras=tab['ra'], decs=tab['dec'], field_catalogs=all_quality_source_tabs, verbose=0) for band, tab in in_pstarr_tabs.items()
-    # }
+    # # Delta mag > n sigma
+    # in_pstarr_tabs, _ = filters.filter(in_pstarr_tabs, 'only_big_dmag', sigma_boundary=sigma_boundary, envelopes=envelopes, branch=branch)
 
-    # # Check for big dmag in >1 bands
-    # sources_in_pstarr = filters.filter(sources_in_pstarr, 'at_least_n_bands', n=2, branch=branch)
-    # add_filt(f'Big dmag in\n>=2 bands', sources_in_pstarr, d, init_counts=init_counts)
+    # #### TESTING ####
+    # # SAVE SO WE CAN SEE THE DATA
+    # for band, tab in in_pstarr_tabs.items():
+    #     prepare_table_for_write(tab).write(os.path.join(filter_result_dirpath, f'2_{band}_test.ecsv'), overwrite=True)
 
-    # # Store pre-gaia filteration if requested
-    # if store_pre_gaia:
-    #     for band, srcs in sources_in_pstarr.items():
-    #         srcs.save(os.path.join(filter_result_dirpath, f'1_{band}_pre_gaia.ecsv'))
+    # # # Converting to sources
+    # # sources_in_pstarr: Dict[str, Sources] = {
+    # #     band: Sources(ras=tab['ra'], decs=tab['dec'], field_catalogs=all_quality_source_tabs, verbose=0) for band, tab in in_pstarr_tabs.items()
+    # # }
 
-    # # Check for proper motion
-    # sources_in_pstarr = filters.filter(sources_in_pstarr, 'proper_motion_filter', branch=branch)
-    # add_filt(f'Proper Motion', sources_in_pstarr, d, init_counts=init_counts)
+    # # # Check for big dmag in >1 bands
+    # # sources_in_pstarr = filters.filter(sources_in_pstarr, 'at_least_n_bands', n=2, branch=branch)
+    # # add_filt(f'Big dmag in\n>=2 bands', sources_in_pstarr, d, init_counts=init_counts)
 
-    # # Check for parallax
-    # sources_in_pstarr = filters.filter(sources_in_pstarr, 'parallax_filter', branch=branch)
-    # add_filt(f'Parallax', sources_in_pstarr, d, init_counts=init_counts)
-    #---------------------------------------------------------------#
+    # # # Store pre-gaia filteration if requested
+    # # if store_pre_gaia:
+    # #     for band, srcs in sources_in_pstarr.items():
+    # #         srcs.save(os.path.join(filter_result_dirpath, f'1_{band}_pre_gaia.ecsv'))
 
-    # Save the sources and flowchart figure
-    # sources_in_pstarr.save(os.path.join(filter_result_dirpath, f'1.ecsv'))
-    d = create_filter_flowchart(filters.filter_stats)
-    d.save(os.path.join(filter_result_dirpath, '2_flowchart.pdf'))
+    # # # Check for proper motion
+    # # sources_in_pstarr = filters.filter(sources_in_pstarr, 'proper_motion_filter', branch=branch)
+    # # add_filt(f'Proper Motion', sources_in_pstarr, d, init_counts=init_counts)
 
-    # Save the filtered out tables
-    filters.save_filtered_out(filter_result_dirpath, 2)
+    # # # Check for parallax
+    # # sources_in_pstarr = filters.filter(sources_in_pstarr, 'parallax_filter', branch=branch)
+    # # add_filt(f'Parallax', sources_in_pstarr, d, init_counts=init_counts)
+    # #---------------------------------------------------------------#
+
+    # # Save the sources and flowchart figure
+    # # sources_in_pstarr.save(os.path.join(filter_result_dirpath, f'1.ecsv'))
+    # d = create_filter_flowchart(filters.filter_stats)
+    # d.save(os.path.join(filter_result_dirpath, '2_flowchart.pdf'))
+
+    # # Save the filtered out tables
+    # filters.save_filtered_out(filter_result_dirpath, 2)
 
 
-def _filter_field_wrapper(field):
+def _filter_field_wrapper(field, wide_only: bool = False):
     print(f'Filtering field {field}...')
     # overwrite=False so a field whose output dir already exists is skipped rather than
     # rmtree'd. The check happens at field start, not from the list frozen at launch, so
@@ -2004,19 +2138,18 @@ def _filter_field_wrapper(field):
         field,
         overwrite=False,
         store_pre_gaia=False,
+        wide_only=wide_only,
     )
 
 def filter_fields(descending: bool = False):
     """Filter fields! Pass descending=True to work the list from the far end, so a second
     job can be run alongside an ascending one and meet it in the middle."""
-    # Fields imaged in all three bands — intersect the per-band npy lists so that
-    # we only run on gri fields and avoid KeyErrors in the i-band envelope lookup.
+    # Fields imaged in g and r (gri and g+r-only fields); i is the only band any field lacks
     data_path = get_data_path()
     g_fields = np.load(os.path.join(data_path, 'g_imaged_fields.npy'))
     r_fields = np.load(os.path.join(data_path, 'r_imaged_fields.npy'))
-    i_fields = np.load(os.path.join(data_path, 'i_imaged_fields.npy'))
-    gri_fields = np.intersect1d(np.intersect1d(g_fields, r_fields), i_fields)
-    fields = [str(f).zfill(6) for f in sorted(gri_fields)]
+    gr_fields = np.intersect1d(g_fields, r_fields)
+    fields = [str(f).zfill(6) for f in sorted(gr_fields)]
 
     fields = [f for f in fields if not os.path.exists(os.path.join(data_path, FILTER_RESULT_DIR, f, '2_flowchart.pdf'))]
     if descending:
@@ -2039,4 +2172,8 @@ def filter_fields(descending: bool = False):
 
 
 if __name__ == '__main__':
-    filter_fields(descending='--descending' in sys.argv)
+    # --field 000400 filters one field (used by the array job); otherwise work through every field
+    if '--field' in sys.argv:
+        _filter_field_wrapper(sys.argv[sys.argv.index('--field') + 1].zfill(6), wide_only='--wide-only' in sys.argv)
+    else:
+        filter_fields(descending='--descending' in sys.argv)

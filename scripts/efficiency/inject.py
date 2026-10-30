@@ -80,9 +80,46 @@ def inject_multiband(
             f'No reference images / EPSFs found for field {field} ccd{ccdid} q{quadrant}'
         )
 
-    # Draw injection coordinates safe for all band PSF half-widths
-    margin = max(d['hw'] for d in band_data.values()) + 2
+    # Draw injection coordinates clear of the NaN border on each edge.
+    # We compute the border width from the union NaN mask across all bands:
+    # the border extends inward until a row/column is mostly valid (< 50% NaN).
+    # This avoids the dead CCD edges while still allowing injection into interior
+    # NaN patches (saturated stars, bad columns), which are real sky positions
+    # whose losses naturally show up in the efficiency measurement.
     ref_img = next(iter(band_data.values()))['img']
+
+    union_nan = np.zeros(ref_img.shape, dtype=bool)
+    for band in band_data:
+        mask_path = os.path.join(outdir, f'nan_masks/ZTF_{band}_nan_mask.npy')
+        if os.path.exists(mask_path):
+            band_nan = np.load(mask_path)
+            if band_nan.shape == union_nan.shape:
+                union_nan |= band_nan
+
+    def _find_nan_border_margin(mask, threshold=0.005):
+        """Smallest margin m where the perimeter ring at m is < threshold NaN.
+
+        Scans inward one pixel at a time and checks the NaN fraction of the
+        full 1-pixel-wide perimeter of the rectangle [m:-m, m:-m].  The fuzzy
+        CCD edge NaN keeps the ring fraction high until we're past it; once
+        clear, the fraction settles to the interior baseline (~0.27%), well
+        below the 0.5% threshold.
+        """
+        n_rows, n_cols = mask.shape
+        for m in range(min(n_rows, n_cols) // 2):
+            top    = mask[m,          m:n_cols - m]
+            bottom = mask[n_rows-m-1, m:n_cols - m]
+            left   = mask[m+1:n_rows-m-1, m]
+            right  = mask[m+1:n_rows-m-1, n_cols-m-1]
+            ring   = np.concatenate([top, bottom, left, right])
+            if ring.mean() < threshold:
+                return m
+        return min(n_rows, n_cols) // 2
+
+    psf_margin = max(d['hw'] for d in band_data.values()) + 2
+    nan_border = _find_nan_border_margin(union_nan)
+    margin = nan_border + psf_margin
+
     xs = np.random.randint(low=margin, high=ref_img.shape[0] - margin, size=n_injected)
     ys = np.random.randint(low=margin, high=ref_img.shape[1] - margin, size=n_injected)
     coords = np.vstack((xs, ys)).T  # shape (n_injected, 2): (row, col)

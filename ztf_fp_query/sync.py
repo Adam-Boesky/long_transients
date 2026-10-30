@@ -1,107 +1,78 @@
 import os
 import re
 import linecache
-import numpy as np
+import tempfile
 import pandas as pd
 import requests
 
 from typing import List
 
-from Extracting.utils import get_data_path
+from Source_Analysis import followup
 from ztf_fp_query.constants import HTTP_AUTH, DOWNLOAD_BASE_URL
 from ztf_fp_query.submit import query_recent_jobs
 
-_MAP_FNAME = 'source_map.csv'
 _LC_PATTERN = re.compile(r'.+/(.+\.txt)$')
 _RA_PATTERN = re.compile(r'Requested input R\.A\. = ([\d.]+) degrees')
 _DEC_PATTERN = re.compile(r'Requested input Dec\. = (-?[\d.]+) degrees')
 
 
-def get_data_dir() -> str:
-    return os.path.join(get_data_path(), 'followup', 'ztf_forced_photometry')
-
-
-def get_map_path() -> str:
-    return os.path.join(get_data_dir(), _MAP_FNAME)
-
-
-def load_map() -> pd.DataFrame:
-    """Load the local (ra, dec) -> filename index, creating it if absent."""
-    path = get_map_path()
-    if os.path.exists(path):
-        return pd.read_csv(path)
-    return pd.DataFrame({'ra': [], 'dec': [], 'fname': []})
-
-
-def _save_map(map_df: pd.DataFrame) -> None:
-    map_df.to_csv(get_map_path(), index=False)
-
-
 def _parse_ra_dec(fpath: str) -> tuple[float, float]:
     """Read ra and dec from the header of a ZFPS ASCII lightcurve file."""
-    ra_line = linecache.getline(fpath, 4)
-    dec_line = linecache.getline(fpath, 5)
-    ra_match = _RA_PATTERN.search(ra_line)
-    dec_match = _DEC_PATTERN.search(dec_line)
+    linecache.checkcache(fpath)
+    ra_match = _RA_PATTERN.search(linecache.getline(fpath, 4))
+    dec_match = _DEC_PATTERN.search(linecache.getline(fpath, 5))
     ra = float(ra_match.group(1)) if ra_match else None
     dec = float(dec_match.group(1)) if dec_match else None
     return ra, dec
 
 
-def rebuild_map() -> pd.DataFrame:
-    """Rebuild the index from all .txt files currently in the data directory."""
-    data_dir = get_data_dir()
+def load_map() -> pd.DataFrame:
+    """Every ZFPS file in the target directories: requested ra, dec, fname, path, slug."""
     rows = []
-    for fname in os.listdir(data_dir):
-        if fname.endswith('.txt'):
-            ra, dec = _parse_ra_dec(os.path.join(data_dir, fname))
-            rows.append({'ra': ra, 'dec': dec, 'fname': fname})
-    map_df = pd.DataFrame(rows)
-    _save_map(map_df)
-    return map_df
+    for t in followup.iter_targets():
+        for p in t.zfps_files:
+            ra, dec = _parse_ra_dec(str(p))
+            rows.append({'ra': ra, 'dec': dec, 'fname': p.name, 'path': str(p), 'slug': t.slug})
+    return pd.DataFrame(rows, columns=['ra', 'dec', 'fname', 'path', 'slug'])
 
 
-def sync(outdir: str = None) -> List[str]:
-    """Download all completed jobs from the ZTF service and update the local index.
+def sync() -> List[str]:
+    """Download completed jobs not already on disk into their follow-up target's zfps/.
 
-    Returns the list of file paths that were downloaded (skips already-present files).
+    Only jobs requested at an existing target's position are kept: make the target
+    (`followup.create_target`) first. Returns the paths of the files downloaded.
     """
-    if outdir is None:
-        outdir = get_data_dir()
-    os.makedirs(outdir, exist_ok=True)
+    recent_df = query_recent_jobs().dropna(subset=['lightcurve'])
+    have = set(load_map()['fname'])
 
-    # Get completed jobs from the service
-    recent_df = query_recent_jobs()
-    lc_paths = recent_df['lightcurve'].dropna().tolist()
-
-    map_df = load_map()
     downloaded = []
-
-    for lc_path in lc_paths:
+    for _, job in recent_df.iterrows():
+        lc_path = job['lightcurve']
         match = _LC_PATTERN.match(lc_path)
         if not match:
             print(f'Could not parse filename from: {lc_path}')
             continue
         fname = match.group(1)
-        fpath = os.path.join(outdir, fname)
-
-        if os.path.exists(fpath):
+        if fname in have:
+            continue
+        target = followup.nearest_target(float(job['ra']), float(job['dec']))
+        if target is None:
+            print(f'Skipping {fname}: no follow-up target at ({job["ra"]}, {job["dec"]})')
             continue
 
         url = DOWNLOAD_BASE_URL + lc_path
         response = requests.get(url, auth=HTTP_AUTH)
-        if response.status_code == 200:
-            with open(fpath, 'wb') as f:
-                f.write(response.content)
-            print(f'Downloaded: {fpath}')
-            downloaded.append(fpath)
-
-            # Add to map immediately after download
-            ra, dec = _parse_ra_dec(fpath)
-            new_row = pd.DataFrame([{'ra': ra, 'dec': dec, 'fname': fname}])
-            map_df = pd.concat([map_df.astype(new_row.dtypes), new_row], ignore_index=True)
-        else:
+        if response.status_code != 200:
             print(f'Failed to download {url}: {response.status_code} {response.reason}')
+            continue
+        dest = target.path / followup.ZFPS_DIR / fname
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Write to a temporary name first, so a failed write never leaves a partial file.
+        with tempfile.NamedTemporaryFile(dir=dest.parent, suffix='.part', delete=False) as f:
+            f.write(response.content)
+        os.replace(f.name, dest)
+        print(f'Downloaded: {dest}')
+        downloaded.append(str(dest))
+        have.add(fname)
 
-    _save_map(map_df)
     return downloaded

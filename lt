@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# Manage the long-transients site: API, frontend, database builds, light-curve pulls.
+#
+#   ./lt up              build the frontend and serve everything from the API
+#   ./lt dev             start the API and the Vite dev server (hot reload)
+#   ./lt down            stop the API and this project's frontend server
+#   ./lt status          what is running, and how current the database is
+#   ./lt logs [what]     tail a log (api|web|ztf|irsa|build)
+#
+#   ./lt build           rebuild the serving DB only            (~40 min)
+#   ./lt build-all       catalog tier + light curves + serving + colours (~50 min)
+#   ./lt build-colors    just the WISE W1-W2 columns
+#   ./lt pull [catalog]  resume light-curve pulling (default: ztf and irsa)
+#   ./lt stop-pull       stop the pullers
+#
+# Everything is idempotent: starting something already up is a no-op, and the
+# pullers resume from their completed chunks rather than starting over.
+set -uo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WEB="$REPO/web"
+ENV_NAME="long_transients"
+API_PORT=8000
+DEV_PORT=5173     # vite dev only; `up` serves from the API itself
+LOGS="$REPO/.lt-logs"
+
+# Where the databases live. `LT_DATA_DIR` wins if exported, else the one line
+# is read out of .env -- not sourced, because .env holds unquoted values with
+# spaces (`LT_ZTFORCE_LABEL=Run ztforce`) that a shell would try to execute.
+DB="${LT_DATA_DIR:-$(sed -n 's/^LT_DATA_DIR=//p' "$REPO/.env" 2>/dev/null | tail -1)}"
+DB="${DB:-$REPO/Data/db}"
+
+# This project's Vite, by path. A bare `vite` also matches the dev servers of
+# every other checkout on the machine, which `down` would then kill.
+VITE="$WEB/node_modules/.bin/vite"
+
+mkdir -p "$LOGS"
+run() { conda run --no-capture-output -n "$ENV_NAME" "$@"; }
+pid_of() { pgrep -f "$1" | grep -v "conda run" | head -1; }
+say() { printf '  %s\n' "$*"; }
+
+wait_http() {   # wait_http <url> <seconds>
+  local i=0
+  until curl -sf -o /dev/null "$1" 2>/dev/null; do
+    i=$((i+1)); [ "$i" -ge "${2:-30}" ] && return 1; sleep 1
+  done
+}
+
+start_api() {
+  if [ -n "$(pid_of 'uvicorn api.main')" ]; then say "api already up (:$API_PORT)"; return; fi
+  if [ ! -f "$DB/science.sqlite" ]; then
+    say "science.sqlite missing -- run './lt build' first"; return 1
+  fi
+  ( cd "$REPO" && nohup conda run --no-capture-output -n "$ENV_NAME" \
+      uvicorn api.main:app --host 127.0.0.1 --port "$API_PORT" \
+      > "$LOGS/api.log" 2>&1 < /dev/null & disown ) 2>/dev/null
+  if wait_http "http://127.0.0.1:$API_PORT/api/health" 40; then
+    say "api up      http://127.0.0.1:$API_PORT"
+  else
+    say "api FAILED to come up -- ./lt logs api"; return 1
+  fi
+}
+
+# Development only. There is no `preview` mode any more: the API serves
+# `web/dist` itself, so a second server for the built bundle tested a
+# configuration that is no longer the one being deployed.
+start_web_dev() {
+  if [ -n "$(pid_of "$VITE.*--port $DEV_PORT")" ]; then
+    say "web already up (:$DEV_PORT)"; return
+  fi
+  ( cd "$WEB" && nohup npm run dev -- --port "$DEV_PORT" --strictPort \
+      > "$LOGS/web.log" 2>&1 < /dev/null & disown ) 2>/dev/null
+  # localhost, not 127.0.0.1: Vite binds ::1, where the IPv4 literal does not
+  # reach it and the readiness check would time out on a server that is up.
+  if wait_http "http://localhost:$DEV_PORT/" 40; then
+    say "web up      http://localhost:$DEV_PORT   (dev, hot reload)"
+  else
+    say "web FAILED to come up -- ./lt logs web"; return 1
+  fi
+}
+
+build_web() {
+  say "building the frontend"
+  ( cd "$WEB" && npm run build >"$LOGS/web-build.log" 2>&1 ) \
+    || { say "build FAILED -- tail $LOGS/web-build.log"; return 1; }
+}
+
+# What a deploy is: compile the pages, then one process serving pages and data
+# together. Always rebuilds, because the API hands out whatever is in
+# `web/dist` and never checks whether it matches the source -- a frontend
+# change that was not rebuilt simply does not appear, with nothing to show
+# that anything is stale.
+cmd_up() {
+  build_web || return 1
+  start_api || return 1
+  say "serving     http://127.0.0.1:$API_PORT   (pages and data)"
+}
+
+cmd_down() {
+  for pat in 'uvicorn api.main' "$VITE"; do
+    local p; p="$(pid_of "$pat")"
+    if [ -n "$p" ]; then pkill -f "$pat" 2>/dev/null; say "stopped $pat"; fi
+  done
+  say "(pullers left alone -- './lt stop-pull' for those)"
+}
+
+cmd_status() {
+  echo "processes"
+  for spec in "uvicorn api.main:api" "$VITE:web" "source_db.lightcurves.ztf:ztf pull" \
+              "source_db.lightcurves.irsa:irsa pull" "build_serving_db:db build"; do
+    local pat="${spec%%:*}" name="${spec#*:}" p
+    p="$(pid_of "$pat")"
+    if [ -n "$p" ]; then printf '  %-12s up    pid %-7s %s\n' "$name" "$p" \
+      "$(ps -o etime= -p "$p" | tr -d ' ')"; else printf '  %-12s down\n' "$name"; fi
+  done
+  echo
+  echo "database"
+  if [ -f "$DB/release.json" ]; then
+    run python - "$DB" <<'PY' 2>/dev/null | grep -v CasJobs
+import json, sys, os
+d = json.load(open(os.path.join(sys.argv[1], 'release.json')))
+print(f"  release {d['release_id']}  {d['n_sources']:,} sources  built {d['built_at'][:16]}")
+PY
+  else
+    say "no release.json -- never built"
+  fi
+  if [ -f "$DB/science.sqlite" ]; then
+    say "science.sqlite $(du -h "$DB/science.sqlite" | cut -f1)"
+  else
+    say "science.sqlite MISSING -- the API cannot serve"
+  fi
+}
+
+cmd_build() {       # serving DB only
+  say "building science.sqlite (~40 min)"
+  ( cd "$REPO" && run python -u -m source_db.serving.build_serving_db ) 2>&1 \
+    | tee "$LOGS/build.log" | grep -viE 'casjobs|warn' | tail -5
+}
+
+cmd_build_all() {
+  say "1/4 catalog tier"
+  ( cd "$REPO" && run python -u -m source_db.build_catalog_tier ) 2>&1 \
+    | tee "$LOGS/build.log" | grep -viE 'casjobs|warn|PerformanceWarning|insert' | tail -8
+  say "2/4 light-curve table"
+  ( cd "$REPO" && run python -u -m source_db.build_lightcurve_table ) 2>&1 \
+    | tee -a "$LOGS/build.log" | tr '\r' '\n' | grep -viE 'casjobs|warn' | tail -3
+  say "3/4 serving DB"
+  cmd_build
+  say "4/4 WISE colours"
+  cmd_build_colors
+}
+
+# `wise_w1w2_mean` is the table's W1-W2 column and the sidebar's Stern filter,
+# and it is derived from the light curves -- so rebuilding those without this
+# leaves both reading the previous build's numbers, with no error anywhere.
+cmd_build_colors() {
+  ( cd "$REPO" && run python -u -m source_db.build_wise_colors ) 2>&1 \
+    | tee -a "$LOGS/build.log" | tr '\r' '\n' | grep -viE 'casjobs|warn' | tail -3
+}
+
+cmd_pull() {
+  local which="${1:-all}"
+  if [ "$which" = all ] || [ "$which" = ztf ]; then
+    if [ -n "$(pid_of 'source_db.lightcurves.ztf')" ]; then say "ztf pull already running"; else
+      ( cd "$REPO" && nohup conda run --no-capture-output -n "$ENV_NAME" \
+          python -u -m source_db.lightcurves.ztf > "$LOGS/ztf.log" 2>&1 < /dev/null & disown ) 2>/dev/null
+      say "ztf pull started   (resumes from completed chunks)"
+    fi
+  fi
+  if [ "$which" = all ] || [ "$which" = irsa ]; then
+    if [ -n "$(pid_of 'source_db.lightcurves.irsa')" ]; then say "irsa pull already running"; else
+      ( cd "$REPO" && nohup conda run --no-capture-output -n "$ENV_NAME" \
+          python -u -m source_db.lightcurves.irsa > "$LOGS/irsa.log" 2>&1 < /dev/null & disown ) 2>/dev/null
+      say "irsa pull started  (wise, neowise, ptf, gaia)"
+    fi
+  fi
+}
+
+cmd_stop_pull() { pkill -f 'source_db.lightcurves' 2>/dev/null && say "pullers stopped" || say "no pullers running"; }
+
+cmd_logs() {
+  case "${1:-api}" in
+    api)   tail -f "$LOGS/api.log" ;;
+    web)   tail -f "$LOGS/web.log" ;;
+    ztf)   tail -f "$LOGS/ztf.log" ;;
+    irsa)  tail -f "$LOGS/irsa.log" ;;
+    build) tail -f "$LOGS/build.log" ;;
+    *)     echo "logs: api|web|ztf|irsa|build" ;;
+  esac
+}
+
+case "${1:-status}" in
+  up)         cmd_up ;;
+  dev)        start_api && start_web_dev ;;
+  down)       cmd_down ;;
+  status)     cmd_status ;;
+  build)      cmd_build ;;
+  build-all)  cmd_build_all ;;
+  build-colors) cmd_build_colors ;;
+  pull)       cmd_pull "${2:-all}" ;;
+  stop-pull)  cmd_stop_pull ;;
+  logs)       cmd_logs "${2:-api}" ;;
+  *) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+esac
