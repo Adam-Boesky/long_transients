@@ -6,7 +6,7 @@ them cached. Lists are walked from the end (or, with --forward, from --skip onwa
 extraction, and each file is
 written to a temp name and renamed into place only once valid.
 
-    python -m Extracting.prefetch_deep_images part1.csv part2.csv part3.csv --threads 6
+    python tools/prefetch_deep_images.py part1.csv part2.csv part3.csv --threads 6
 """
 import argparse
 import os
@@ -16,13 +16,15 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from itertools import zip_longest
 
+import sys
+from pathlib import Path
+
 import pandas as pd
 import requests
 
-try:
-    from utils import get_data_path, get_credentials, fitscheck_valid
-except ModuleNotFoundError:
-    from .utils import get_data_path, get_credentials, fitscheck_valid
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from Extracting.utils import get_data_path, get_credentials, fitscheck_valid  # noqa: E402
 
 MAX_ATTEMPTS = 40
 _lock = threading.Lock()

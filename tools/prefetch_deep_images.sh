@@ -14,4 +14,4 @@ source activate long_transients2
 cd /n/home04/aboesky/berger/long_transients
 B=/n/holystore01/LABS/berger_lab/Users/aboesky/long_transients
 LISTS=${LISTS:-"$B/reextract_quadrants_10_13_2026_part1.csv $B/reextract_quadrants_10_13_2026_part2.csv $B/reextract_quadrants_10_13_2026_part3.csv"}
-python3 -u -m Extracting.prefetch_deep_images ${LISTS} --threads ${THREADS:-6} ${PREFETCH_ARGS}
+python3 -u tools/prefetch_deep_images.py ${LISTS} --threads ${THREADS:-6} ${PREFETCH_ARGS}
