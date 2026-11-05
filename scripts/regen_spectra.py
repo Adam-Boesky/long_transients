@@ -36,10 +36,8 @@ def plot_spectrum(txt_path, title, redshift, out_path):
     data = np.loadtxt(txt_path)
     wavelength, flux = data[:, 0], data[:, 1]
 
-    telluric = (wavelength > 7580) & (wavelength < 7680)
-    mask = ~telluric
-    if mask.sum() > 70:
-        w_bin, f_bin = _bin(wavelength[mask][50:-20], flux[mask][50:-20], 10)
+    if len(wavelength) > 70:
+        w_bin, f_bin = _bin(wavelength[50:-20], flux[50:-20], 10)
     else:
         w_bin, f_bin = _bin(wavelength, flux, 10)
 
@@ -49,6 +47,8 @@ def plot_spectrum(txt_path, title, redshift, out_path):
     ax.plot(w_bin / (1 + redshift), f_bin * 1e17,
             color="k", linewidth=1)
     xlim = ax.get_xlim()
+    for lo, hi in followup.TELLURIC_BANDS:
+        ax.axvspan(lo / (1 + redshift), hi / (1 + redshift), color="0.5", alpha=0.3, lw=0, zorder=-2)
 
     ref_lines = [
         (2799.117, "red",    "Mg II"),

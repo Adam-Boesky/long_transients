@@ -43,6 +43,9 @@ ZFPS_PLOT = 'zfps.pdf'
 # 1.5" to match Light_Curve.query_rad_arcsec and every other catalog here.
 MATCH_RADIUS_ARCSEC = 1.5
 
+# Strong telluric O2 bands (observed frame, B and A), shaded in spectrum plots rather than corrected.
+TELLURIC_BANDS = ((6860.0, 6950.0), (7590.0, 7680.0))
+
 # Keys written first, in this order; anything else follows.
 _KEY_ORDER = ('slug', 'ra', 'dec', 'source_uuid', 'list_id', 'redshift', 'notes', 'spectra')
 
