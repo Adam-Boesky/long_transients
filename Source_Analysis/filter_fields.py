@@ -1732,6 +1732,14 @@ def filter_wide_association(
     return filters.filter_stats
 
 
+# The two candidate tables (in_both, in_ztf) filter_field writes last; both present means it finished.
+FIELD_OUTPUTS = ('0.hdf5', '1.hdf5')
+
+
+def field_is_done(filter_result_dirpath: str) -> bool:
+    return all(os.path.exists(os.path.join(filter_result_dirpath, f)) for f in FIELD_OUTPUTS)
+
+
 def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool = False, wide_only: bool = False):
     """Filter a field, save flowchart plots, and save candidates.
 
@@ -1739,7 +1747,11 @@ def filter_field(field_name: str, overwrite: bool = False, store_pre_gaia: bool 
     """
     filter_result_dirpath = os.path.join(get_data_path(), f'{FILTER_RESULT_DIR}/{field_name}')
     if os.path.exists(filter_result_dirpath) and not overwrite:
-        print(f'Field {field_name} already exists. Use `overwrite=True` to overwrite it.')
+        if field_is_done(filter_result_dirpath):
+            print(f'Field {field_name} already filtered. Use `overwrite=True` to redo it.')
+        else:
+            print(f'Field {field_name} has a directory but not {FIELD_OUTPUTS}: another job may be on it, '
+                  f'or it crashed -- delete the directory or pass `overwrite=True` to redo it.')
         return
 
     # Claim the field before doing any work. An exists() check alone is not enough when two
@@ -2151,7 +2163,7 @@ def filter_fields(descending: bool = False):
     gr_fields = np.intersect1d(g_fields, r_fields)
     fields = [str(f).zfill(6) for f in sorted(gr_fields)]
 
-    fields = [f for f in fields if not os.path.exists(os.path.join(data_path, FILTER_RESULT_DIR, f, '2_flowchart.pdf'))]
+    fields = [f for f in fields if not field_is_done(os.path.join(data_path, FILTER_RESULT_DIR, f))]
     if descending:
         fields = fields[::-1]
     print(f'{len(fields)} fields to filter, {"descending" if descending else "ascending"} '
