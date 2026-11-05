@@ -140,11 +140,57 @@ def add_merge_duplicates_step(stats: pd.DataFrame, tab: Table, branch: str = Non
     return stats
 
 
+def _read_stats(path: str) -> pd.DataFrame:
+    """A combined stats CSV as combine_stats returns it: indexed by (filter, branch), '' for the shared chain."""
+    df = pd.read_csv(path)
+    df['branch'] = df['branch'].fillna('')
+    return df.set_index(['filter', 'branch'])
+
+
+def add_wide_branch(stats: pd.DataFrame, wide_stats_path: str) -> pd.DataFrame:
+    """The ZTF-only stats with the wide-association ('in_both') branch of a `--wide-only` run added.
+
+    The wide run repeats the shared chain and the ZTF-only branch, so every step both runs
+    have must agree to the count. The steps only the wide run has are added: its 'in_both'
+    branch with its merge step, and the 1-3" decision on the shared chain that starts it.
+    """
+    wide = _read_stats(wide_stats_path)
+    shared = stats.index.intersection(wide.index)
+    diff = (stats.loc[shared] != wide.loc[shared]).any(axis=1)
+    if diff.any():
+        raise ValueError(f'{wide_stats_path} disagrees with the ZTF-only stats at '
+                         f'{[tuple(i) for i in diff[diff].index]}')
+    return pd.concat([stats, wide.loc[wide.index.difference(stats.index)]])
+
+
+def default_wide_stats_path(out_subdir: str = 'combined') -> str | None:
+    """The wide-association stats beside the combined outputs, if a wide run has been combined there."""
+    path = os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, '1_wide_association_filter_stats.csv')
+    return path if os.path.exists(path) else None
+
+
+def redraw_flowchart(cat: int, out_subdir: str = 'combined', wide_stats_path: str | None = None) -> None:
+    """Rewrite `<cat>_filter_stats.csv` and `<cat>_flowchart.pdf` from the combined stats already on disk.
+
+    With `wide_stats_path` (cat 1 only), the wide-association branch is added first.
+    """
+    out_dir = os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir)
+    stats = _read_stats(os.path.join(out_dir, f'{cat}_filter_stats.csv'))
+    if wide_stats_path and cat == 1:
+        stats = add_wide_branch(stats, wide_stats_path)
+    stats.to_csv(os.path.join(out_dir, f'{cat}_filter_stats.csv'))
+    create_filter_flowchart(stats).save(os.path.join(out_dir, f'{cat}_flowchart.pdf'))
+
+
 def combine_filtered_tabs(add_filtered_out: bool = False,
                           processes: int = 1,
                           max_arcsec: float = filtered_out_summary.DEFAULT_MATCH_ARCSEC,
-                          out_subdir: str = 'combined'):
+                          out_subdir: str = 'combined',
+                          wide_stats_path: str | None = None):
     """Combine the per-field outputs into `combined/`.
+
+    `wide_stats_path` is the combined stats of a `--wide-only` run; its 'in_both' branch is
+    drawn into the ZTF-only flowchart (see `add_wide_branch`).
 
     With `add_filtered_out`, also reduce the per-field reject tables to nine
     `filtered_out_{catalog}_{band}` columns per surviving source. That has to
@@ -262,6 +308,8 @@ def combine_filtered_tabs(add_filtered_out: bool = False,
         os.makedirs(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir))
     for cat in (0, 1):  # PS1-only branch (2) disabled
         stat_dfs[cat] = add_merge_duplicates_step(stat_dfs[cat], tabs[cat])
+        if cat == 1 and wide_stats_path:
+            stat_dfs[cat] = add_wide_branch(stat_dfs[cat], wide_stats_path)
         stat_dfs[cat].to_csv(os.path.join(get_data_path(), FILTER_RESULTS_DIRNAME, out_subdir, f'{cat}_filter_stats.csv'))
         if cat != 2:  # TODO: temporary for bad pstarr extraction
             prepare_table_for_write(tabs[cat]).write(
@@ -297,10 +345,20 @@ def main():
     ap.add_argument('--max-arcsec', type=float,
                     default=filtered_out_summary.DEFAULT_MATCH_ARCSEC,
                     help='match radius, matching Source.max_arcsec')
+    ap.add_argument('--wide-stats', default=None,
+                    help='combined stats of a --wide-only run, drawn as the in_both branch of the '
+                         "ZTF-only flowchart (default: <out-subdir>/1_wide_association_filter_stats.csv if present)")
+    ap.add_argument('--redraw-only', action='store_true',
+                    help='only rewrite the combined stats CSVs and flowcharts from those already on disk')
     a = ap.parse_args()
+    wide_stats = a.wide_stats or default_wide_stats_path(a.out_subdir)
+    if a.redraw_only:
+        for cat in (0, 1):
+            redraw_flowchart(cat, a.out_subdir, wide_stats)
+        return
     combine_filtered_tabs(add_filtered_out=a.filtered_out,
                           processes=a.processes, max_arcsec=a.max_arcsec,
-                          out_subdir=a.out_subdir)
+                          out_subdir=a.out_subdir, wide_stats_path=wide_stats)
 
 
 if __name__ == '__main__':
