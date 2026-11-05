@@ -17,7 +17,7 @@ from astropy.visualization import simple_norm
 from matplotlib.patches import Ellipse
 from photutils.psf import PSFPhotometry, EPSFBuilder, EPSFFitter, EPSFStars, extract_stars
 
-from Extracting.utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
+from Extracting.utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME, coord_range_from_wcs
 # try:
 #     from utils import img_ab_mag_to_flux, img_flux_to_ab_mag, get_snr_from_mag, true_nearby, MASTCASJOBS, MAST_CREDENTIAL_FNAME
 # except ModuleNotFoundError:
@@ -288,6 +288,65 @@ class Source_Extractor():
 
         return mag, magerr, use_circle.astype(int), flag
 
+    def _build_epsf(self) -> None:
+        """Build and cache the EPSF model from PanSTARRS point source positions.
+
+        Requires set_sources_for_psf() and get_sources() to have been called
+        first (self._point_source_coords and self.image_sub must be set).
+        Skips silently when self.epsf is already populated.
+        """
+        if self.epsf is not None:
+            print(f'Using cached EPSF for band {self.band}.')
+            return
+        print(f'Fitting PSF model using {len(self._point_source_coords)} stars...')
+        data_for_fit = NDData(data=self.image_sub, wcs=self.wcs)
+        try:
+            self.stars = extract_stars(
+                data_for_fit,
+                Table([self._point_source_coords], names=['skycoord']),
+                size=self.psf_cutout_size,
+            )
+            self.stars = EPSFStars([s for s in self.stars if not np.any(np.isnan(s.data))])  # drop cutouts with nans
+            if len(self.stars) == 0:
+                raise ValueError(
+                    f'No valid star cutouts remain after NaN filtering — cannot build EPSF.'
+                )
+            fitter = EPSFFitter(fit_boxsize=self.fit_boxsize)
+            # photutils stores fit_boxsize as a numpy array via as_pair(), but newer astropy
+            # versions require a plain tuple in overlap_slices — convert to avoid the
+            # "truth value of an array is ambiguous" error.
+            fitter.fit_boxsize = tuple(int(x) for x in fitter.fit_boxsize)
+            epsf_builder = EPSFBuilder(fitter=fitter)
+            self.epsf, _ = epsf_builder(self.stars)
+        except Exception as e:
+            e.add_note(f'Band: {self.band}\nCoordinate Range: {self.get_coord_range()}\nImage fpath: {self.fits_fpath}')
+            raise e
+
+    def build_epsf_cache(self, pstarr_tab: Table):
+        """Build and cache the EPSF without running full PSF photometry.
+
+        Performs only the steps needed to construct the EPSF (source detection
+        and star cutout extraction) — skips Kron and PSF photometry on all
+        sources.  The model is stored in self.epsf and returned so it can be
+        transferred to other Source_Extractor instances:
+
+            se.epsf = se_orig.build_epsf_cache(pstarr_tab)
+
+        Typical use: pre-build from an un-injected image so the same EPSF can
+        be reused across many injected images, avoiding an expensive rebuild at
+        every magnitude.
+
+        Args:
+            pstarr_tab: PanSTARRS catalog (same format as set_sources_for_psf).
+
+        Returns:
+            The built EPSFModel (also stored in self.epsf).
+        """
+        self.set_sources_for_psf(pstarr_tab)
+        self.get_sources()
+        self._build_epsf()
+        return self.epsf
+
     def get_psf_mags(
             self,
             kron_mags: np.ndarray,
@@ -336,30 +395,7 @@ class Source_Extractor():
         init_params = self.sources[~bad_src_mask][['x', 'y']]
         init_params['flux_init'] = init_fluxes
 
-        # Fit the PSF model on a sample of just stars
-        print(f'Fitting PSF model using {len(self._point_source_coords)} stars...')
-        data_for_fit = NDData(data=self.image_sub, wcs=self.wcs)
-        try:
-            self.stars = extract_stars(
-                data_for_fit,
-                Table([self._point_source_coords], names=['skycoord']),
-                size=self.psf_cutout_size,
-            )
-            self.stars = EPSFStars([s for s in self.stars if not np.any(np.isnan(s.data))])  # drop cutouts with nans
-            if len(self.stars) == 0:
-                raise ValueError(
-                    f'No valid star cutouts remain after NaN filtering — cannot build EPSF.'
-                )
-            fitter = EPSFFitter(fit_boxsize=self.fit_boxsize)
-            # photutils stores fit_boxsize as a numpy array via as_pair(), but newer astropy
-            # versions require a plain tuple in overlap_slices — convert to avoid the
-            # "truth value of an array is ambiguous" error.
-            fitter.fit_boxsize = tuple(int(x) for x in fitter.fit_boxsize)
-            epsf_builder = EPSFBuilder(fitter=fitter)
-            self.epsf, _ = epsf_builder(self.stars) # self.epsf is an EPSFModel
-        except Exception as e:
-            e.add_note(f'Band: {self.band}\nCoordinate Range: {self.get_coord_range()}\nImage fpath: {self.fits_fpath}')
-            raise e
+        self._build_epsf()
 
         # Perform the PSF photometry with the fitted model
         self.psfphot = PSFPhotometry(self.epsf, fit_shape=psf_fit_width)
@@ -461,22 +497,7 @@ class Source_Extractor():
 
     def get_coord_range(self) -> Tuple[Tuple[float, float], Tuple[float, float]]:
         """Get the RA and DEC range of the image."""
-        corners = [
-            self.wcs.pixel_to_world(0, 0),
-            self.wcs.pixel_to_world(self.image_data.shape[1], 0),
-            self.wcs.pixel_to_world(self.image_data.shape[1], self.image_data.shape[0]),
-            self.wcs.pixel_to_world(0, self.image_data.shape[0]),
-        ]
-        corner_ras = np.array([c.ra.deg for c in corners])
-        corner_decs = np.array([c.dec.deg for c in corners])
-        ra_range = (np.min(corner_ras), np.max(corner_ras))
-        dec_range = (np.min(corner_decs), np.max(corner_decs))
-
-        # Account for wrapping at 360 deg
-        if ra_range[0] < 10.0 and ra_range[1] > 350.0:
-            ra_range = (ra_range[1], ra_range[0] + 360.0)
-
-        return ra_range, dec_range
+        return coord_range_from_wcs(self.wcs, self.image_data.shape)
 
     def get_data_table(self, include_kron: bool = True, include_psf: bool = True) -> Table:
         """

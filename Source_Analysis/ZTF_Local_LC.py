@@ -14,8 +14,9 @@ sys.path.append('/n/home04/aboesky/berger/long_transients')
 
 from Extracting.utils import rcid_to_ccdid_qid
 
-# From ZTF Explanatory Supplement Section 10.3
-BAD_CATFLAG_MASK = 6141
+# Source-level bits from ZTF Explanatory Supplement 10.3, plus bit 15 (32768):
+# cloud- or moon-affected epochs (DR23 release notes 9b).
+BAD_CATFLAG_MASK = 6141 | 32768
 
 # Parquet filename pattern: ztf_{fieldid}_z{band}_c{ccdid}_q{qid}_dr{dr}.parquet
 _FNAME_RE = re.compile(r'^ztf_(\d+)_z([gri])_c(\d+)_q(\d+)_dr(\d+)\.parquet$')

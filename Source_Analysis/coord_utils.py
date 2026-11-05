@@ -20,10 +20,16 @@ import re
 from typing import Optional
 
 
-def coord_stem(ra: float, dec: float) -> str:
-    """Encode (ra, dec) as a filename stem at 4 decimal-place precision."""
-    ra_str  = f"{ra:.4f}".replace(".", "p").replace("-", "n")
-    dec_str = f"{dec:.4f}".replace(".", "p").replace("-", "n")
+def coord_stem(ra: float, dec: float, precision: int = 4) -> str:
+    """Encode (ra, dec) as a filename stem, 4 decimal places by default.
+
+    `precision` exists so `source_db` can build a 6-dp database slug without a
+    second copy of this encoding; filenames keep the 4-dp default. Note that
+    4 dp is ~0.36" at these declinations, so 4-dp stems are *not* unique across
+    the catalog -- see `source_db.coord_slug`.
+    """
+    ra_str  = f"{ra:.{precision}f}".replace(".", "p").replace("-", "n")
+    dec_str = f"{dec:.{precision}f}".replace(".", "p").replace("-", "n")
     return f"{ra_str}_{dec_str}"
 
 

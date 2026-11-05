@@ -16,6 +16,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!web/src/lib/
 lib64/
 parts/
 sdist/
@@ -142,7 +143,24 @@ cython_debug/
 Data/
 *.fits
 *.txt
+!requirements.txt
 training_logs/
 extraction_logs/
 test.py
 ANTs-Nest/
+
+# OS / editor / agent files
+.DS_Store
+.claude/
+.agents/
+
+# Website build output
+web/node_modules/
+web/dist/
+
+# Scratch work (kept on disk, not tracked)
+Debugging/
+test.py
+test.ipynb
+test_source.py
+Notebooks/test.ipynb

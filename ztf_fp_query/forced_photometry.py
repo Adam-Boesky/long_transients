@@ -10,7 +10,7 @@ from matplotlib.axes import Axes
 from astropy.coordinates import SkyCoord, match_coordinates_sky
 from astropy.time import Time
 
-from ztf_fp_query.sync import get_data_dir, load_map
+from ztf_fp_query.sync import load_map
 
 # Recommended SNT/SNU thresholds from https://web.ipac.caltech.edu/staff/fmasci/ztf/forcedphot.pdf
 # SNT: signal-to-noise threshold below which an epoch is treated as a non-detection
@@ -38,11 +38,10 @@ class ForcedPhotometry:
         fp = ForcedPhotometry.from_file('path/to/batchfp_req0004838848_lc.txt')
     """
 
-    def __init__(self, ra: float, dec: float, max_sep_arcsec: float = 0.5, data_dir: Optional[str] = None):
+    def __init__(self, ra: float, dec: float, max_sep_arcsec: float = 0.5):
         self.ra = ra
         self.dec = dec
 
-        data_dir = data_dir or get_data_dir()
         map_df = load_map()
         if map_df.empty:
             raise FileNotFoundError('No forced photometry files in the local index. Run sync() first.')
@@ -56,7 +55,7 @@ class ForcedPhotometry:
                 'Submit a request and run sync() first.'
             )
 
-        self._fpath = os.path.join(data_dir, map_df.iloc[idx]['fname'])
+        self._fpath = map_df.iloc[idx]['path']
         self._df = self._parse_file(self._fpath)
 
     @classmethod

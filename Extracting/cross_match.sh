@@ -1,9 +1,9 @@
 #!/bin/bash
 
-#SBATCH -p test
+#SBATCH -p shared
 #SBATCH -c 12                                                                                           # Number of cores (-c)
 #SBATCH --mem=128G                                                                                      # Memory pool for all cores (see also --mem-per-cpu)
-#SBATCH -t 0-12:00                                                                                      # Runtime in D-HH:MM, minimum of 10 minutes
+#SBATCH -t 3-00:00                                                                                      # Runtime in D-HH:MM, minimum of 10 minutes
 
 # Paths to STDOUT or STDERR files should be absolute or relative to current working directory
 #SBATCH -o /n/holystore01/LABS/berger_lab/Users/aboesky/long_transients/extraction_logs/myoutput_\%j.out           # File to which STDOUT will be written, %j inserts jobid
@@ -21,4 +21,7 @@ module load gcc/12.2.0-fasrc01
 module load python/3.12.5-fasrc01
 source activate long_transients2
 
-python3 -u /n/home04/aboesky/berger/long_transients/Extracting/cross_match.py -mf -aq -ow -f 000616 000617 000619 000303 000304 000373 000374 000375 000377 000363 000368 000339 000516 000517 000518 000324 000326 000337 000338 000567 000568 000569 000305 000313 000315 000318
+# python3 -u /n/home04/aboesky/berger/long_transients/Extracting/cross_match.py -mf -aq -ow -f 000616 000617 000619 000303 000304 000373 000374 000375 000377 000363 000368 000339 000516 000517 000518 000324 000326 000337 000338 000567 000568 000569 000305 000313 000315 000318
+
+cd /n/home04/aboesky/berger/long_transients
+python3 -u -m Extracting.cross_match -mf -aq -ow -nt 12

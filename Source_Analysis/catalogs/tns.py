@@ -5,7 +5,7 @@
 parquet. Matching lives in `_base.LocalCatalog`, shared with the SDSS and DESI
 modules.
 
-Unlike SDSS DR17 and DESI DR1, which are frozen data releases, TNS grows daily
+Unlike SDSS DR20 and DESI DR1, which are frozen data releases, TNS grows daily
 -- so this is the one local catalog that goes stale. Refreshing it means
 re-downloading the dump into Data/ and re-running `build_parquet()`. A TNS
 `tns_marker` user-agent is required for the download, but a *user* marker needs

@@ -8,10 +8,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 try:
     from Catalogs import (PSTARR_Catalog, PSTARR_Local_Catalog, ZTF_Catalog, associate_tables_by_coordinates)
-    from utils import prepare_table_for_write
+    from utils import prepare_table_for_write, union_coord_range
 except ModuleNotFoundError:
     from .Catalogs import (PSTARR_Catalog, PSTARR_Local_Catalog, ZTF_Catalog, associate_tables_by_coordinates)
-    from .utils import prepare_table_for_write
+    from .utils import prepare_table_for_write, union_coord_range
 
 
 class Tile():
@@ -58,7 +58,10 @@ class Tile():
 
         # Load PSTARR catalog
         if self.n_bands > 0:
-            self.ra_range, self.dec_range = self.ztf_catalogs[self.bands[0]].get_coordinate_range()
+            # PS1 box: union of all bands' images (the deep stacks are offset from each other), padded
+            self.ra_range, self.dec_range = union_coord_range(
+                [self.ztf_catalogs[b].get_coordinate_range() for b in self.bands]
+            )
 
             # Get the PanSTARRS catalog for the tile
             if local_ps1:
@@ -172,6 +175,11 @@ class Tile():
             np.save(os.path.join(outdir, 'nan_masks', f'ZTF_{band}_nan_mask.npy'), self.ztf_catalogs[band].sextractor.nan_mask)
             with open(os.path.join(outdir, 'WCSs', f'ZTF_{band}_wcs.pkl'), 'wb') as f:
                 pickle.dump(self.ztf_catalogs[band].sextractor.wcs, f)
+            # NOTE: epsf.data is 4x oversampled (EPSFBuilder default). When loading
+            # this array for pixel-level use (e.g. PSF injection), downsample first:
+            #   from scipy.ndimage import zoom
+            #   epsf = zoom(np.load(path), 1/4, order=3); epsf /= epsf.sum()
+            # PSFPhotometry / EPSFModel handle oversampling internally — safe to use as-is.
             np.save(os.path.join(outdir, 'EPSFs', f'ZTF_{band}_EPSF.npy'), self.ztf_catalogs[band].sextractor.epsf.data)
 
         return outdir

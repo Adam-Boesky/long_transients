@@ -9,15 +9,17 @@ service. They share a cone-search interface:
 
     agn     AGN-DB merged AGN/quasar catalog (8.1M rows) -- DuckDB against parquet,
             too wide to hold in memory, and queried per-source at plot time.
-    sdss    SDSS DR17 specObj spectroscopic catalog (5.8M rows).
+    sdss    SDSS DR20 spectroscopic catalog: specObj-dr17 (SDSS-I--IV) plus the
+            SDSS-V spAll and visual-inspection VAC.
     desi    DESI DR1 (Iron) redshift catalog (28.4M rows).
     simbad  SIMBAD `basic` cross-identification database (22.2M rows) -- names,
             object types and the type hierarchy for positions the spectroscopic
             catalogs miss.
     tns     Transient Name Server object dump (207k rows).
     wise    AllWISE photometry, for W1-W2 colour.
+    erosita eROSITA-DE DR2 X-ray sources (1.98M rows), matched at a fixed 10".
 
-`sdss`, `desi`, `simbad` and `tns` share `_base.LocalCatalog`, which holds the
+`sdss`, `desi`, `simbad`, `tns` and `erosita` share `_base.LocalCatalog`, which holds the
 slim parquet in memory and matches against a cached KD-tree. That is fast for
 bulk work but costs up to ~13 GB for DESI and a further ~8 GB for SIMBAD, so
 run them in a single process rather than inside a multiprocessing Pool.

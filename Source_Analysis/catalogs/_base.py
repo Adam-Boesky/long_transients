@@ -90,6 +90,47 @@ def text_column_names(table: Table) -> list[str]:
     return [c for c in table.colnames if table[c].dtype.kind in ('U', 'S')]
 
 
+def to_pandas_array(col) -> pd.Series:
+    """Convert one astropy column to a nullable pandas array.
+
+    The inverse of `to_astropy_table`, and subject to the same hazard from the
+    other direction: `Table.to_pandas()` routes a *masked* integer column
+    through float64 before producing nullable Int64, which silently rounds
+    anything above 2**53 -- 98.9% of DESI TARGETIDs, by a few counts each. So
+    the mask is applied by hand here rather than relying on `to_pandas`, and
+    integers go straight from the int64 buffer to pandas `Int64`.
+
+    This matters for anything reading the enriched tables back into pandas;
+    `source_db/catalog_tier.py` does, and must use this rather than `Table.to_pandas()`.
+    """
+    mask = getattr(col, 'mask', None)
+    mask = None if mask is None or np.ndim(mask) == 0 else np.asarray(mask, dtype=bool)
+    values = np.ma.getdata(col.data) if mask is not None else np.asarray(col)
+    if values.ndim != 1:
+        raise ValueError(f'column {getattr(col.info, "name", "?")!r} is {values.ndim}-dimensional')
+
+    kind = values.dtype.kind
+    if kind == 'b':
+        out = pd.Series(pd.array(values.astype(bool), dtype='boolean'))
+    elif kind in 'iu':
+        out = pd.Series(pd.array(values.astype('int64'), dtype='Int64'))
+    elif kind in 'fc':
+        # Plain float64/NaN, not nullable Float64: floats already arrive as NaN
+        # from the enrichment step, and NaN compares and filters predictably.
+        out = pd.Series(values.astype('float64'))
+    else:
+        # 'S' columns (e.g. filter_info) decode to str; everything else stringifies.
+        out = pd.Series(pd.array(
+            [None if v is None else (v.decode() if isinstance(v, bytes) else str(v))
+             for v in values], dtype='string'))
+
+    if mask is not None and mask.any():
+        # `None` blanks correctly in every dtype above: NaN for float64, pd.NA
+        # for the nullable extension dtypes.
+        out[mask] = None
+    return out
+
+
 class LocalCatalog:
     """A slim parquet catalog with cached coordinates for cone searching.
 
@@ -182,6 +223,32 @@ class LocalCatalog:
         out.insert(2, f'{p}_ra', np.where(matched, cat['ra'].values[idx], np.nan))
         out.insert(3, f'{p}_dec', np.where(matched, cat['dec'].values[idx], np.nan))
         return out
+
+    def within_many(
+        self,
+        ra: Sequence[float],
+        dec: Sequence[float],
+        radius_arcsec: float,
+        filtered: bool = True,
+    ) -> pd.DataFrame:
+        """Every catalog row within `radius_arcsec` of each input position.
+
+        One row per (input, catalog row) pair, with the input's position in
+        `input_index`, ordered by input then separation.
+        """
+        ra = np.atleast_1d(np.asarray(ra, dtype=float))
+        dec = np.atleast_1d(np.asarray(dec, dtype=float))
+        p = self.prefix
+        cat = self.frame(filtered)
+        finite = np.flatnonzero(np.isfinite(ra) & np.isfinite(dec))
+        # Called on the inputs, search_around_sky returns the *argument's* index first.
+        i_cat, i_in, sep2d, _ = SkyCoord(ra[finite] * u.deg, dec[finite] * u.deg).search_around_sky(
+            self.coords(filtered), radius_arcsec * u.arcsec
+        )
+        out = cat.iloc[i_cat].reset_index(drop=True)
+        out.insert(0, 'input_index', finite[i_in])
+        out.insert(1, f'{p}_sep_arcsec', sep2d.arcsec)
+        return out.sort_values(['input_index', f'{p}_sep_arcsec'], kind='stable').reset_index(drop=True)
 
     def within(
         self,

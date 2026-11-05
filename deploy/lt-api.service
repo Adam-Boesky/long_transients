@@ -1,0 +1,47 @@
+# systemd service for the candidate website's API (and its ztforce worker).
+#
+# Install on the server (edit the three paths and the user first):
+#   sudo cp deploy/lt-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now lt-api
+# Then: systemctl status lt-api | journalctl -u lt-api -f | sudo systemctl restart lt-api
+#
+# Settings come from .env in the repo (copy .env.example and fill in the IRSA login).
+# Locally, just run `uvicorn api.main:app --reload` from the repo root instead.
+#
+# This serves the whole website, pages included, when web/dist exists -- so
+# `npm run build` in web/ is part of deploying, and port 8000 below is the
+# site. Rebuild it whenever the frontend changes; the API does not do it.
+#
+# To reach it from other machines, either put a reverse proxy (nginx, Caddy)
+# in front of 127.0.0.1:8000, or change --host to 0.0.0.0. Note there is no
+# authentication on the write endpoints, so 0.0.0.0 means anyone who can route
+# to this machine can relabel sources.
+
+[Unit]
+Description=long_transients candidate API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=CHANGE_ME
+WorkingDirectory=/path/to/long_transients
+EnvironmentFile=/path/to/long_transients/.env
+# With the databases on an external drive, wait for it. Without this systemd
+# starts the API as soon as the network is up, which on a reboot is usually
+# before the disk has mounted: the catalog engine then fails at boot, or
+# worse, SQLite creates an empty annotations database on the mountpoint and
+# the real one reappears underneath it when the drive arrives. Set this to the
+# mount point (not the database path) and delete it if the data is on the
+# system disk.
+RequiresMountsFor=/mnt/ltdata
+# The conda env's uvicorn, run directly (not via `conda run`, which does not pass
+# signals on, so stop/restart would leave the server running).
+ExecStart=/path/to/conda/envs/long_transients/bin/uvicorn api.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+# Graceful shutdown waits for the ztforce worker to stop (up to ~10 s).
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
