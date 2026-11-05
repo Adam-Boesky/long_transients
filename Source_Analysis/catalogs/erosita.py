@@ -15,7 +15,7 @@ use would miss most real counterparts. The DR2 paper's own cross-matches use
 4x the positional error, 5-16" (Ramos-Ceja et al. 2026, Sect. 5); a per-source
 rule like that, or the DR2 NWAY counterpart catalogues, is the refinement.
 
-`scripts/build_erosita_catalog.py` downloads the catalogue and calls
+`tools/build_erosita_catalog.py` downloads the catalogue and calls
 `build_parquet()`.
 """
 from __future__ import annotations
@@ -71,7 +71,7 @@ def build_parquet(fits_path: Path = CATALOG_FITS,
     """
     from astropy.io import fits
     if not fits_path.exists():
-        raise FileNotFoundError(f'{fits_path} missing -- run scripts/build_erosita_catalog.py')
+        raise FileNotFoundError(f'{fits_path} missing -- run tools/build_erosita_catalog.py')
     with fits.open(fits_path, memmap=False) as hdul:
         data = hdul[1].data
         names = {n.upper(): n for n in data.columns.names}

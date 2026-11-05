@@ -5,8 +5,8 @@ path; see `Source_Analysis.followup`.
 
 Usage
 -----
-    python scripts/regen_spectra.py            # every target
-    python scripts/regen_spectra.py <slug> ... # just these
+    python tools/regen_spectra.py            # every target
+    python tools/regen_spectra.py <slug> ... # just these
 """
 import os, sys
 import numpy as np

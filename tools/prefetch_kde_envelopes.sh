@@ -14,4 +14,4 @@ module load python/3.12.5-fasrc01
 source activate long_transients2
 
 cd /n/home04/aboesky/berger/long_transients
-python3 -u scripts/prefetch_kde_envelopes.py
+python3 -u tools/prefetch_kde_envelopes.py

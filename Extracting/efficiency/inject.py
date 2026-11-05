@@ -11,7 +11,8 @@ from astropy.io import fits
 from scipy.ndimage import zoom
 
 import sys
-sys.path.append('/Users/adamboesky/Research/long_transients')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from Extracting.utils import img_ab_mag_to_flux
 

@@ -11,9 +11,9 @@ already present, so an interrupted download resumes instead of restarting. Pass
 
 Usage
 -----
-    python scripts/build_simbad_catalog.py                # download + rebuild
-    python scripts/build_simbad_catalog.py --rebuild-only  # parquet from pages on disk
-    python scripts/build_simbad_catalog.py --force         # re-fetch every page
+    python tools/build_simbad_catalog.py                # download + rebuild
+    python tools/build_simbad_catalog.py --rebuild-only  # parquet from pages on disk
+    python tools/build_simbad_catalog.py --force         # re-fetch every page
 
 Notes
 -----

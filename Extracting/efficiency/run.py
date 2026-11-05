@@ -22,18 +22,19 @@ uses Kron flux.  Gaia parallax/PM filters are skipped because injected sources h
 no Gaia counterpart and auto-pass.
 
 Usage:
-    conda run -n long_transients python -m scripts.efficiency.run [--n_iter N] [--output PATH]
+    conda run -n long_transients python -m Extracting.efficiency.run [--n_iter N] [--output PATH]
 """
 
 import os
 import sys
+from pathlib import Path
 import pickle
 import argparse
 import warnings
 import multiprocessing
 import numpy as np
 
-sys.path.append('/Users/adamboesky/Research/long_transients')
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 warnings.filterwarnings('ignore')
 
 from astropy.table import Table, vstack
@@ -50,7 +51,7 @@ from Source_Analysis.filter_fields import (
     remove_mask,
     PSTARR_UPPER_LIM,
 )
-from scripts.efficiency.inject import inject_multiband, BANDS
+from Extracting.efficiency.inject import inject_multiband, BANDS
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -412,7 +413,7 @@ def _process_one_mag(task_args):
     if save_plots and g_dropout_indices:
         from astropy.io import fits
         from astropy.wcs.utils import proj_plane_pixel_scales
-        from scripts.efficiency.plot_dropouts import plot_dropout_cutouts
+        from Extracting.efficiency.plot_dropouts import plot_dropout_cutouts
         fpath_orig = os.path.join(QUAD_DIR, 'orig_g.fits')
         fpath_inj  = band_to_fpath.get('g')
         if fpath_inj and os.path.exists(fpath_orig):

@@ -17,4 +17,4 @@
 module load python/3.12.5-fasrc01
 source activate long_transients2
 
-python3 -u /n/home04/aboesky/berger/long_transients/scripts/prefetch_gaia_cache.py --workers 3
+python3 -u /n/home04/aboesky/berger/long_transients/tools/prefetch_gaia_cache.py --workers 3

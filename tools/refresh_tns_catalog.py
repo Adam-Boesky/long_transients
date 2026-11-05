@@ -18,9 +18,9 @@ Or set TNS_USER_ID and TNS_USER_NAME in the environment, which take precedence.
 
 Usage
 -----
-    python scripts/refresh_tns_catalog.py           # download + rebuild
-    python scripts/refresh_tns_catalog.py --rebuild-only
-    python scripts/refresh_tns_catalog.py --no-archive
+    python tools/refresh_tns_catalog.py           # download + rebuild
+    python tools/refresh_tns_catalog.py --rebuild-only
+    python tools/refresh_tns_catalog.py --no-archive
 
 The previous CSV and parquet are moved into Data/catalogs/raw/archive/, tagged
 with their data cutoff date, so a refresh can be backed out and so the

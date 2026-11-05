@@ -7,9 +7,9 @@ kept unless --force is given.
 
 Usage
 -----
-    python scripts/build_erosita_catalog.py                # download + rebuild
-    python scripts/build_erosita_catalog.py --rebuild-only  # parquet from the FITS on disk
-    python scripts/build_erosita_catalog.py --force         # re-download
+    python tools/build_erosita_catalog.py                # download + rebuild
+    python tools/build_erosita_catalog.py --rebuild-only  # parquet from the FITS on disk
+    python tools/build_erosita_catalog.py --force         # re-download
 
 Then append the columns to existing enriched tables with
 

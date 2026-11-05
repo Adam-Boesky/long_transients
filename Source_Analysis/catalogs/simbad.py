@@ -39,7 +39,7 @@ quality is carried in `simbad_coo_qual` ('A' best, 'E' worst) for callers that
 want to cut on it -- about 2.6% of the catalog is 'E', and those coordinates are
 poor enough that they mostly fail to match at all rather than matching wrongly.
 
-`scripts/build_simbad_catalog.py` downloads the raw chunks and calls
+`tools/build_simbad_catalog.py` downloads the raw chunks and calls
 `build_parquet()`. Like TNS -- and unlike the frozen SDSS DR20 and DESI DR1
 releases -- SIMBAD grows continuously, so this catalog goes stale and wants an
 occasional refresh.
@@ -155,11 +155,11 @@ def build_parquet(
     chunk_paths = sorted(raw_dir.glob('basic_*.csv'))
     if not chunk_paths:
         raise FileNotFoundError(
-            f'no basic_*.csv pages in {raw_dir} -- run scripts/build_simbad_catalog.py')
+            f'no basic_*.csv pages in {raw_dir} -- run tools/build_simbad_catalog.py')
     otypedef_path = raw_dir / 'otypedef.csv'
     if not otypedef_path.exists():
         raise FileNotFoundError(
-            f'missing {otypedef_path} -- run scripts/build_simbad_catalog.py')
+            f'missing {otypedef_path} -- run tools/build_simbad_catalog.py')
 
     native = [src for src, _ in _COLUMNS]
     dtypes = {c: str for c in _TEXT_NATIVE}

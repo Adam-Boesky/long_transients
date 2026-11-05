@@ -17,7 +17,7 @@ so this keeps up with the full-sky rollout automatically.
 
 Usage
 -----
-    python scripts/prefetch_gaia_cache.py [--workers N] [--dry-run] [--fields F [F ...]]
+    python tools/prefetch_gaia_cache.py [--workers N] [--dry-run] [--fields F [F ...]]
 """
 
 import argparse
