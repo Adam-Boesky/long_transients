@@ -393,22 +393,48 @@ class BucketedWriter:
     and never all held at once.
     """
 
-    def __init__(self, out_dir: Path = DEFAULT_OUT_DIR, row_group_size: int = 50_000):
+    def __init__(self, out_dir: Path = DEFAULT_OUT_DIR, row_group_size: int = 50_000,
+                 replace_surveys: Optional[list[str]] = None):
+        """`replace_surveys` makes this a subset rebuild: rows of those surveys are
+        dropped from every existing bucket and the other surveys' rows are kept.
+        Without it each bucket written is started from empty, which is right for a
+        full build and would silently discard the other surveys in a subset one."""
         import pyarrow.parquet as pq  # noqa: F401
         self.out_dir = Path(out_dir)
         self.row_group_size = row_group_size
         self.schema = unified_schema()
+        self.replace_surveys = list(replace_surveys) if replace_surveys is not None else None
         self._writers: dict[str, object] = {}
         self.n_rows = 0
+
+    @staticmethod
+    def _tmp(path: Path) -> Path:
+        return path.with_name(path.name + '.tmp')
 
     def _writer(self, bucket: str):
         import pyarrow.parquet as pq
         if bucket not in self._writers:
             path = bucket_path(bucket, self.out_dir)
             path.parent.mkdir(parents=True, exist_ok=True)
+            # Written beside the old file and swapped in on close, so the old rows
+            # can be carried over first and a crash leaves the old bucket readable.
             self._writers[bucket] = pq.ParquetWriter(
-                path, self.schema, compression='zstd')
+                self._tmp(path), self.schema, compression='zstd')
+            if self.replace_surveys is not None and path.exists():
+                kept, _ = self._kept_rows(path)
+                if kept.num_rows:
+                    self._writers[bucket].write_table(kept, row_group_size=self.row_group_size)
         return self._writers[bucket]
+
+    def _kept_rows(self, path: Path):
+        """(rows of `path` not in `replace_surveys`, number dropped)."""
+        import pyarrow as pa
+        import pyarrow.compute as pc
+        import pyarrow.parquet as pq
+        tbl = pq.read_table(path)
+        drop = pc.is_in(tbl['survey'], value_set=pa.array(self.replace_surveys, pa.string()))
+        kept = tbl.filter(pc.invert(drop))
+        return conform(kept.to_pandas()), tbl.num_rows - kept.num_rows
 
     def write(self, df: pd.DataFrame) -> None:
         if df is None or df.empty:
@@ -421,9 +447,24 @@ class BucketedWriter:
             self.n_rows += len(sub)
 
     def close(self) -> None:
-        for w in self._writers.values():
+        import pyarrow.parquet as pq
+        for bucket, w in self._writers.items():
             w.close()
+            path = bucket_path(bucket, self.out_dir)
+            self._tmp(path).replace(path)
+        written = set(self._writers)
         self._writers.clear()
+        if self.replace_surveys is None:
+            return
+        # Buckets this run never wrote may still hold the replaced surveys' old rows.
+        for path in lightcurve_dir(self.out_dir).glob('uuid_prefix=*/part-0.parquet'):
+            if path.parent.name.split('=', 1)[1] in written:
+                continue
+            kept, n_dropped = self._kept_rows(path)
+            if n_dropped:
+                pq.write_table(kept, self._tmp(path), compression='zstd',
+                               row_group_size=self.row_group_size)
+                self._tmp(path).replace(path)
 
     def __enter__(self):
         return self

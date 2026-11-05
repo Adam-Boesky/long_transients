@@ -4,7 +4,7 @@ Pure function of `Data/db/raw/`, so it is freely re-runnable: a bug in the melt
 logic costs minutes rather than another overnight backfill.
 
     python -m source_db.build_lightcurve_table
-    python -m source_db.build_lightcurve_table --catalogs ztf
+    python -m source_db.build_lightcurve_table --catalogs ztf   # keeps the other surveys' rows
 
 Writes `Data/db/light_curves/uuid_prefix=XX/part-0.parquet`:
 
@@ -67,11 +67,15 @@ def normalise_batch(name: str, raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def build(catalogs: list[str], raw_dir: Path, out_dir: Path,
-          parts_per_batch: int = 40) -> dict:
-    """Stream every catalog into the bucketed tier."""
+          parts_per_batch: int = 40, subset: bool = False) -> dict:
+    """Stream every catalog into the bucketed tier.
+
+    `subset` rebuilds only `catalogs` and keeps every other survey's rows in the
+    buckets already on disk; without it each bucket written starts from empty.
+    """
     totals: dict[str, int] = {}
     t0 = time.time()
-    with _base.BucketedWriter(out_dir) as writer:
+    with _base.BucketedWriter(out_dir, replace_surveys=catalogs if subset else None) as writer:
         for name in catalogs:
             n_parts = _base.n_raw_parts(name, raw_dir)
             t1, rows, done = time.time(), 0, 0
@@ -110,7 +114,8 @@ def main() -> None:
         sys.exit(f'no raw data for {missing} -- fetch it first. '
                  f'Available: {available or "(none)"}')
 
-    build(wanted, args.raw_dir, args.out_dir, args.parts_per_batch)
+    build(wanted, args.raw_dir, args.out_dir, args.parts_per_batch,
+          subset=args.catalogs is not None)
 
 
 if __name__ == '__main__':

@@ -183,3 +183,24 @@ def test_sdss_spectra_of_a_former_match_are_not_published():
     kept = current_sdss_spectra(spec, {'a|111', 'a|112'})
     # Both of a's current spectra stay; its old one and b's go; DESI is untouched.
     assert kept['spec_id'].tolist() == ['111', '112', '444']
+
+
+def test_subset_rebuild_keeps_the_other_surveys(tmp_path):
+    """`--catalogs ztf` must replace ZTF rows and leave every other survey alone."""
+    def rows(uuid, survey, mjds):
+        return pd.DataFrame({'source_uuid': uuid, 'survey': survey, 'band': 'g',
+                             'mjd': mjds, 'mag': 20.0, 'magerr': 0.1, 'snr': np.nan,
+                             'catalog_id': 'x'})
+    with _base.BucketedWriter(tmp_path) as w:
+        w.write(rows('00aaaaaa', 'ztf', [1.0, 2.0]))
+        w.write(rows('00aaaaaa', 'sdss', [3.0]))
+        w.write(rows('ffbbbbbb', 'ztf', [4.0]))
+        w.write(rows('ffbbbbbb', 'wise', [5.0]))
+    # Rebuild ZTF only: bucket 00 gets new rows, bucket ff gets none this time.
+    with _base.BucketedWriter(tmp_path, replace_surveys=['ztf']) as w:
+        w.write(rows('00aaaaaa', 'ztf', [10.0]))
+    b00 = pd.read_parquet(_base.bucket_path('00', tmp_path))
+    assert sorted(zip(b00.survey, b00.mjd)) == [('sdss', 3.0), ('ztf', 10.0)]
+    bff = pd.read_parquet(_base.bucket_path('ff', tmp_path))
+    assert sorted(zip(bff.survey, bff.mjd)) == [('wise', 5.0)]
+    assert not list(_base.lightcurve_dir(tmp_path).glob('*/*.tmp'))
