@@ -1509,24 +1509,35 @@ def add_final_filt(filt_name: str, srcs: Sources, d: schemdraw.Drawing) -> schem
     return d
 
 
+def _branch_key(b) -> str:
+    """The shared chain's branch is blank in the CSV and NaN once read; key both as ''."""
+    return b if isinstance(b, str) else ''
+
+
 def _with_passthrough_rows(df: pd.DataFrame, template: pd.DataFrame) -> pd.DataFrame:
     """`df` with any (filter, branch) step of `template` it lacks inserted as a no-op.
 
     A field filtered before a step was added has no row for it; the step removed
-    nothing there, so its counts before and after are the previous step's after.
+    nothing there, so its counts before and after are the after of the previous
+    step *on the same branch*. A branch's first step cannot be filled: it starts
+    from a selection, not a pass-through, so that case raises.
     """
-    have = {(f, b): i for i, (f, b) in enumerate(zip(df['filter'], df['branch']))}
+    have = {(f, _branch_key(b)): i for i, (f, b) in enumerate(zip(df['filter'], df['branch']))}
     after = [c for c in df.columns if c.startswith('n_') and c.endswith('_after')]
-    rows, prev = [], None
+    rows, last = [], {}  # last row seen, per branch
     for f, b in zip(template['filter'], template['branch']):
-        if (f, b) in have:
-            row = df.iloc[have[(f, b)]].copy()
+        key = _branch_key(b)
+        if (f, key) in have:
+            row = df.iloc[have[(f, key)]].copy()
         else:
+            prev = last.get(key)
+            if prev is None:
+                raise ValueError(f'cannot fill in {f!r}: it is the first step on branch {b!r}')
             row = prev.copy()
             row['filter'], row['branch'] = f, b
             for c in after:
                 row[c.replace('_after', '_before')] = prev[c]
-        rows.append(row); prev = row
+        rows.append(row); last[key] = row
     return pd.DataFrame(rows).reset_index(drop=True)
 
 
