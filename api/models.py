@@ -10,8 +10,36 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator
 
 # Follow-up observing state, in order. NULL is the fourth ("nothing") and is
-# not a member: no decision needs no spelling.
+# not a member: no decision needs no spelling. One per object, shared by
+# everyone -- see `api.followup`.
 FOLLOWUP_STATUSES = ('to queue', 'queued', 'observed')
+
+
+def _known_status(v: Optional[str]) -> Optional[str]:
+    """Empty string clears it, so the UI can send one value for 'nothing'."""
+    if v is None or v == '':
+        return None
+    if v not in FOLLOWUP_STATUSES:
+        raise ValueError(f'status must be one of {FOLLOWUP_STATUSES} or empty')
+    return v
+
+
+class Followup(BaseModel):
+    """Where an object stands in the observing queue, and who last said so."""
+    source_uuid: str
+    status: str
+    author: Optional[str] = None
+    updated_at: str
+
+
+class FollowupIn(BaseModel):
+    status: Optional[str] = None         # None or '' clears it
+    author: str = Field(min_length=1)    # who is making the call
+
+    @field_validator('status')
+    @classmethod
+    def _check(cls, v: Optional[str]) -> Optional[str]:
+        return _known_status(v)
 
 
 class SourceSummary(BaseModel):
@@ -53,6 +81,8 @@ class SourceDetail(BaseModel):
     # Per class, for catalogs whose spectra of a source can disagree (SDSS).
     class_redshifts: dict[str, dict[str, float]] = Field(default_factory=dict)
     annotations: list['Annotation'] = Field(default_factory=list)
+    # The object's shared follow-up status; None when nobody has set one.
+    followup: Optional[Followup] = None
 
 
 class SourcePage(BaseModel):
@@ -73,7 +103,6 @@ class Annotation(BaseModel):
     confidence: Optional[str] = None
     note: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
-    status: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -84,17 +113,6 @@ class AnnotationIn(BaseModel):
     confidence: Optional[str] = None
     note: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
-    status: Optional[str] = None
-
-    @field_validator('status')
-    @classmethod
-    def _known_status(cls, v: Optional[str]) -> Optional[str]:
-        """Empty string clears it, so the UI can send one value for 'nothing'."""
-        if v is None or v == '':
-            return None
-        if v not in FOLLOWUP_STATUSES:
-            raise ValueError(f'status must be one of {FOLLOWUP_STATUSES} or empty')
-        return v
 
 
 class Label(BaseModel):

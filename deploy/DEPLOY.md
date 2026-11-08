@@ -112,6 +112,7 @@ rest of the site is unaffected.
 | `LT_CUTOUT_MAX_GB` | `20` | Cutout cache budget. `0` disables the sweep. |
 | `LT_FILTER_THREADS` | `4` | DuckDB threads |
 | `LT_FILTER_MEMORY_LIMIT` | `2GB` | DuckDB memory ceiling |
+| `LT_MATERIALIZE` | `1` | Copy the catalog into memory at startup: every list, locate and group query 5-10x faster, for ~1.1 GB of resident memory. `0` to query the parquet directly instead. |
 | `LT_ALLOWED_ORIGINS` | localhost | CORS. Unused when the API serves the pages, as here. |
 
 ---
@@ -133,7 +134,8 @@ should show cutouts and a light curve.
 |---|---|
 | Frontend | `npm run build`, re-copy `web/dist` |
 | Backend | re-copy `api/` and `source_db/`, restart |
-| Catalog rebuilt | re-copy `science.sqlite` and both `.parquet` |
+| Catalog rebuilt | re-copy `science.sqlite` and both `.parquet`, then `python -m api.followup sync` so follow-up statuses agree across any regrouped detections |
+| Annotations schema changed | nothing: the API migrates `annotations.sqlite` in place on its first open. Back the file up first anyway. |
 
 > **Never re-copy `annotations.sqlite` from laptop to host.**
 > After step 3 the host's copy is the live master — it is the only file holding

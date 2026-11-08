@@ -31,7 +31,7 @@ from api.routers.coord_lists import coord_list_filter
 from api.ztforce_store import get_ztforce_store
 from api.derive import CLASS_SOURCES, MATCHED_COLUMN, classes_of
 from api.annotation_filters import annotation_filter
-from api import coord_lists
+from api import annotation_sorts, coord_lists, followup
 from api.routers.sources import _parse_filter, _resolve_sort
 from source_db.serving.filters import UUID, CatalogFilters, FilterError, restrict_to
 from source_db.constants import PSTARR_UPPER_LIM
@@ -192,7 +192,8 @@ def table_rows(request: Request,
                status_out: list[str] | None = Query(None),
                cat: CatalogFilters = Depends(get_filters),
                ann: sqlite3.Connection = Depends(get_annotations),
-               store: sqlite3.Connection = Depends(get_coord_lists)):
+               store: sqlite3.Connection = Depends(get_coord_lists),
+               zt: sqlite3.Connection = Depends(get_ztforce_store)):
     """Every source in the window as one compact row, without verdicts.
 
     Verdicts live at `/table/annotations`: they are the only part that
@@ -216,8 +217,13 @@ def table_rows(request: Request,
     # Part of the key because two lists can match the same sources with
     # different values beside them.
     list_values = coord_lists.values(store, coord_list) if coord_list else None
+    # A sort by what the annotators filed orders by values that change under
+    # the server, so the key carries their state and the values are rebuilt
+    # on a miss.
+    by_annotation = annotation_sorts.is_annotation_sort(sort)
+    sort_stamp = annotation_sorts.stamp(ann, zt) if by_annotation else ''
     try:
-        key = (_catalog_stamp(cat), offset, limit, sort, desc, coord_list,
+        key = (_catalog_stamp(cat), offset, limit, sort, sort_stamp, desc, coord_list,
                orjson.dumps(doc, option=orjson.OPT_SORT_KEYS) if doc else b'')
     except (TypeError, ValueError) as e:
         # `orjson.dumps` refuses past 254 levels of nesting.
@@ -226,8 +232,12 @@ def table_rows(request: Request,
     blob = _CACHE.get(key)
     if blob is None:
         try:
-            rows = cat.select(doc, _table_columns(cat),
-                              sort=_resolve_sort(sort, cat, store, coord_list),
+            order = (annotation_sorts.resolve(sort, ann, zt, cat) if by_annotation
+                     else _resolve_sort(sort, cat, store, coord_list))
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        try:
+            rows = cat.select(doc, _table_columns(cat), sort=order,
                               desc=desc, limit=limit, offset=offset)
             total = cat.count(doc)
         except BAD_FILTER as e:
@@ -258,18 +268,21 @@ def table_annotations(author: str | None = None,
     author -- far smaller than the catalog half it used to be embedded in.
     """
     out: dict[str, list[dict]] = {}
-    sql = ('SELECT source_uuid, author, label, note, status FROM annotations'
+    sql = ('SELECT source_uuid, author, label, note FROM annotations'
            + (' WHERE author=?' if author else '')
            + ' ORDER BY author')
     for a in ann.execute(sql, (author,) if author else ()):
         out.setdefault(a['source_uuid'], []).append(
-            {'author': a['author'], 'label': a['label'], 'note': a['note'],
-             'status': a['status']})
+            {'author': a['author'], 'label': a['label'], 'note': a['note']})
+    # One per object rather than per verdict, so it rides beside them.
+    fu = {u: {'status': r['status'], 'author': r['author'],
+              'updated_at': r['updated_at']}
+          for u, r in followup.read_all(ann).items()}
     # Live like the verdicts, so it rides here rather than in the cached half.
     # "Ran" means a stored result exists, even one now queued to be redone.
     done = [r[0] for r in zt.execute(
         'SELECT source_uuid FROM runs WHERE stacks IS NOT NULL')]
-    return {'annotations': out, 'ztforce_done': done}
+    return {'annotations': out, 'followup': fu, 'ztforce_done': done}
 
 
 def _catalog_stamp(cat: CatalogFilters) -> tuple[str, float]:

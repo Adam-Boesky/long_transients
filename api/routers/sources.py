@@ -13,7 +13,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
-from api import coord_lists
+from api import coord_lists, followup
 from api.catalog_filters import (BAD_FILTER, CATALOG_OF_TIER, CATALOG_TIERS,
                                  combine, get_filters, legacy_filter,
                                  one_per_object as _one_per_object)
@@ -23,7 +23,7 @@ from api.derive import class_redshifts_of, classes_of, redshifts_of
 from source_db.serving.filters import UUID, CatalogFilters, FilterError, restrict_to
 from api import catalog_schema
 from api.config import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
-from api.models import SourceDetail, SourcePage, SourceSummary
+from api.models import Followup, SourceDetail, SourcePage, SourceSummary
 from api.routers.annotations import _row_to_annotation
 from api.routers.coord_lists import coord_list_filter
 
@@ -398,6 +398,7 @@ def get_source(source_uuid: str,
     anns = [_row_to_annotation(r) for r in ann.execute(
         'SELECT * FROM annotations WHERE source_uuid=? ORDER BY author',
         (source_uuid,))]
+    fu = followup.read(ann, source_uuid)
     cat = orjson.loads(row['catalog_json'])
     return SourceDetail(
         source_uuid=row['source_uuid'], coord_slug=row['coord_slug'],
@@ -407,7 +408,7 @@ def get_source(source_uuid: str,
         spec_surveys=_split_surveys(row['spec_surveys']),
         catalog=cat, classes=classes_of(cat),
         redshifts=redshifts_of(cat), class_redshifts=class_redshifts_of(cat),
-        annotations=anns)
+        annotations=anns, followup=Followup(**fu) if fu else None)
 
 
 @router.get('/sources/{source_uuid}/lightcurve')

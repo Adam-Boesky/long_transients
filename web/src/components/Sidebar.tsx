@@ -64,9 +64,11 @@ export interface SidebarProps {
   /** Deleting can fail (a label with sources), and the page owns the place
    *  that failure is shown, so it stays a prop. */
   onDeleteLabel?: (label: string) => void
-  /** Follow-up observing state; null is "nothing". */
+  /** The object's follow-up state, shared by everyone; null is "nothing". */
   currentStatus?: FollowupStatus | null
   onStatus?: (status: FollowupStatus | null) => void
+  /** Who set it and when, shown under the control. */
+  statusBy?: string | null
   /** Rendered directly under the label buttons: the comment box, so the
    *  verdict and its reasoning are filed from the same place. */
   belowLabels?: ReactNode
@@ -219,6 +221,13 @@ export function Sidebar(p: SidebarProps) {
                 value={p.currentStatus ?? ''}
                 onChange={(v) => p.onStatus?.(
                   v === p.currentStatus ? null : v as FollowupStatus)} />
+              {/* Shared by everyone and every detection of the object, so
+                  say whose call it was. */}
+              {p.currentStatus && p.statusBy && (
+                <div style={{ marginTop: 4, fontSize: 12, opacity: 0.55 }}>
+                  {p.statusBy}
+                </div>
+              )}
             </div>
           )}
           {/* The drop target is the heading and the whole list, not each

@@ -18,9 +18,13 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
+from api import followup
+from api.catalog_filters import get_filters
 from api.db import get_annotations, get_science
-from api.models import (Annotation, AnnotationIn, Disagreement, Label, LabelIn,
-                        LabelOrder, LabelPatch, MemberProgress, Progress, Stats, Verdict)
+from api.models import (Annotation, AnnotationIn, Disagreement, Followup, FollowupIn,
+                        Label, LabelIn, LabelOrder, LabelPatch, MemberProgress,
+                        Progress, Stats, Verdict)
+from source_db.serving.filters import CatalogFilters
 
 router = APIRouter()
 
@@ -34,7 +38,6 @@ def _row_to_annotation(row) -> Annotation:
         source_uuid=row['source_uuid'], author=row['author'], label=row['label'],
         confidence=row['confidence'], note=row['note'],
         tags=json.loads(row['tags']) if row['tags'] else [],
-        status=row['status'],
         created_at=row['created_at'], updated_at=row['updated_at'])
 
 
@@ -62,23 +65,22 @@ def put_annotation(source_uuid: str, author: str, body: AnnotationIn,
         (source_uuid, author)).fetchone()
     created = prior['created_at'] if prior else now
 
+    # `status` is not written: it moved to the per-object `followup` table.
     con.execute(
         'INSERT INTO annotations '
-        '(source_uuid, author, label, confidence, note, tags, status, '
-        ' created_at, updated_at) '
-        'VALUES (?,?,?,?,?,?,?,?,?) '
+        '(source_uuid, author, label, confidence, note, tags, created_at, updated_at) '
+        'VALUES (?,?,?,?,?,?,?,?) '
         'ON CONFLICT(source_uuid, author) DO UPDATE SET '
         '  label=excluded.label, confidence=excluded.confidence, '
-        '  note=excluded.note, tags=excluded.tags, status=excluded.status, '
+        '  note=excluded.note, tags=excluded.tags, '
         '  updated_at=excluded.updated_at',
         (source_uuid, author, body.label, body.confidence, body.note, tags,
-         body.status, created, now))
+         created, now))
     con.execute(
         'INSERT INTO history '
-        '(source_uuid, author, label, confidence, note, tags, status, recorded_at) '
-        'VALUES (?,?,?,?,?,?,?,?)',
-        (source_uuid, author, body.label, body.confidence, body.note, tags,
-         body.status, now))
+        '(source_uuid, author, label, confidence, note, tags, recorded_at) '
+        'VALUES (?,?,?,?,?,?,?)',
+        (source_uuid, author, body.label, body.confidence, body.note, tags, now))
     con.commit()
 
     return _row_to_annotation(con.execute(
@@ -96,6 +98,38 @@ def delete_annotation(source_uuid: str, author: str,
     if cur.rowcount == 0:
         raise HTTPException(404, 'no annotation for that source and author')
     return {'deleted': cur.rowcount}
+
+
+# ── follow-up status ──────────────────────────────────────────────────────────
+
+
+@router.get('/sources/{source_uuid}/followup', response_model=Followup | None)
+def get_followup(source_uuid: str,
+                 con: sqlite3.Connection = Depends(get_annotations)):
+    """The object's shared follow-up status, or null when nobody has set one."""
+    row = followup.read(con, source_uuid)
+    return Followup(**row) if row else None
+
+
+@router.put('/sources/{source_uuid}/followup', response_model=Followup | None)
+def put_followup(source_uuid: str, body: FollowupIn,
+                 sci: sqlite3.Connection = Depends(get_science),
+                 con: sqlite3.Connection = Depends(get_annotations),
+                 cat: CatalogFilters = Depends(get_filters)):
+    """Set (or, with an empty status, clear) the object's follow-up status.
+
+    Written to every detection of the object -- the sources sharing this
+    one's `group_id` -- so the same object is never queued twice from two
+    fields. Last writer wins; the row says who that was.
+    """
+    if sci.execute('SELECT 1 FROM sources WHERE source_uuid=?',
+                   (source_uuid,)).fetchone() is None:
+        raise HTTPException(404, f'no source {source_uuid}')
+    members = [m['source_uuid'] for m in cat.group_members(source_uuid)] or [source_uuid]
+    followup.set_status(con, members, body.status, body.author)
+    con.commit()
+    row = followup.read(con, source_uuid)
+    return Followup(**row) if row else None
 
 
 _LABELS_IN_ORDER = (

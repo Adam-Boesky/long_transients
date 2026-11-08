@@ -36,6 +36,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -60,6 +61,13 @@ VALUES_PREFIX = '@'
 # the whole point is that these queries are milliseconds on one core.
 DEFAULT_THREADS = int(os.environ.get('LT_FILTER_THREADS', 4))
 DEFAULT_MEMORY_LIMIT = os.environ.get('LT_FILTER_MEMORY_LIMIT', '2GB')
+# Distinct predicates whose totals are kept. Each is one integer.
+COUNT_CACHE_MAX = 256
+
+
+def _hashable(value: Any) -> Any:
+    """A bound parameter as a cache key: lists (the `in` operator's) become tuples."""
+    return tuple(value) if isinstance(value, list) else value
 
 
 class FilterError(ValueError):
@@ -195,9 +203,12 @@ class CatalogFilters:
         self._con.execute(f'SET threads = {int(threads or DEFAULT_THREADS)}')
         self._con.execute(
             f"SET memory_limit = '{memory_limit or DEFAULT_MEMORY_LIMIT}'")
-        # A view, not a table: the parquet stays on disk and DuckDB reads only
-        # the columns a predicate names. Materialising it would cost 480 MB of
-        # RAM to make 6 ms queries into 2 ms ones.
+        # A view over the parquet to begin with: DuckDB reads only the columns
+        # a predicate names, and nothing is held in memory. `materialize()`
+        # copies it into a table once the attachments and derivations are in,
+        # which the API does at startup: every query then stops re-reading
+        # and re-deriving 250k rows (a count went from 42 ms to 9, a group
+        # lookup from 49 ms to 8) for ~1.3 GB of resident memory.
         #
         # The path is inlined because DDL cannot take a bound parameter. It is
         # a configured path rather than anything a request carries, and the
@@ -207,7 +218,15 @@ class CatalogFilters:
         self._derived: dict[str, str] = {}
         self._values: set[str] = set()
         self._columns: dict[str, ColumnInfo] | None = None
-        self._lock = threading.Lock()
+        self._pcols: set[str] | None = None
+        self._materialized = False
+        # Counts by compiled predicate. The data under a predicate never
+        # changes for a release (the values tables only order), and the
+        # candidate list asks for the same total on every window refill.
+        self._counts: OrderedDict[tuple, int] = OrderedDict()
+        # Re-entrant: `attach` and `derive` hold it around `_build_view`, which
+        # re-materialises -- and that takes it again.
+        self._lock = threading.RLock()
         self._build_view()
 
     # ── extra columns ─────────────────────────────────────────────────────────
@@ -228,6 +247,26 @@ class CatalogFilters:
             f"SELECT p.*{extra_select} "
             f"FROM read_parquet('{self._literal}') p{joins}")
         self._columns = None
+        self._counts.clear()
+        if self._materialized:
+            self.materialize()
+
+    def materialize(self) -> None:
+        """Copy `catalog` into a table, indexed by uuid, and point the view at it.
+
+        Call once everything is attached and derived. Anything attached or
+        derived afterwards rebuilds the view over the parquet and then
+        re-materialises, so the table never goes stale.
+        """
+        with self._lock:
+            self._materialized = False      # so a nested _build_view does not recurse
+            self._con.execute('DROP TABLE IF EXISTS catalog_rows')
+            self._con.execute('CREATE TABLE catalog_rows AS SELECT * FROM catalog')
+            self._con.execute(
+                f'CREATE INDEX idx_catalog_rows_uuid ON catalog_rows ({_quote(UUID)})')
+            self._con.execute('CREATE OR REPLACE VIEW catalog AS SELECT * FROM catalog_rows')
+            self._materialized = True
+            self._counts.clear()
 
     def derive(self, name: str, expression: str) -> None:
         """Add a computed column, as though the catalog had always had it.
@@ -299,35 +338,43 @@ class CatalogFilters:
             finally:
                 self._con.unregister('_attach_src')
 
-    def register_values(self, name: str, values: dict[str, Any]) -> str:
-        """Numbers per uuid to *order by*, without becoming a catalog column.
+    def register_values(self, name: str, values: dict[str, Any], *,
+                        replace: bool = False) -> str:
+        """Values per uuid to *order by*, without becoming a catalog column.
 
         For rankings that arrive from outside the catalog -- a statistic
         computed in a notebook and uploaded beside the positions it belongs
-        to. They are not part of the catalog view: `columns()` does not list
-        them, nothing filters on them, and defining them would rebuild the
-        view underneath in-flight readers. They live in their own small
-        table, and the returned key (`'@' + name`) is accepted wherever a
-        sort column is; sources without a value sort last, as NULLs do.
+        to, or what the annotators have filed. They are not part of the
+        catalog view: `columns()` does not list them, nothing filters on
+        them, and defining them would rebuild the view underneath in-flight
+        readers. They live in their own small table, and the returned key
+        (`'@' + name`) is accepted wherever a sort column is; sources without
+        a value sort last, as NULLs do. Numbers order numerically; if any
+        value is a string, all of them order as strings.
 
         Idempotent per name: the first call stores the table, later ones
         return the key. So name it by what it is derived from (a list id and
-        a column), not by the request.
+        a column), not by the request. `replace` rebuilds the table instead,
+        for values that change under a running server.
         """
         if not isinstance(name, str) or not name.isidentifier():
             raise FilterError(f'{name!r} is not a usable sort name')
         key = VALUES_PREFIX + name
-        if name in self._values:
+        if name in self._values and not replace:
             return key
         import pyarrow as pa
 
+        vals = list(values.values())
+        if any(isinstance(v, str) for v in vals):
+            column = pa.array([None if v is None else str(v) for v in vals], pa.string())
+        else:
+            column = pa.array([None if v is None else float(v) for v in vals], pa.float64())
         table = pa.table({
             UUID: pa.array([str(u) for u in values], pa.string()),
-            'value': pa.array([None if v is None else float(v) for v in values.values()],
-                              pa.float64()),
+            'value': column,
         })
         with self._lock:
-            if name not in self._values:
+            if name not in self._values or replace:
                 self._con.register('_values_src', table)
                 try:
                     self._con.execute(
@@ -354,8 +401,12 @@ class CatalogFilters:
         return _quote(sort)
 
     def _parquet_columns(self) -> set[str]:
-        return {r[0] for r in self._cursor().execute(
-            f"DESCRIBE SELECT * FROM read_parquet('{self._literal}')").fetchall()}
+        # Read once: the file is fixed for the engine's life, and this is
+        # asked on every group lookup and every one-per-object query.
+        if self._pcols is None:
+            self._pcols = {r[0] for r in self._cursor().execute(
+                f"DESCRIBE SELECT * FROM read_parquet('{self._literal}')").fetchall()}
+        return self._pcols
 
     # ── introspection ─────────────────────────────────────────────────────────
 
@@ -676,10 +727,21 @@ class CatalogFilters:
         return f'{self._sort_key(sort)} {direction} NULLS LAST, {_quote(UUID)} ASC'
 
     def count(self, doc: Any = None) -> int:
-        """How many sources match. Cheap enough to call on every UI keystroke."""
+        """How many sources match. Cheap enough to call on every UI keystroke,
+        and remembered per predicate: the list asks again on every refill."""
         where, params = self.compile(doc)
-        return self._cursor().execute(
+        key = (where, tuple(_hashable(p) for p in params))
+        with self._lock:
+            if key in self._counts:
+                self._counts.move_to_end(key)
+                return self._counts[key]
+        total = self._cursor().execute(
             f'SELECT COUNT(*) FROM catalog WHERE {where}', params).fetchone()[0]
+        with self._lock:
+            self._counts[key] = total
+            if len(self._counts) > COUNT_CACHE_MAX:
+                self._counts.popitem(last=False)
+        return total
 
     def page(self, doc: Any = None, *, sort: str = UUID, desc: bool = False,
              limit: int = 200, offset: int = 0) -> dict[str, Any]:
@@ -692,10 +754,8 @@ class CatalogFilters:
         """
         order = self._order_by(sort, desc)
         where, params = self.compile(doc)
-        cur = self._cursor()
-        total = cur.execute(f'SELECT COUNT(*) FROM catalog WHERE {where}',
-                            params).fetchone()[0]
-        rows = cur.execute(
+        total = self.count(doc)
+        rows = self._cursor().execute(
             f'SELECT {_quote(UUID)} FROM catalog WHERE {where} '
             f'ORDER BY {order} LIMIT ? OFFSET ?',
             [*params, limit, offset]).fetchall()

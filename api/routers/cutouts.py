@@ -8,6 +8,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from api.db import get_science
+from source_db.constants import QUERY_REGIONS
 from source_db.cutouts import epochs, render
 
 router = APIRouter()
@@ -67,7 +68,7 @@ def get_cutouts(source_uuid: str,
 
     images: dict[str, dict[str, str]] = {}
     if row['ra'] is None or row['dec'] is None:
-        return {'source_uuid': source_uuid, 'images': images}
+        return {'source_uuid': source_uuid, 'images': images, 'regions': QUERY_REGIONS}
 
     qs = f'?stretch={quote(stretch)}&percent={percent}'
     have = _origins(sci, source_uuid)
@@ -82,8 +83,11 @@ def get_cutouts(source_uuid: str,
     # cover the same angle: PanSTARRS is 240 px at 0.25" (60.0") but ZTF is
     # 61 px at 1.0" (61.0"). Sending the pixel scale lets it size the bar
     # from each PNG's own width rather than assuming a common field of view.
+    # The radii everything about the source was gathered within, so the page
+    # can draw each one on the stamps.
     return {'source_uuid': source_uuid, 'images': images,
-            'pixel_arcsec': {s: render.PIXEL_ARCSEC[s] for s in images}}
+            'pixel_arcsec': {s: render.PIXEL_ARCSEC[s] for s in images},
+            'regions': QUERY_REGIONS}
 
 
 @router.get('/sources/{source_uuid}/cutout/{survey}/{band}.png')

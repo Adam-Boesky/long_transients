@@ -18,6 +18,8 @@
  * a stamp is blown up to full screen.
  */
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { explainImageFailure, retryUrl } from '../api/client'
+import type { QueryRegion } from '../api/types'
 
 const CUTOUT_BANDS = ['g', 'r', 'i'] as const
 
@@ -32,6 +34,9 @@ export interface CutoutGridProps {
   catalog?: Record<string, unknown> | null
   /** survey -> arcsec per pixel, from the API. */
   pixelArcsec?: Record<string, number> | null
+  /** The radii everything about the source was gathered within, from the
+   *  API; each has a checkbox that draws it on the stamps. */
+  regions?: QueryRegion[] | null
   stretch?: string
   onStretch?: (s: string) => void
   percent?: number
@@ -82,6 +87,26 @@ const SCALE_BAR_ARCSEC = 10
 const RETICLE_OFFSET_PCT = 3
 const RETICLE_LEN_PCT = 4
 
+// Which query regions are drawn: a per-viewer convenience, so it is
+// remembered in this browser only.
+const REGIONS_KEY = 'cutout-regions'
+function loadRegions(): Set<string> {
+  try { return new Set(JSON.parse(localStorage.getItem(REGIONS_KEY) ?? '[]') as string[]) }
+  catch { return new Set() }
+}
+
+// One colour per region, by key, so a circle can be read back to its
+// checkbox. All sit apart from the red reticle and from viridis -- which
+// has no magenta anywhere, so that is the one the eye lands on first.
+const REGION_COLORS: Record<string, string> = {
+  lightcurve: '#ff2bd6', catalog: '#ffb000', gaia: '#ff5c5c',
+  wise_beam: '#ffe600', erosita: '#c58cff',
+}
+const regionColor = (key: string) => REGION_COLORS[key] ?? '#ffffff'
+
+/** A region as drawn: the ones ticked, with their colours. */
+type DrawnRegion = QueryRegion & { color: string }
+
 /** What the hover preview is currently showing. */
 interface Magnified {
   url: string
@@ -94,11 +119,18 @@ interface Magnified {
 
 export function CutoutGrid({ images, loading, catalog, pixelArcsec,
                             stretch, onStretch, percent, links,
-                            onPercent }: CutoutGridProps) {
+                            onPercent, regions }: CutoutGridProps) {
   // Which stamp the enlarge dialog is showing, if any. Enlarging one at a
   // time beats a full-screen view of all six: the thing you want a closer
   // look at is a single band, with the other five still there to compare.
   const [enlarged, setEnlarged] = useState<Magnified | null>(null)
+  const [ticked, setTicked] = useState(loadRegions)
+  useEffect(() => {
+    try { localStorage.setItem(REGIONS_KEY, JSON.stringify([...ticked])) } catch { /* private window */ }
+  }, [ticked])
+  const drawn: DrawnRegion[] = (regions ?? [])
+    .filter((r) => ticked.has(r.key))
+    .map((r) => ({ ...r, color: regionColor(r.key) }))
 
   return (
     <div style={{ display: 'grid', gap: 8 }}>
@@ -135,6 +167,34 @@ export function CutoutGrid({ images, loading, catalog, pixelArcsec,
         )}
       </div>
 
+      {/* Which query radii to draw, one checkbox each, in the colour the
+          circle takes. Its own row: five labels do not fit beside the
+          stretch controls. */}
+      {regions && regions.length > 0 && (
+        <div style={{ display: 'flex', gap: '4px 12px', flexWrap: 'wrap',
+                      alignItems: 'center', fontSize: 12, opacity: 0.85 }}>
+          <span style={{ opacity: 0.7 }}>Regions</span>
+          {regions.map((r) => (
+            <label key={r.key}
+                   title={`${r.help} (${r.radius_arcsec}\u2033)`}
+                   style={{ display: 'inline-flex', gap: 4, alignItems: 'center',
+                            cursor: 'pointer', whiteSpace: 'nowrap' }}>
+              <input type="checkbox" checked={ticked.has(r.key)}
+                     onChange={(e) => setTicked((prev) => {
+                       const next = new Set(prev)
+                       if (e.target.checked) next.add(r.key); else next.delete(r.key)
+                       return next
+                     })} />
+              <span style={{ width: 9, height: 9, borderRadius: '50%',
+                             border: `2px solid ${regionColor(r.key)}`,
+                             background: 'var(--bg-soft)', boxSizing: 'border-box' }} />
+              {r.label}
+              <span style={{ opacity: 0.55 }}>{r.radius_arcsec}&Prime;</span>
+            </label>
+          ))}
+        </div>
+      )}
+
       {/* Both survey rows share one grid rather than being a flex row each,
           which is what keeps the g/r/i stamps in the two rows in the same
           three columns. */}
@@ -159,6 +219,7 @@ export function CutoutGrid({ images, loading, catalog, pixelArcsec,
                         url={images?.[row.survey]?.[band] ?? null}
                         loading={loading}
                         arcsecPerPixel={pixelArcsec?.[row.survey] ?? null}
+                        drawn={drawn}
                         survey={row.label}
                         psf={mag(catalog, row.prefix, band, 'PSF')}
                         kron={mag(catalog, row.prefix, band, 'Kron')}
@@ -169,7 +230,8 @@ export function CutoutGrid({ images, loading, catalog, pixelArcsec,
         ))}
       </div>
       {enlarged && (
-        <EnlargeDialog shot={enlarged} onClose={() => setEnlarged(null)} />
+        <EnlargeDialog shot={enlarged} drawn={drawn}
+                       onClose={() => setEnlarged(null)} />
       )}
     </div>
   )
@@ -177,11 +239,12 @@ export function CutoutGrid({ images, loading, catalog, pixelArcsec,
 
 /** One stamp, its band label underneath, and its magnitudes to the right. */
 function BandCell({ url, band, loading, psf, kron, limit, arcsecPerPixel,
-                    survey, onEnlarge }:
+                    drawn, survey, onEnlarge }:
                   { url: string | null; band: string
                     loading?: boolean; psf: Mag; kron: Mag
                     limit: number | null
-                    arcsecPerPixel: number | null; survey: string
+                    arcsecPerPixel: number | null; drawn: DrawnRegion[]
+                    survey: string
                     onEnlarge: (m: Magnified) => void }) {
   return (
     <>
@@ -194,7 +257,7 @@ function BandCell({ url, band, loading, psf, kron, limit, arcsecPerPixel,
             below does not shift where the button sits. */}
         <div className="cutout-frame" style={{ position: 'relative' }}>
           <Cutout url={url} band={band} loading={loading}
-                  arcsecPerPixel={arcsecPerPixel} />
+                  arcsecPerPixel={arcsecPerPixel} drawn={drawn} />
           {url && (
             <button
               className="cutout-enlarge"
@@ -247,8 +310,9 @@ function BandCell({ url, band, loading, psf, kron, limit, arcsecPerPixel,
  * Backdrop clicks are wired up by hand because the attribute that does it
  * natively, `closedby="any"`, is not Baseline yet.
  */
-function EnlargeDialog({ shot, onClose }:
-                       { shot: Magnified; onClose: () => void }) {
+function EnlargeDialog({ shot, drawn, onClose }:
+                       { shot: Magnified; drawn: DrawnRegion[]
+                         onClose: () => void }) {
   const { url, band, survey, arcsecPerPixel, psf, kron } = shot
   const ref = useRef<HTMLDialogElement | null>(null)
   const [naturalPx, setNaturalPx] = useState(0)
@@ -285,6 +349,9 @@ function EnlargeDialog({ shot, onClose }:
           <Reticle />
           {arcsecPerPixel !== null && naturalPx > 0 && (
             <ScaleBar fovArcsec={naturalPx * arcsecPerPixel} />
+          )}
+          {arcsecPerPixel !== null && naturalPx > 0 && (
+            <Regions drawn={drawn} fovArcsec={naturalPx * arcsecPerPixel} />
           )}
         </div>
         <div style={{ display: 'flex', gap: 14, alignItems: 'baseline',
@@ -369,12 +436,19 @@ function fmt(m: Mag): string {
                         : `${m.value.toFixed(2)} ± ${m.err.toFixed(2)}`
 }
 
-function Cutout({ url, band, loading, arcsecPerPixel }:
+function Cutout({ url, band, loading, arcsecPerPixel, drawn }:
                 { url: string | null; band: string
-                  loading?: boolean; arcsecPerPixel: number | null }) {
+                  loading?: boolean; arcsecPerPixel: number | null
+                  drawn: DrawnRegion[] }) {
   const [state, setState] = useState<'idle' | 'ok' | 'error'>('idle')
   // The stamp's native pixel count, which sets the scale bar's length.
   const [naturalPx, setNaturalPx] = useState(0)
+  // Why it failed, asked for after the fact: `onError` says nothing itself.
+  const [reason, setReason] = useState<string | null>(null)
+  // Bumped by Retry; a new address, so a failure the browser cached is not
+  // simply replayed.
+  const [attempt, setAttempt] = useState(0)
+  const src = url ? retryUrl(url, attempt) : null
 
   // Reset *during render* when the URL changes, not in an effect.
   //
@@ -388,7 +462,15 @@ function Cutout({ url, band, loading, arcsecPerPixel }:
   if (seenUrl !== url) {
     setSeenUrl(url)
     setState('idle')
+    setReason(null)
+    setAttempt(0)
   }
+  useEffect(() => {
+    if (state !== 'error' || !src) return
+    let live = true
+    void explainImageFailure(src).then((why) => { if (live) setReason(why) })
+    return () => { live = false }
+  }, [state, src])
 
   // A cached image can also finish before React attaches `onLoad` at all, so
   // the ref checks whether it is already complete on mount.
@@ -409,13 +491,13 @@ function Cutout({ url, band, loading, arcsecPerPixel }:
 
   return (
     <div style={frame}>
-      {url && (
+      {src && (
         <img
           ref={attach}
           // A fresh element per URL, so a cached swap cannot reuse the old
           // one's completed state.
-          key={url}
-          src={url}
+          key={src}
+          src={src}
           alt={`${band} band cutout`}
           // The images are the point of the page, so they are not lazy and
           // are hinted as high priority; `async` decoding keeps a slow
@@ -445,14 +527,51 @@ function Cutout({ url, band, loading, arcsecPerPixel }:
       {state === 'ok' && arcsecPerPixel !== null && naturalPx > 0 && (
         <ScaleBar fovArcsec={naturalPx * arcsecPerPixel} />
       )}
-      {(state !== 'ok') && (
+      {state === 'ok' && arcsecPerPixel !== null && naturalPx > 0 && (
+        <Regions drawn={drawn} fovArcsec={naturalPx * arcsecPerPixel} />
+      )}
+      {state === 'error' ? (
+        <ImageFailure reason={reason}
+                      onRetry={() => { setState('idle'); setReason(null); setAttempt((n) => n + 1) }} />
+      ) : state !== 'ok' && (
         <div style={{ position: 'absolute', inset: 0, display: 'grid',
                       placeItems: 'center', fontSize: 11,
                       color: 'var(--text-dim)' }}>
-          {!url ? (loading ? '…' : 'not available')
-                : state === 'error' ? 'failed' : '…'}
+          {!url ? (loading ? '…' : 'not available') : '…'}
         </div>
       )}
+    </div>
+  )
+}
+
+/** What went wrong with an image and a way to ask again. Shared by the
+ *  stamps and the epoch dialog so a failure reads the same in both. */
+export function ImageFailure({ reason, onRetry, large }:
+                             { reason: string | null; onRetry: () => void
+                               large?: boolean }) {
+  return (
+    <div style={{ position: 'absolute', inset: 0, display: 'flex',
+                  flexDirection: 'column', alignItems: 'center',
+                  justifyContent: 'center', gap: 4, padding: 8,
+                  fontSize: large ? 13 : 11, textAlign: 'center' }}>
+      <span style={{ color: 'var(--danger, #b42318)', fontWeight: 600 }}>failed</span>
+      {/* The reason comes from a second request (an <img> error says
+          nothing), so it appears a moment after the verdict rather than
+          holding it up. */}
+      {reason && (
+        <span title={reason}
+              style={{ color: 'var(--text-dim)', maxWidth: '100%', overflow: 'hidden',
+                       textOverflow: 'ellipsis',
+                       // Three lines at most on a stamp; the title has the rest.
+                       display: '-webkit-box', WebkitLineClamp: large ? 6 : 3,
+                       WebkitBoxOrient: 'vertical', wordBreak: 'break-word' }}>
+          {reason}
+        </span>
+      )}
+      <button type="button" onClick={onRetry}
+              style={{ padding: '1px 8px', fontSize: large ? 12 : 11, borderRadius: 4 }}>
+        Retry
+      </button>
     </div>
   )
 }
@@ -471,6 +590,29 @@ export function Reticle() {
                     top: `${50 + RETICLE_OFFSET_PCT - RETICLE_LEN_PCT / 2}%`,
                     left: '50%', height: `${RETICLE_LEN_PCT}%`, width: 2,
                     transform: 'translateX(-50%)' }} />
+    </>
+  )
+}
+
+/** The ticked query radii as circles on the source, sized from the stamp's
+ *  own field of view like the scale bar. 1px lines, so the 1.5" ones cover
+ *  nothing. */
+export function Regions({ drawn, fovArcsec }:
+                        { drawn: DrawnRegion[]; fovArcsec: number }) {
+  return (
+    <>
+      {drawn.map((r) => {
+        const pct = (2 * r.radius_arcsec / fovArcsec) * 100
+        return (
+          <div key={r.key}
+               style={{ position: 'absolute', left: '50%', top: '50%',
+                        width: `${pct}%`, height: `${pct}%`,
+                        transform: 'translate(-50%, -50%)',
+                        border: `1px solid ${r.color}`, borderRadius: '50%',
+                        boxSizing: 'border-box',
+                        boxShadow: '0 0 2px rgba(0,0,0,0.9)', pointerEvents: 'none' }} />
+        )
+      })}
     </>
   )
 }

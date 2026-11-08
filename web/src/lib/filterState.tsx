@@ -92,6 +92,10 @@ export interface FilterState {
   setDuplicates: (v: DuplicateMode) => void
   /** Whether this release has `group_id` to filter on. */
   hasGroups: boolean
+  /** True once the release's schema has been read and `query` has its final
+   *  shape. Until then a query change is this provider finishing its own
+   *  setup, not the user editing a filter. */
+  ready: boolean
   /** An uploaded coordinate list: only the sources it matched are shown. */
   coordList: CoordListSummary | null
   /** Its id, which is what the queries carry; set before the summary arrives
@@ -189,13 +193,19 @@ export function FilterProvider({ member, children }:
   // none, and a clause naming a missing column would fail the whole query.
   const [matchCatalogs, setMatchCatalogs] = useState<string[]>([])
   const [hasGroups, setHasGroups] = useState(false)
+  const [ready, setReady] = useState(false)
   useEffect(() => {
     const ac = new AbortController()
     getFilterSchema(ac.signal).then((schema) => {
       const have = new Set(schema.groups.flatMap((g) => g.columns.map((c) => c.name)))
       setMatchCatalogs(MATCH_CATALOGS.filter(([, col]) => have.has(col)).map(([name]) => name))
       setHasGroups(have.has('group_id'))
-    }).catch(() => {})
+      setReady(true)
+    }).catch(() => {
+      // Unreadable schema: carry on with the default query rather than
+      // leaving every page waiting for a readiness that never comes.
+      if (!ac.signal.aborted) setReady(true)
+    })
     return () => ac.abort()
   }, [])
   const [w1w2, setW1w2] = useState<W1W2Mode>('Any')
@@ -307,12 +317,12 @@ export function FilterProvider({ member, children }:
     labelState, setLabelState, columnFilter, setColumnFilter, query,
     classFilter, setClassFilter, matchFilter, setMatchFilter, matchCatalogs,
     w1w2, setW1w2, w1w2KeepMissing, setW1w2KeepMissing, clearFilters,
-    duplicates, setDuplicates, hasGroups, coordList, coordListId, setCoordList,
+    duplicates, setDuplicates, hasGroups, ready, coordList, coordListId, setCoordList,
     labels, labelColors, labelCounts, setLabels, setLabelColors, takeLabels,
     reloadLabels, addBucket, deleteBucket,
   }), [search, catalog, bucketFilter, statusFilter, labelState, columnFilter,
        classFilter, matchFilter, matchCatalogs, w1w2, w1w2KeepMissing, clearFilters,
-       duplicates, hasGroups, coordList, coordListId, setCoordList, query, labels, labelColors, labelCounts, takeLabels, reloadLabels,
+       duplicates, hasGroups, ready, coordList, coordListId, setCoordList, query, labels, labelColors, labelCounts, takeLabels, reloadLabels,
        addBucket, deleteBucket])
 
   return <Context.Provider value={value}>{children}</Context.Provider>

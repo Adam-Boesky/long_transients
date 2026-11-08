@@ -45,6 +45,7 @@ from pathlib import Path
 
 from api import coord_lists
 from api.config import ANNOTATIONS_PATH, COORD_LISTS_PATH, SCIENCE_PATH
+from api.followup import backfill_from_annotations
 from source_db.serving.schema import ANNOTATIONS_SCHEMA
 
 # The annotations schema and its WAL setting are applied once per process
@@ -78,6 +79,12 @@ def _bootstrap_annotations(path: Path) -> None:
                 if have and 'status' not in have:
                     con.execute(f'ALTER TABLE {table} ADD COLUMN status TEXT')
             con.executescript(ANNOTATIONS_SCHEMA)
+            # A database from before the shared follow-up status carries it
+            # per author on `annotations`. Folding it into `followup` clears
+            # that column in the same transaction, so this is a no-op on every
+            # open after the first.
+            con.row_factory = sqlite3.Row
+            backfill_from_annotations(con)
             # CREATE TABLE IF NOT EXISTS leaves an older labels table as it
             # was, so add the columns added since: order, then colour.
             cols = {r[1] for r in con.execute('PRAGMA table_info(labels)')}

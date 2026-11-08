@@ -26,6 +26,10 @@ ZTFORCE_WORKER = os.environ.get('LT_ZTFORCE_WORKER', '1') not in ('0', 'false', 
 # Sources photometered at once. Each already runs 8 parallel downloads.
 ZTFORCE_CONCURRENCY = int(os.environ.get('LT_ZTFORCE_CONCURRENCY', '4'))
 
+# Copy the catalog into memory at startup (`CatalogFilters.materialize`): every
+# query 5-10x faster for ~1.3 GB of RSS. Set to 0 on a host that cannot spare it.
+MATERIALIZE = os.environ.get('LT_MATERIALIZE', '1') not in ('0', 'false', 'no', '')
+
 # The candidate list is paginated; a page of 50 is ~15 kB of JSON.
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 500

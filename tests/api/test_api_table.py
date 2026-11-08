@@ -439,8 +439,8 @@ def test_redshifts_parse_text_cells():
 def test_table_filters_by_followup_status(client):
     """`none` is the complement of the rest, not a stored value."""
     from tests.conftest import UUIDS
-    client.put(f'/api/sources/{UUIDS[0]}/annotations/adam',
-               json={'label': 'SN', 'status': 'queued'})
+    client.put(f'/api/sources/{UUIDS[1]}/followup',
+               json={'status': 'queued', 'author': 'adam'})
     total = client.get('/api/table?limit=1').json()['total']
 
     queued = client.get('/api/table?limit=1&status_in=queued').json()['total']
@@ -458,8 +458,8 @@ def test_status_filter_matches_a_source_with_no_label(client):
     """A source can be queued without being filed, which `_label_filter`
     would have excluded."""
     from tests.conftest import UUIDS
-    client.put(f'/api/sources/{UUIDS[1]}/annotations/adam',
-               json={'status': 'to queue'})
+    client.put(f'/api/sources/{UUIDS[1]}/followup',
+               json={'status': 'to queue', 'author': 'adam'})
     body = client.get('/api/table?limit=10&status_in=to+queue').json()
     assert [r['source_uuid'] for r in body['rows']] == [UUIDS[1]]
 
@@ -539,3 +539,57 @@ def test_an_unknown_exclude_removes_nothing(client):
     total = client.get('/api/table?limit=1').json()['total']
     assert client.get(
         '/api/table?limit=1&bucket_out=NoSuchBucket').json()['total'] == total
+
+
+# ── ordering by what the annotators filed ─────────────────────────────────────
+#
+# These columns are not in the catalog, so the API renders them to per-uuid
+# values and the engine orders the whole sample by them. Sources without a
+# value sort last either way.
+
+def _order(client, sort, desc=True, **params):
+    body = client.get('/api/table', params={'sort': sort, 'desc': desc, **params}).json()
+    return [r['source_uuid'] for r in body['rows']]
+
+
+def test_table_sorts_by_bucket_across_the_whole_sample(client):
+    from tests.conftest import UUIDS
+    client.put(f'/api/sources/{UUIDS[3]}/annotations/adam', json={'label': 'SN'})
+    client.put(f'/api/sources/{UUIDS[1]}/annotations/beth', json={'label': 'AGN'})
+    client.put(f'/api/sources/{UUIDS[1]}/annotations/adam', json={'label': 'SN'})
+    rest = sorted(u for u in UUIDS if u not in (UUIDS[1], UUIDS[3]))
+    # The cell text: 'AGN / SN' < 'SN'; unfiled sources last, by uuid.
+    assert _order(client, 'ann:bucket', desc=False) == [UUIDS[1], UUIDS[3], *rest]
+    assert _order(client, 'ann:bucket', desc=True) == [UUIDS[3], UUIDS[1], *rest]
+
+
+def test_table_sorts_status_in_progress_order(client):
+    from tests.conftest import UUIDS
+    for uuid, st in ((UUIDS[1], 'observed'), (UUIDS[3], 'to queue'), (UUIDS[4], 'queued')):
+        client.put(f'/api/sources/{uuid}/followup', json={'status': st, 'author': 'adam'})
+    assert _order(client, 'ann:status', desc=True)[:3] == [UUIDS[1], UUIDS[4], UUIDS[3]]
+    assert _order(client, 'ann:status', desc=False)[:3] == [UUIDS[3], UUIDS[4], UUIDS[1]]
+
+
+def test_table_sorts_by_comment_count_and_ztforce(client, ztforce_con):
+    from api import ztforce_store
+    from tests.conftest import UUIDS
+    client.put(f'/api/sources/{UUIDS[3]}/annotations/adam', json={'note': 'odd'})
+    client.put(f'/api/sources/{UUIDS[3]}/annotations/beth', json={'note': 'agreed'})
+    client.put(f'/api/sources/{UUIDS[1]}/annotations/adam', json={'note': 'hm'})
+    assert _order(client, 'ann:comments')[:2] == [UUIDS[3], UUIDS[1]]
+    ztforce_store.request_now(ztforce_con, UUIDS[4], 50.0, 15.0, 'v1')
+    ztforce_store.finish(ztforce_con, UUIDS[4], 'v1', b'stacks', 10, None)
+    assert _order(client, 'ann:ztforce')[0] == UUIDS[4]
+
+
+def test_an_annotation_sort_is_not_served_from_a_stale_page(client):
+    from tests.conftest import UUIDS
+    client.put(f'/api/sources/{UUIDS[3]}/annotations/adam', json={'label': 'SN'})
+    assert _order(client, 'ann:bucket')[0] == UUIDS[3]
+    client.put(f'/api/sources/{UUIDS[1]}/annotations/adam', json={'label': 'Trash'})
+    assert _order(client, 'ann:bucket')[0] == UUIDS[1]
+
+
+def test_table_rejects_an_unknown_annotation_sort(client):
+    assert client.get('/api/table', params={'sort': 'ann:colour'}).status_code == 422
