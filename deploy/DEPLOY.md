@@ -112,6 +112,7 @@ rest of the site is unaffected.
 | `LT_CUTOUT_MAX_GB` | `20` | Cutout cache budget. `0` disables the sweep. |
 | `LT_FILTER_THREADS` | `4` | DuckDB threads |
 | `LT_FILTER_MEMORY_LIMIT` | `2GB` | DuckDB memory ceiling |
+| `LT_MATERIALIZE` | `1` | Copy the catalog into memory at startup: every list, locate and group query 5-10x faster, for ~1.1 GB of resident memory. `0` to query the parquet directly instead. |
 | `LT_ALLOWED_ORIGINS` | localhost | CORS. Unused when the API serves the pages, as here. |
 
 ---

@@ -45,6 +45,16 @@ export interface Label {
 export const FOLLOWUP_STATUSES = ['to queue', 'queued', 'observed'] as const
 export type FollowupStatus = typeof FOLLOWUP_STATUSES[number]
 
+/** Where an object stands in the observing queue. One per object, shared by
+ *  everyone and by every detection of the object; `author` is whoever set
+ *  it last. */
+export interface Followup {
+  source_uuid: string
+  status: FollowupStatus
+  author: string | null
+  updated_at: string
+}
+
 export interface Annotation {
   source_uuid: string
   author: string
@@ -52,7 +62,6 @@ export interface Annotation {
   confidence: string | null
   note: string | null
   tags: string[]
-  status: FollowupStatus | null
   created_at: string | null
   updated_at: string | null
 }
@@ -79,6 +88,8 @@ export interface SourceDetail {
    *  prefix -> class -> median redshift of that class's spectra. */
   class_redshifts?: Record<string, Record<string, number>>
   annotations: Annotation[]
+  /** The object's shared follow-up status; null when nobody has set one. */
+  followup: Followup | null
 }
 
 
@@ -218,6 +229,15 @@ export interface Cutouts {
   images: Record<string, Record<string, string>>
   /** survey -> arcsec per pixel, for sizing the scale-bar overlay. */
   pixel_arcsec: Record<string, number>
+  /** The radii data about the source was gathered within, in display order. */
+  regions: QueryRegion[]
+}
+
+export interface QueryRegion {
+  key: string
+  label: string
+  help: string
+  radius_arcsec: number
 }
 
 // ── table page ────────────────────────────────────────────────────────────────
@@ -233,7 +253,6 @@ export interface TableAnnotation {
   /** The bucket. Null or empty means filed by nobody. */
   label: string | null
   note: string | null
-  status: FollowupStatus | null
 }
 
 export interface TableRow {
@@ -253,6 +272,8 @@ export interface TableRow {
   classes: Record<string, string[]>
   /** Every author's verdict, pooled rather than filtered to one member. */
   annotations: TableAnnotation[]
+  /** The object's follow-up status, or null. */
+  followup: Pick<Followup, 'status' | 'author' | 'updated_at'> | null
   /** Whether ztforce has a stored result for this source. */
   ztforce: boolean
   /** The applied coordinate list's value columns for this source; only
@@ -301,8 +322,9 @@ export interface TableQuery {
 
 export interface TableAnnotations {
   annotations: Record<string, { author: string; label: string | null;
-                                note: string | null
-                                status: FollowupStatus | null }[]>
+                                note: string | null }[]>
+  /** By source; a group's detections each carry the object's status. */
+  followup: Record<string, Pick<Followup, 'status' | 'author' | 'updated_at'>>
   /** Sources with a stored ztforce result. */
   ztforce_done: string[]
 }

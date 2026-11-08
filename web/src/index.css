@@ -88,6 +88,10 @@ dialog::backdrop {
   pointer-events: auto;
 }
 
+/* The row under the pointer, so the eye can follow a wide row across to
+   its comments. The cells have no background of their own. */
+.table-row:hover { background: var(--bg-soft); }
+
 /* Table column resize handle: the right edge of each header cell. */
 .col-resize {
   position: absolute; top: 0; right: 0; bottom: 0; width: 6px;

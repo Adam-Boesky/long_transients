@@ -372,3 +372,54 @@ def test_concurrent_queries_do_not_cross_results(catalog):
 def test_a_missing_catalog_says_which_build_step_to_run(tmp_path):
     with pytest.raises(FileNotFoundError, match='build_catalog_tier'):
         CatalogFilters(tmp_path / 'nope.parquet')
+
+
+# ── values to order by that are not catalog columns ───────────────────────────
+
+def test_registered_values_can_be_strings(catalog):
+    key = catalog.register_values('words', {ROWS[0][0]: 'b', ROWS[2][0]: 'a'})
+    got = uuids_of(catalog.page(sort=key))
+    # 'a' before 'b', then everything without a value, by uuid.
+    assert got[:2] == [ROWS[2][0], ROWS[0][0]]
+    assert got[2:] == sorted(r[0] for r in ROWS[1:] if r[0] != ROWS[2][0])
+    got = uuids_of(catalog.page(sort=key, desc=True))
+    assert got[:2] == [ROWS[0][0], ROWS[2][0]], 'the unvalued tail stays last'
+
+
+def test_registered_values_are_replaced_on_request(catalog):
+    key = catalog.register_values('live', {ROWS[0][0]: 1.0, ROWS[1][0]: 2.0})
+    assert uuids_of(catalog.page(sort=key, desc=True))[:2] == [ROWS[1][0], ROWS[0][0]]
+    # Idempotent by default ...
+    catalog.register_values('live', {ROWS[0][0]: 3.0, ROWS[1][0]: 2.0})
+    assert uuids_of(catalog.page(sort=key, desc=True))[:2] == [ROWS[1][0], ROWS[0][0]]
+    # ... rebuilt when asked.
+    catalog.register_values('live', {ROWS[0][0]: 3.0, ROWS[1][0]: 2.0}, replace=True)
+    assert uuids_of(catalog.page(sort=key, desc=True))[:2] == [ROWS[0][0], ROWS[1][0]]
+
+
+# ── materialising, and the count cache ────────────────────────────────────────
+
+def test_materialize_answers_the_same_as_the_view(catalog):
+    doc = {'column': 'ZTF_gPSFMag', 'op': '<', 'value': 21}
+    before = (catalog.count(doc), uuids_of(catalog.page(doc, sort='ZTF_gPSFMag')),
+              [c.name for c in catalog.columns()])
+    catalog.materialize()
+    after = (catalog.count(doc), uuids_of(catalog.page(doc, sort='ZTF_gPSFMag')),
+             [c.name for c in catalog.columns()])
+    assert after == before
+    # Still usable afterwards: a later derivation rebuilds and re-materialises,
+    # and a values table orders over the copy.
+    catalog.derive('twice_g', '2 * ZTF_gPSFMag')
+    assert uuids_of(catalog.page(doc, sort='twice_g')) == before[1]
+    key = catalog.register_values('after_mat', {ROWS[1][0]: 1.0})
+    assert uuids_of(catalog.page(sort=key))[0] == ROWS[1][0]
+
+
+def test_counts_are_cached_per_predicate(catalog):
+    doc = {'column': 'ZTF_gPSFMag', 'op': 'between', 'value': [18, 22]}
+    n = catalog.count(doc)
+    assert catalog.count(doc) == n
+    assert any(k[0].startswith('(') or 'ZTF_gPSFMag' in k[0] for k in catalog._counts)
+    # The `in` operator binds a list, which must still key.
+    doc2 = {'column': 'catalog_tier', 'op': 'in', 'value': ['in_ztf', 'in_both']}
+    assert catalog.count(doc2) == catalog.count(doc2)

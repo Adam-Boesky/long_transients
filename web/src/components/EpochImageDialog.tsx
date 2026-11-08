@@ -6,10 +6,10 @@
  * the reticle marks the same sky in both and they can be compared directly.
  */
 import { useEffect, useRef, useState } from 'react'
-import { getEpochImage, isAbort } from '../api/client'
+import { explainImageFailure, getEpochImage, isAbort, retryUrl } from '../api/client'
 import type { EpochImage } from '../api/types'
 import type { EpochClick } from '../charts/LightCurveChart'
-import { Reticle, ScaleBar } from './CutoutGrid'
+import { ImageFailure, Reticle, ScaleBar } from './CutoutGrid'
 
 const SURVEY_LABEL: Record<string, string> = { ztf: 'ZTF', panstarrs: 'PanSTARRS' }
 const REFERENCE_LABEL: Record<string, string> = {
@@ -35,6 +35,8 @@ export function EpochImageDialog({ sourceUuid, epoch, referenceUrl,
   const downOnBackdrop = useRef(false)
   const [info, setInfo] = useState<EpochImage | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  // Bumped by Retry when finding the exposure failed (IRSA timing out, say).
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     const d = ref.current
@@ -49,7 +51,7 @@ export function EpochImageDialog({ sourceUuid, epoch, referenceUrl,
       .then(setInfo)
       .catch((e) => { if (!isAbort(e)) setErr(e instanceof Error ? e.message : String(e)) })
     return () => ac.abort()
-  }, [sourceUuid, epoch, stretch, percent])
+  }, [sourceUuid, epoch, stretch, percent, attempt])
 
   const survey = SURVEY_LABEL[epoch.survey] ?? epoch.survey
   const date = new Date((epoch.mjd - MJD_UNIX_EPOCH) * 86400000).toISOString().slice(0, 10)
@@ -80,14 +82,15 @@ export function EpochImageDialog({ sourceUuid, epoch, referenceUrl,
           <Panel key={info?.png ?? 'pending'} title="This exposure"
                  url={info?.png ?? null}
                  pixelArcsec={info?.pixel_arcsec ?? null}
-                 placeholder={err ?? (epoch.survey === 'ztf'
+                 placeholder={epoch.survey === 'ztf'
                    ? 'Finding the exposure at IRSA… (can take ~10 s)'
-                   : 'Finding the exposure at STScI…')}
-                 isError={err !== null} />
+                   : 'Finding the exposure at STScI…'}
+                 error={err}
+                 onRetry={() => { setErr(null); setAttempt((n) => n + 1) }} />
           <Panel title={REFERENCE_LABEL[epoch.survey] ?? 'Reference'}
                  url={referenceUrl} pixelArcsec={referencePixelArcsec}
                  placeholder={`No ${survey} ${epoch.band} reference for this source.`}
-                 isError={false} />
+                 error={null} />
         </div>
 
         {info && (
@@ -111,11 +114,23 @@ export function EpochImageDialog({ sourceUuid, epoch, referenceUrl,
   )
 }
 
-function Panel({ title, url, pixelArcsec, placeholder, isError }:
+/** One image with its overlays. Two things can fail: finding the exposure
+ *  (`error`, the API's reason, with the caller's retry) and fetching the
+ *  pixels once found (asked about and retried here). */
+function Panel({ title, url, pixelArcsec, placeholder, error, onRetry }:
                { title: string; url: string | null; pixelArcsec: number | null
-                 placeholder: string; isError: boolean }) {
+                 placeholder: string; error: string | null; onRetry?: () => void }) {
   const [naturalPx, setNaturalPx] = useState(0)
   const [failed, setFailed] = useState(false)
+  const [reason, setReason] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
+  const src = url ? retryUrl(url, attempt) : null
+  useEffect(() => {
+    if (!failed || !src) return
+    let live = true
+    void explainImageFailure(src).then((why) => { if (live) setReason(why) })
+    return () => { live = false }
+  }, [failed, src])
   const side = 'min(44vmin, 460px)'
   return (
     <div>
@@ -123,9 +138,14 @@ function Panel({ title, url, pixelArcsec, placeholder, isError }:
       <div style={{ position: 'relative', width: side, height: side, overflow: 'hidden',
                     borderRadius: 4, background: 'var(--bg-soft)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        {url && !failed ? (
+        {error !== null ? (
+          <ImageFailure reason={error} large onRetry={() => onRetry?.()} />
+        ) : failed && src ? (
+          <ImageFailure reason={reason} large
+                        onRetry={() => { setFailed(false); setReason(null); setAttempt((n) => n + 1) }} />
+        ) : src ? (
           <>
-            <img src={url} alt={title}
+            <img key={src} src={src} alt={title}
                  onLoad={(e) => setNaturalPx((e.target as HTMLImageElement).naturalWidth)}
                  onError={() => setFailed(true)}
                  style={{ position: 'absolute', inset: 0, width: '100%', height: '100%',
@@ -137,10 +157,7 @@ function Panel({ title, url, pixelArcsec, placeholder, isError }:
             )}
           </>
         ) : (
-          <span style={{ padding: 16, textAlign: 'center', opacity: isError ? 0.9 : 0.55,
-                         color: isError ? 'var(--danger, #b42318)' : undefined }}>
-            {failed ? 'The survey returned no pixels at this position.' : placeholder}
-          </span>
+          <span style={{ padding: 16, textAlign: 'center', opacity: 0.55 }}>{placeholder}</span>
         )}
       </div>
     </div>

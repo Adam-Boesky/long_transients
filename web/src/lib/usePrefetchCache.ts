@@ -26,6 +26,10 @@ export function usePrefetchCache(limit = 24) {
       for (const url of Object.values(bands)) {
         const img = new Image()
         img.decoding = 'async'
+        // Behind anything the current source asks for: these are a guess
+        // about the next page, and six of them queued ahead of a light-curve
+        // request held that request back on the page you are reading.
+        img.fetchPriority = 'low'
         img.src = url
         held.current.push(img)
       }

@@ -15,6 +15,7 @@
  * filter costs less than the round trip would.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { isAbort } from '../api/client'
 import { getTable, getTableAnnotations } from '../api/client'
@@ -25,8 +26,7 @@ import { useStableValue } from '../lib/useStableValue'
 import type { TableAnnotations, TableRow } from '../api/types'
 import { PageHeader } from '../components/chrome'
 import {
-  buildRow, LIST_SORT_PREFIX, listColumnOf, serverSortKey, sortRows,
-  triageOrder, w1w2Text,
+  buildRow, LIST_SORT_PREFIX, listColumnOf, serverSortKey, w1w2Text,
 } from '../lib/tableModel'
 import type { DisplayRow, SortKey } from '../lib/tableModel'
 
@@ -36,7 +36,17 @@ interface Column {
   width?: number
   /** Numbers read as columns of digits, so they are right-aligned. */
   numeric?: boolean
-  cell: (r: DisplayRow) => string
+  cell: (r: DisplayRow) => ReactNode
+  /** The hover text, when the cell is not plain text that can serve as its own. */
+  title?: (r: DisplayRow) => string
+}
+
+/** How much of each comment the cell shows; the rest is in the tooltip. */
+const COMMENT_SNIPPET = 48
+
+function snippet(note: string): string {
+  const oneLine = note.replace(/\s+/g, ' ')
+  return oneLine.length > COMMENT_SNIPPET ? oneLine.slice(0, COMMENT_SNIPPET - 1) + '…' : oneLine
 }
 
 // 4 decimals on dmag, not 2: the sample clusters tightly enough that two
@@ -79,7 +89,16 @@ const COLUMNS: Column[] = [
   { key: 'bucket', label: 'Bucket', width: 104, cell: (r) => r.bucket },
   { key: 'status', label: 'Follow-up Status', width: 120, cell: (r) => r.status },
   { key: 'ztforce', label: 'ztforce', width: 64, cell: (r) => r.ztforce },
-  { key: 'comments', label: 'Comments', width: 360, cell: (r) => r.comments },
+  // The opening of every comment, each with its author, rather than one
+  // concatenated line that the first long comment pushed everyone else out of.
+  { key: 'comments', label: 'Comments', width: 360,
+    cell: (r) => r.commentList.map((c, i) => (
+      <span key={c.author}>
+        {i > 0 && <span style={{ opacity: 0.35 }}>{' · '}</span>}
+        <span style={{ opacity: 0.55 }}>{c.author} </span>{snippet(c.note)}
+      </span>
+    )),
+    title: (r) => r.commentList.map((c) => `${c.author}: ${c.note}`).join('\n') },
 ]
 /** A value column of the applied coordinate list, shown beside W1-W2. */
 function listColumn(name: string): Column {
@@ -113,7 +132,7 @@ export function TablePage({ member }: { member: string }) {
   // What `/api/table` returns: the catalog half, before the verdicts are
   // joined on. `TableRow` is the joined shape.
   const [rows, setRows] =
-    useState<Omit<TableRow, 'annotations' | 'ztforce'>[] | null>(null)
+    useState<Omit<TableRow, 'annotations' | 'followup' | 'ztforce'>[] | null>(null)
   // Every author's verdicts, for every source -- not just this page's.
   const [ann, setAnn] = useState<TableAnnotations | null>(null)
   // What the database holds, which is not always what arrived: the endpoint
@@ -206,11 +225,7 @@ export function TablePage({ member }: { member: string }) {
     getTable({
       ...scope,
       offset: page * pageSize, limit: pageSize,
-      // An annotation column sorts locally, over the default |σ| window.
-      // Sending no sort here fell back to the server's uuid order instead,
-      // a different 5,000 rows that could hold none of the comments.
-      ...(serverKey ? { sort: serverKey, desc: sort.desc }
-                    : { sort: 'mean_abs_dmag_sigma', desc: true }),
+      sort: serverKey, desc: sort.desc,
       ...(labelState !== 'All' ? { label_state: labelState, author: member } : {}),
     }, ac.signal)
       .then((p) => { setRows(p.rows); setTotal(p.total) })
@@ -237,6 +252,7 @@ export function TablePage({ member }: { member: string }) {
     const done = new Set(ann.ztforce_done)
     return rows.map((r) => ({
       ...r, annotations: ann.annotations[r.source_uuid] ?? [],
+      followup: ann.followup[r.source_uuid] ?? null,
       ztforce: done.has(r.source_uuid),
     }))
   }, [rows, ann])
@@ -245,22 +261,14 @@ export function TablePage({ member }: { member: string }) {
   // so the rows that arrive are already the sample. The free-text box below
   // is the one exception and runs over `table`.
 
-  // Rows arrive in the order the server chose, so only re-sort locally for
-  // the columns it cannot order by. Re-applying `triageOrder` here would
-  // throw away a server sort and silently re-rank the window by dmag.
-  const table = useMemo(() => {
-    const built = (joined ?? []).map(buildRow)
-    return serverKey ? built : triageOrder(built)
-  }, [joined, serverKey])
+  // Rows arrive in the server's order, which is the order for every column:
+  // nothing is re-sorted here.
+  const table = useMemo(() => (joined ?? []).map(buildRow), [joined])
 
-  const searched = useMemo(() => {
+  const shown = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return needle ? table.filter((r) => r.search.includes(needle)) : table
   }, [table, query])
-
-  const shown = useMemo(
-    () => (serverKey ? searched : sortRows(searched, sort.key, sort.desc)),
-    [searched, sort, serverKey])
 
   // Only the rows on screen are rendered. Everything above and below is a
   // spacer of the right height, so the scrollbar still describes the whole
@@ -333,9 +341,7 @@ export function TablePage({ member }: { member: string }) {
             {total.toLocaleString()} sources
             {shown.length !== table.length
               && ` · ${shown.length.toLocaleString()} on this page match the search`}
-            {serverKey
-              ? ` · sorted by ${activeLabel} across all ${total.toLocaleString()}`
-              : ` · sorted by ${activeLabel} within this page only`}
+            {` · sorted by ${activeLabel} across all ${total.toLocaleString()}`}
           </div>
 
           <div ref={scroller}
@@ -359,7 +365,6 @@ export function TablePage({ member }: { member: string }) {
                   <th style={head(false)} />
                   {columns.map((c) => {
                     const active = sort.key === c.key
-                    const whole = serverSortKey(c.key) !== undefined
                     return (
                       <th key={c.key} style={head(c.numeric)}
                           onClick={() => {
@@ -367,11 +372,7 @@ export function TablePage({ member }: { member: string }) {
                             setSort(active ? { key: c.key, desc: !sort.desc }
                                            : { key: c.key, desc: true })
                           }}
-                          title={whole
-                            ? `Sort all ${total.toLocaleString()} sources by ${c.label}`
-                            : `Sort the loaded rows by ${c.label} -- this column is `
-                              + 'built from verdicts, so it cannot be ordered across '
-                              + 'the whole catalog'}>
+                          title={`Sort all ${total.toLocaleString()} sources by ${c.label}`}>
                         {c.label}
                         <span style={{ opacity: active ? 0.8 : 0.25 }}>
                           {active ? (sort.desc ? ' ↓' : ' ↑') : ' ↕'}
@@ -396,7 +397,7 @@ export function TablePage({ member }: { member: string }) {
                   </tr>
                 )}
                 {visible.map((r) => (
-                  <tr key={r.uuid} style={{ height: ROW_HEIGHT }}>
+                  <tr key={r.uuid} className="table-row" style={{ height: ROW_HEIGHT }}>
                     <td style={cell(false)}>
                       {/* First column, so the jump-to-source link never
                           scrolls out of sight behind the wide comments one. */}
@@ -406,8 +407,9 @@ export function TablePage({ member }: { member: string }) {
                     </td>
                     {columns.map((c) => {
                       const text = c.cell(r)
+                      const title = c.title ? c.title(r) : typeof text === 'string' ? text : undefined
                       return (
-                        <td key={c.key} style={cell(c.numeric)} title={text}>
+                        <td key={c.key} style={cell(c.numeric)} title={title}>
                           {text}
                         </td>
                       )

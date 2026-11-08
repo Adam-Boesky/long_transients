@@ -21,6 +21,7 @@ import type { Data, Layout } from 'plotly.js'
 import type { Spectra, Spectrum } from '../api/types'
 import { PlotlyChart } from './PlotlyChart'
 import { MODEBAR_GUTTER } from './plotly'
+import './plotlyGl'          // registers `scattergl`; side effect only
 import { modelRange, wavelengthOf } from './spectrum'
 
 /** matplotlib's tab:blue and tab:red, as `plot_spectrum` uses. */

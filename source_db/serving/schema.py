@@ -123,6 +123,27 @@ CREATE TABLE IF NOT EXISTS history (
 );
 CREATE INDEX IF NOT EXISTS idx_hist_source ON history(source_uuid);
 
+-- Follow-up status: one per object, not per author. Written to every
+-- detection of the object (its `group_id` mates), so a read by any uuid
+-- answers for the object. `annotations.status` is the per-author column it
+-- replaced; `api.followup.backfill_from_annotations` folds that into here.
+CREATE TABLE IF NOT EXISTS followup (
+    source_uuid  TEXT PRIMARY KEY,
+    status       TEXT NOT NULL,
+    author       TEXT,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_followup_status ON followup(status);
+
+CREATE TABLE IF NOT EXISTS followup_history (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_uuid  TEXT NOT NULL,
+    status       TEXT,
+    author       TEXT,
+    recorded_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fhist_source ON followup_history(source_uuid);
+
 -- The label vocabulary, shared by everyone so the buckets mean the same thing
 -- to all of you. Anyone can add one or drag them into a new order; `position`
 -- is that order, and a label nobody has placed yet (NULL) sorts last, oldest

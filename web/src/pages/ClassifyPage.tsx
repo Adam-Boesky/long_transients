@@ -14,12 +14,13 @@
  * permalink after; it is never read again, so plain React state stays the
  * single source of truth for which candidate is on screen.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef,
+         useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   ApiError, getCutouts, getGroup, getLightCurve, getSource,
   getSpectra, isAbort, locateSource, nextUnlabelled, putAnnotation,
-  reorderLabels, setLabelColor,
+  putFollowup, reorderLabels, setLabelColor,
 } from '../api/client'
 import type {
   CatalogSchema, Cutouts, FollowupStatus, GroupMember, LightCurve, SourceDetail,
@@ -33,7 +34,9 @@ import { DEFAULT_BIN_WINDOW, ZtforcePanel } from '../components/ZtforcePanel'
 import { useSourceWindow } from '../lib/useSourceWindow'
 import { useFilters } from '../lib/filterState'
 import { FilterBuilder } from '../components/FilterBuilder'
-import { SpectrumChart } from '../charts/SpectrumChart'
+// On demand: it brings Plotly's WebGL stack, which nothing else draws with.
+const SpectrumChart = lazy(() =>
+  import('../charts/SpectrumChart').then((m) => ({ default: m.SpectrumChart })))
 import { WiseColorChart } from '../charts/WiseColorChart'
 import { WiseColorCurveChart } from '../charts/WiseColorCurveChart'
 import {
@@ -73,6 +76,7 @@ export function ClassifyPage({ member, schema }:
     catalog, setCatalog,
     columnFilter, setColumnFilter, bucketFilter, deleteBucket, reloadLabels,
     setLabels, setLabelColors, takeLabels, query: sharedQuery, coordListId, coordList,
+    ready,
   } = useFilters()
   // A list uploaded with value columns can order the queue by them. They go
   // when the list does, and a sort left pointing at one falls back to the
@@ -157,13 +161,18 @@ export function ClassifyPage({ member, schema }:
   const selected = current?.source_uuid ?? null
 
   // A filter or search edit renumbers everything, so go back to the top rather
-  // than keeping an offset that now points at an unrelated source. Skipped on
-  // the first run so a deep link is not immediately overwritten.
-  const firstQuery = useRef(true)
+  // than keeping an offset that now points at an unrelated source. Not until
+  // the provider is `ready`, and not for the first query seen after that: the
+  // query also changes as the release's schema lands, which used to reset a
+  // just-resolved deep link to the top of the list.
+  const seenQuery = useRef<SourceQuery | null>(null)
   useEffect(() => {
-    if (firstQuery.current) { firstQuery.current = false; return }
+    if (!ready) return
+    if (seenQuery.current === null) { seenQuery.current = query; return }
+    if (seenQuery.current === query) return
+    seenQuery.current = query
     setPosition(0)
-  }, [query])
+  }, [query, ready])
 
   // A deep link names a uuid, but navigation works in offsets, so ask the
   // server where that source sits under the current filters. Once only: from
@@ -172,7 +181,9 @@ export function ClassifyPage({ member, schema }:
   // is on screen, which would otherwise replace the link's target before a retry.
   const deepLink = useRef(new URLSearchParams(window.location.search))
   useEffect(() => {
-    if (located) return
+    // Wait for the query's final shape: an offset found under the
+    // provisional one indexes a different order.
+    if (located || !ready) return
     const want = deepLink.current.get('page')
     if (!want) { setLocated(true); return }
     const ac = new AbortController()
@@ -199,7 +210,7 @@ export function ClassifyPage({ member, schema }:
       })
       .catch((e) => { if (!isAbort(e)) setLocated(true) })
     return () => ac.abort()
-  }, [located, query, catalog, setCatalog])
+  }, [located, ready, query, catalog, setCatalog])
 
   // Hold the offset inside the range when a filter shrinks the total under it.
   useEffect(() => {
@@ -275,17 +286,19 @@ export function ClassifyPage({ member, schema }:
     if (!uuid) return
     const ac = new AbortController()
     setDetail(null); setLc(null); setSpectra(null); setZtf(null)
-    Promise.all([
-      getSource(uuid, ac.signal),
-      getLightCurve(uuid, ac.signal),
-      getSpectra(uuid, ac.signal),
-    ]).then(([d, l, s]) => {
-      setDetail(d); setLc(l); setSpectra(s)
+    // Three independent requests, each painting as it lands: bundled in one
+    // Promise.all, the classifications and light curve sat blank until the
+    // slowest of the three answered.
+    const fail = (e: unknown) => { if (!isAbort(e)) setErr(String(e)) }
+    getSource(uuid, ac.signal).then((d) => {
+      setDetail(d)
       const mine = d.annotations.find((a) => a.author === member)
       setComment(mine?.note ?? '')
       setSaved(mine?.note ?? '')
       sent.current = mine?.note ?? ''
-    }).catch((e) => { if (!isAbort(e)) setErr(String(e)) })
+    }).catch(fail)
+    getLightCurve(uuid, ac.signal).then(setLc).catch(fail)
+    getSpectra(uuid, ac.signal).then(setSpectra).catch(fail)
     return () => ac.abort()
   }, [uuid, member])
 
@@ -373,19 +386,22 @@ export function ClassifyPage({ member, schema }:
 
   const mine = detail?.annotations.find((a) => a.author === member)
   const myLabel = mine?.label ?? ''
-  const myStatus = mine?.status ?? null
+  // The object's, not mine: one status shared by everyone, and by every
+  // detection of the object.
+  const status = detail?.followup ?? null
+  const statusBy = status ? `set by ${status.author ?? 'someone'} · ${
+    new Date(status.updated_at).toLocaleString(
+      undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : null
 
   const shownUuid = useRef(uuid)
   shownUuid.current = uuid
-  const commit = useCallback((label: string, note: string,
-                              status: FollowupStatus | null) => {
+  const commit = useCallback((label: string, note: string) => {
     if (!uuid) return Promise.resolve()
     sent.current = note
-    // A PUT replaces the row, so all three ride along: saving a label with
-    // `status` omitted would clear it.
+    // A PUT replaces the row, so both ride along: saving a label with `note`
+    // omitted would clear it.
     const put = saveQueue.current
-      .then(() => putAnnotation(uuid, member,
-                                { label: label || null, note, status }))
+      .then(() => putAnnotation(uuid, member, { label: label || null, note }))
     saveQueue.current = put.catch(() => {})
     return put.then((a) => {
       // A queued save can finish after you have moved on; only the source
@@ -411,8 +427,18 @@ export function ClassifyPage({ member, schema }:
   // Persist an edited comment before leaving, so an arrow key never discards
   // typed text -- and keep the existing label while doing it.
   const flushComment = useCallback(() => {
-    if (comment !== sent.current) void commit(myLabel, comment, myStatus)
-  }, [comment, myLabel, myStatus, commit])
+    if (comment !== sent.current) void commit(myLabel, comment)
+  }, [comment, myLabel, commit])
+
+  // Its own request, not part of the verdict: the status belongs to the
+  // object, so it is not queued behind this author's label and note.
+  const setStatus = useCallback((st: FollowupStatus | null) => {
+    if (!uuid) return
+    putFollowup(uuid, member, st).then((fu) => {
+      if (shownUuid.current === uuid) setDetail((d) => d ? { ...d, followup: fu } : d)
+      refresh()
+    }).catch((e) => setFlash(`Status change failed: ${e}`))
+  }, [uuid, member, refresh])
 
   // ── arrow keys mirror Prev/Next ────────────────────────────────────────────
   useEffect(() => {
@@ -461,9 +487,10 @@ export function ClassifyPage({ member, schema }:
         currentLabel={myLabel}
         othersByLabel={othersByLabel}
         onReorder={onReorder}
-        onLabel={(l) => { void commit(l === myLabel ? '' : l, comment, myStatus) }}
-        currentStatus={myStatus}
-        onStatus={(st) => { void commit(myLabel, comment, st) }}
+        onLabel={(l) => { void commit(l === myLabel ? '' : l, comment) }}
+        currentStatus={status?.status ?? null}
+        statusBy={statusBy}
+        onStatus={setStatus}
         columnFilters={<FilterBuilder value={columnFilter}
                                       onChange={setColumnFilter}
                                       scope={query} />}
@@ -654,6 +681,7 @@ export function ClassifyPage({ member, schema }:
                           loading={cutouts === null}
                           catalog={detail?.catalog ?? null}
                           pixelArcsec={cutouts?.pixel_arcsec ?? null}
+                          regions={cutouts?.regions ?? null}
                           stretch={stretch} onStretch={setStretch}
                           percent={percent} onPercent={setPercent}
                           links={imageLinks(shown.ra, shown.dec)} />
@@ -688,7 +716,9 @@ export function ClassifyPage({ member, schema }:
                              ra={shown.ra} dec={shown.dec} />
                 </div>
               </div>
-              <SpectrumChart spectra={spectra} />
+              <Suspense fallback={<div style={{ height: 60 }} />}>
+                <SpectrumChart spectra={spectra} />
+              </Suspense>
             </Card>
 
             {/* Open, not behind a disclosure: it is reference you read

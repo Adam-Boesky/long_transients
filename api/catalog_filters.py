@@ -21,6 +21,7 @@ import re
 import sqlite3
 from typing import Any
 
+from api.config import MATERIALIZE
 from api.derive import CLASS_SOURCES, MATCHED_COLUMN
 from source_db.serving.filters import UUID, CatalogFilters, FilterError
 from source_db.constants import PSTARR_UPPER_LIM, SIGMA_CAP
@@ -209,6 +210,9 @@ def startup(science: sqlite3.Connection, parquet=None) -> CatalogFilters:
     engine.derive('mean_abs_dmag', _mean_abs_dmag_sql(available))
     engine.derive('mean_abs_dmag_sigma', _mean_abs_dmag_sigma_sql(available))
     engine.derive('classification', _classification_sql(available))
+    # Last, once every column is in: the copy is made of the finished view.
+    if MATERIALIZE:
+        engine.materialize()
     engine.columns()                      # warm the schema so page 1 is fast
     _engine = engine
     return engine

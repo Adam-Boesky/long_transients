@@ -7,7 +7,7 @@
  */
 import type {
   Annotation, CatalogSchema, ColumnStats, CoordListPreview, CoordListSummary, Cutouts, EpochImage, FilterNode, FilterPreview,
-  FilterSchema, GroupMember, Label, LightCurve, Progress, SourceDetail, SourcePage,
+  FilterSchema, Followup, FollowupStatus, GroupMember, Label, LightCurve, Progress, SourceDetail, SourcePage,
   SourceQuery, Spectra, TableAnnotations, TablePayload, TableQuery, ZtforceQueue,
   ZtforceResult,
 } from './types'
@@ -197,6 +197,26 @@ export const getCutouts = (uuid: string,
           .map(([band, url]) => [band, `${API_BASE}${url}`]))])),
     } : c)
 
+/** Why an `<img>` failed: its `onError` carries nothing, so ask again with
+ *  `fetch` and read the status and the API's `detail`. One short line. */
+export async function explainImageFailure(url: string): Promise<string> {
+  try {
+    const res = await apiFetch(url, { cache: 'no-store' })
+    if (res.ok) return 'the image arrived but could not be decoded'
+    const detail = await res.json().then((b) => b?.detail).catch(() => null)
+    return typeof detail === 'string' ? `${res.status}: ${detail}`
+      : `${res.status} ${res.statusText || 'error'}`
+  } catch (e) {
+    return `no response from the server (${e instanceof Error ? e.message : String(e)})`
+  }
+}
+
+/** `url` with a cache-busting parameter, for retrying an image the browser
+ *  may have remembered as failed. The API ignores the extra parameter. */
+export function retryUrl(url: string, attempt: number): string {
+  return attempt === 0 ? url : `${url}${url.includes('?') ? '&' : '?'}retry=${attempt}`
+}
+
 /** Find the exposure behind one light-curve point. Rejects with the server's
  *  own reason (no exposure matched, the survey's service is down) so the
  *  panel can say which. */
@@ -223,7 +243,7 @@ export async function getEpochImage(
 export async function putAnnotation(
   uuid: string, author: string,
   body: { label?: string | null; confidence?: string | null;
-          note?: string | null; tags?: string[]; status?: string | null },
+          note?: string | null; tags?: string[] },
 ): Promise<Annotation> {
   const url = `${API_BASE}/api/sources/${encodeURIComponent(uuid)}`
     + `/annotations/${encodeURIComponent(author)}`
@@ -231,6 +251,22 @@ export async function putAnnotation(
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tags: [], ...body }),
+  })
+  if (!res.ok) throw new ApiError(res.status, url, `${res.status} ${res.statusText}`)
+  return res.json()
+}
+
+/** Set (or, with null, clear) the object's shared follow-up status. The
+ *  server writes it to every detection of the object; the answer is the row
+ *  as stored, or null once cleared. */
+export async function putFollowup(
+  uuid: string, author: string, status: FollowupStatus | null,
+): Promise<Followup | null> {
+  const url = `${API_BASE}/api/sources/${encodeURIComponent(uuid)}/followup`
+  const res = await apiFetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: status ?? '', author }),
   })
   if (!res.ok) throw new ApiError(res.status, url, `${res.status} ${res.statusText}`)
   return res.json()

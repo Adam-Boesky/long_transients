@@ -2,23 +2,21 @@
  *
  * `plotly.js/dist/plotly` is ~1 MB gzipped and pulls in every trace type;
  * `react-plotly.js` is worse, with unoptimised builds regularly exceeding
- * 10 MB, and it is barely maintained. Registering only the two trace types
- * this app draws keeps it to a few hundred KB.
+ * 10 MB, and it is barely maintained. Registering only the trace types this
+ * app draws keeps it to a few hundred KB.
  *
- * `scatter` is SVG and `scattergl` is WebGL. Both are registered, but they
- * are not interchangeable: a browser allows only a handful of WebGL contexts
- * (Plotly hits trouble past ~8 charts on a page), so `scattergl` is reserved
- * for the spectrum, which is the only trace big enough to need it.
+ * `scatter` is SVG. The WebGL `scattergl` lives in `plotlyGl.ts`, registered
+ * only by the spectrum chart, which is loaded on demand: the WebGL stack is
+ * about a third of the bundle and no other page draws with it.
  */
 import type { Config, Layout, TickFormatStops } from 'plotly.js'
 import Plotly from 'plotly.js/lib/core'
 import bar from 'plotly.js/lib/bar'
 import scatter from 'plotly.js/lib/scatter'
-import scattergl from 'plotly.js/lib/scattergl'
 
 // `bar` is SVG and tiny; the Progress page's label/author breakdown is the
 // only thing that draws one.
-Plotly.register([bar, scatter, scattergl])
+Plotly.register([bar, scatter])
 
 export default Plotly
 

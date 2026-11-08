@@ -5,7 +5,9 @@ a verdict question to a uuid list the engine can restrict on, so the table and
 the candidate list ask it the same way rather than in two places that can
 disagree about the total.
 
-Every cut is any-author: one person filing a source is enough.
+Every bucket cut is any-author: one person filing a source is enough. The
+follow-up status has no author to speak of -- it is one per object, in
+`followup` -- so its cut reads that table.
 """
 from __future__ import annotations
 
@@ -29,37 +31,44 @@ def _clean(names: list[str] | None) -> list[str]:
     return sorted({n.strip() for n in (names or []) if n.strip()})
 
 
-def _uuids(ann: sqlite3.Connection, column: str, names: list[str]) -> list[str]:
-    """Sources any author gave one of `names` in `column`."""
+# (table, column) each cut reads.
+BUCKET = ('annotations', 'label')
+STATUS = ('followup', 'status')
+
+
+def _uuids(ann: sqlite3.Connection, where: tuple[str, str], names: list[str]) -> list[str]:
+    """Sources with one of `names` in `where`'s column."""
     if not names:
         return []
+    table, column = where
     qs = ','.join('?' * len(names))
     # NOCASE because `labels.name` is declared COLLATE NOCASE precisely so
     # "trash" cannot sit beside "Trash" -- a verdict written under a differently
     # cased spelling would otherwise be invisible to these filters while showing
     # up everywhere else.
     return [r[0] for r in ann.execute(
-        'SELECT DISTINCT source_uuid FROM annotations '
+        f'SELECT DISTINCT source_uuid FROM {table} '
         f'WHERE {column} IS NOT NULL AND trim({column}) COLLATE NOCASE IN ({qs})',
         names)]
 
 
-def _uuids_any(ann: sqlite3.Connection, column: str) -> list[str]:
-    """Sources any author gave any value at all in `column`."""
+def _uuids_any(ann: sqlite3.Connection, where: tuple[str, str]) -> list[str]:
+    """Sources with any value at all in `where`'s column."""
+    table, column = where
     return [r[0] for r in ann.execute(
-        'SELECT DISTINCT source_uuid FROM annotations '
+        f'SELECT DISTINCT source_uuid FROM {table} '
         f"WHERE {column} IS NOT NULL AND trim({column}) != ''")]
 
 
-def _include(ann, column: str, names: list[str]) -> dict | None:
+def _include(ann, where: tuple[str, str], names: list[str]) -> dict | None:
     """Sources matching any of `names`; `NONE` means "has no value here"."""
     real = [n for n in names if n != NONE]
     clauses: list[dict] = []
     if real:
-        hits = _uuids(ann, column, real)
+        hits = _uuids(ann, where, real)
         clauses.append(restrict_to(hits) if hits else _MATCH_NOTHING)
     if NONE in names:
-        taken = _uuids_any(ann, column)
+        taken = _uuids_any(ann, where)
         if not taken:
             return None        # nothing is set, so "none" is everything
         clauses.append({'column': UUID, 'op': 'not_in', 'value': taken})
@@ -68,17 +77,17 @@ def _include(ann, column: str, names: list[str]) -> dict | None:
     return clauses[0] if len(clauses) == 1 else {'op': 'or', 'clauses': clauses}
 
 
-def _exclude(ann, column: str, names: list[str]) -> dict | None:
+def _exclude(ann, where: tuple[str, str], names: list[str]) -> dict | None:
     """Drop sources matching any of `names`."""
     real = [n for n in names if n != NONE]
     docs: list[dict] = []
     if real:
-        hits = _uuids(ann, column, real)
+        hits = _uuids(ann, where, real)
         if hits:
             docs.append({'column': UUID, 'op': 'not_in', 'value': hits})
     if NONE in names:
         # Dropping "has no value" is keeping the ones that have one.
-        taken = _uuids_any(ann, column)
+        taken = _uuids_any(ann, where)
         docs.append(restrict_to(taken) if taken else _MATCH_NOTHING)
     return combine(*docs)
 
@@ -99,8 +108,8 @@ def annotation_filter(ann: sqlite3.Connection, *,
         if value not in known:
             raise HTTPException(422, f'status must be one of {sorted(known)}')
     return combine(
-        _include(ann, 'label', _clean(bucket_in)),
-        _exclude(ann, 'label', _clean(bucket_out)),
-        _include(ann, 'status', si),
-        _exclude(ann, 'status', so),
+        _include(ann, BUCKET, _clean(bucket_in)),
+        _exclude(ann, BUCKET, _clean(bucket_out)),
+        _include(ann, STATUS, si),
+        _exclude(ann, STATUS, so),
     )

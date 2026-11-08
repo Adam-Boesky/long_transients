@@ -313,8 +313,8 @@ def test_sources_honours_bucket_include_exclude(client):
 
 
 def test_sources_honours_status_include(client):
-    client.put(f'/api/sources/{UUIDS[1]}/annotations/adam',
-               json={'status': 'queued'})
+    client.put(f'/api/sources/{UUIDS[1]}/followup',
+               json={'status': 'queued', 'author': 'adam'})
     body = client.get('/api/sources?limit=50&status_in=queued').json()
     assert [i['source_uuid'] for i in body['items']] == [UUIDS[1]]
 
@@ -335,10 +335,10 @@ def test_none_status_is_everything_when_nobody_has_set_one(client):
 
 
 def test_excluding_none_keeps_only_the_ones_with_a_value(client):
-    client.put(f'/api/sources/{UUIDS[0]}/annotations/adam',
-               json={'status': 'observed'})
+    client.put(f'/api/sources/{UUIDS[1]}/followup',
+               json={'status': 'observed', 'author': 'adam'})
     body = client.get('/api/sources?limit=50&status_out=none').json()
-    assert [i['source_uuid'] for i in body['items']] == [UUIDS[0]]
+    assert [i['source_uuid'] for i in body['items']] == [UUIDS[1]]
 
 
 def test_locate_uses_the_same_cut_as_the_window(client):
@@ -420,3 +420,33 @@ def test_a_filtered_out_detection_hands_over_to_its_group_mate(client):
                                               'filter': json.dumps(doc)}).json()
     assert UUIDS[2] in {s['source_uuid'] for s in page['items']}
 
+
+
+# ── the query regions drawn on the stamps ─────────────────────────────────────
+
+def test_cutouts_carry_the_query_regions(client):
+    body = client.get(f'/api/sources/{UUIDS[0]}/cutouts').json()
+    by_key = {r['key']: r for r in body['regions']}
+    assert [r['key'] for r in body['regions']] == ['lightcurve', 'catalog', 'gaia',
+                                                   'wise_beam', 'erosita']
+    assert by_key['lightcurve']['radius_arcsec'] == 1.5
+    assert all(r['label'] and r['help'] for r in body['regions'])
+
+
+def test_every_region_matches_its_module():
+    """`QUERY_REGIONS` copies numbers the pipeline modules own; the stamps draw
+    the copies, so each must still equal its source."""
+    import inspect
+    from source_db.constants import MATCH_RADIUS_ARCSEC, QUERY_REGIONS
+    from source_db.lightcurves import irsa, panstarrs, sdss, ztf
+    from Source_Analysis import enrich_combined_tabs, filter_fields
+    from Source_Analysis.catalogs import erosita, wise
+
+    for mod in (irsa, panstarrs, sdss, ztf, enrich_combined_tabs):
+        assert mod.MATCH_RADIUS_ARCSEC == MATCH_RADIUS_ARCSEC, mod.__name__
+    default = lambda fn, name: inspect.signature(fn).parameters[name].default
+    radius = {r['key']: r['radius_arcsec'] for r in QUERY_REGIONS}
+    assert radius['lightcurve'] == radius['catalog'] == MATCH_RADIUS_ARCSEC
+    assert radius['gaia'] == default(filter_fields.annotate_gaia, 'max_arcsec')
+    assert radius['wise_beam'] == wise.BEAM_ARCSEC
+    assert radius['erosita'] == erosita.MATCH_RADIUS_ARCSEC

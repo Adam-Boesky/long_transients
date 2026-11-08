@@ -6,8 +6,7 @@
  * the Progress view narrows the identical table to the disagreed sources, so
  * the assembly should exist once.
  */
-import { FOLLOWUP_STATUSES } from '../api/types'
-import type { FollowupStatus, TableRow } from '../api/types'
+import type { TableRow } from '../api/types'
 
 export const CLASS_PREFIXES = ['SDSS', 'DESI', 'TNS', 'SIMBAD', 'AGN-DB']
 
@@ -30,7 +29,10 @@ export interface DisplayRow {
   status: string
   /** 'yes' when ztforce has a stored result, else '' so it sorts last. */
   ztforce: string
+  /** Everyone's notes as one line, for the search box and the tooltip. */
   comments: string
+  /** The same notes, one entry each, for the cell to shorten. */
+  commentList: { author: string; note: string }[]
   /** The applied coordinate list's value columns, by name. */
   listValues: Record<string, number | null>
   /** Everything above, lowercased, for the free-text filter. */
@@ -48,21 +50,18 @@ export function listColumnOf(key: string): string | null {
   return key.startsWith(LIST_SORT_PREFIX) ? key.slice(LIST_SORT_PREFIX.length) : null
 }
 
-/** Which catalog column a sort key is, for the columns the server can order.
+/** The server's name for each sort key.
  *
- * Sorting in the browser can only rank the window that was fetched, which for
- * a *ranking* is the wrong answer rather than a slow one: the largest
- * |dmag| among the first 5,000 sources by uuid is 7.73, and in the catalog it
- * is 8.95. These five are real columns (`mean_abs_dmag` is derived in the
- * query engine), so the server ranks all 197,933 and sends back the page you
- * asked for.
- *
- * The three that are missing -- classification, bucket, comments -- are built
- * from the annotations database and from Python-side string assembly, so they
- * have no column to order by and still sort within the window. The caption
- * says which you are getting rather than letting the two look alike.
+ * Every column is ordered by the server over the whole sample. Sorting in
+ * the browser could only rank the page that was fetched, which for a
+ * *ranking* is the wrong answer rather than a slow one: the largest |dmag|
+ * among the first 5,000 sources by uuid is 7.73, and in the catalog it is
+ * 8.95. The catalog columns are real (or derived) columns of the query
+ * engine; the `ann:` ones are rendered from the annotations database per
+ * request and handed to the engine as values to order by (see
+ * `api.annotation_sorts`), so a bucket sort ranks all 197,933 too.
  */
-export const SERVER_SORT: Partial<Record<SortKey, string>> = {
+export const SERVER_SORT: Record<Exclude<SortKey, `list:${string}`>, string> = {
   file: 'coord_slug',
   catalog: 'catalog_tier',
   sigma: 'mean_abs_dmag_sigma',
@@ -73,12 +72,18 @@ export const SERVER_SORT: Partial<Record<SortKey, string>> = {
   // AllWISE coadd while displaying the binned light-curve colour put the
   // rows in an order the numbers beside them did not explain.
   w1w2: 'wise_w1w2_mean',
+  classification: 'classification',
+  // By the cell's text; the status in progress order (to queue < queued <
+  // observed); comments by how many; ztforce by whether it has run.
+  bucket: 'ann:bucket',
+  status: 'ann:status',
+  comments: 'ann:comments',
+  ztforce: 'ann:ztforce',
 }
 
-/** The server's name for a sort key, or undefined for the columns it cannot
- *  order by. A list value column is sent as it is. */
-export function serverSortKey(key: SortKey): string | undefined {
-  return listColumnOf(key) !== null ? key : SERVER_SORT[key]
+/** The server's name for a sort key. A list value column is sent as it is. */
+export function serverSortKey(key: SortKey): string {
+  return listColumnOf(key) !== null ? key : SERVER_SORT[key as keyof typeof SERVER_SORT]
 }
 
 const filed = (a: { label: string | null }) => (a.label ?? '').trim()
@@ -103,15 +108,10 @@ export function buildRow(row: TableRow): DisplayRow {
   // about this source", which is the useful question when several people are
   // working through the same list.
   const buckets = [...new Set(row.annotations.map(filed).filter(Boolean))].sort()
-  const comments = row.annotations
+  const commentList = row.annotations
     .filter((a) => (a.note ?? '').trim())
-    .map((a) => `${a.author}: ${a.note}`)
-    .join('  |  ')
-  // Ordered by FOLLOWUP_STATUSES, not alphabetically, so a sort reads as
-  // progress rather than 'observed' before 'queued'.
-  const statuses = [...new Set(row.annotations
-      .map((a) => a.status).filter((s): s is FollowupStatus => !!s))]
-    .sort((a, b) => FOLLOWUP_STATUSES.indexOf(a) - FOLLOWUP_STATUSES.indexOf(b))
+    .map((a) => ({ author: a.author, note: (a.note ?? '').trim() }))
+  const comments = commentList.map((c) => `${c.author}: ${c.note}`).join('  |  ')
 
   const out: DisplayRow = {
     uuid: row.source_uuid,
@@ -124,9 +124,11 @@ export function buildRow(row: TableRow): DisplayRow {
     w1w2: row.wise_w1w2,
     classification: classification(row),
     bucket: buckets.join(' / '),
-    status: statuses.join(' / '),
+    // One per object now, so there is nothing to pool.
+    status: row.followup?.status ?? '',
     ztforce: row.ztforce ? 'yes' : '',
     comments,
+    commentList,
     listValues: row.list_values ?? {},
     search: '',
   }
@@ -143,32 +145,4 @@ export function buildRow(row: TableRow): DisplayRow {
  *  Empty, not a placeholder number, where there is no WISE match. */
 export function w1w2Text(value: number | null): string {
   return value === null ? '' : value.toFixed(3)
-}
-
-/** Biggest mean |Δmag σ| first, sources with none last.
- *
- * With one catalog selected this is already the stored order. It matters for
- * "All": without it the tiers stay as separate blocks and you would work
- * through every tier-1 source before seeing an in_both one, rather than
- * seeing the largest changes across both.
- */
-export function triageOrder(rows: DisplayRow[]): DisplayRow[] {
-  return sortRows(rows, 'sigma', true)
-}
-
-export function sortRows(rows: DisplayRow[], key: SortKey,
-                         desc: boolean): DisplayRow[] {
-  const column = listColumnOf(key)
-  const value = (r: DisplayRow) => (column !== null ? r.listValues[column] ?? null : r[key as Exclude<SortKey, `list:${string}`>])
-  return [...rows].sort((x, y) => {
-    const a = value(x), b = value(y)
-    // Missing values sort last whichever way the column is pointing, so a
-    // blank cell never takes the top of the table.
-    const aEmpty = a === null || a === ''
-    const bEmpty = b === null || b === ''
-    if (aEmpty || bEmpty) return aEmpty && bEmpty ? 0 : aEmpty ? 1 : -1
-    const d = typeof a === 'number' && typeof b === 'number'
-      ? a - b : String(a).localeCompare(String(b))
-    return desc ? -d : d
-  })
 }

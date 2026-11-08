@@ -181,65 +181,154 @@ def test_progress_truncates_disagreements_but_still_counts_them(client):
 
 
 # ── follow-up status ──────────────────────────────────────────────────────────
+#
+# One per object, shared by everyone, and written to every detection of the
+# object (UUIDS[0] and UUIDS[2] share a group_id in the fixture).
 
-def test_status_round_trips(client):
-    r = client.put(f'/api/sources/{UUIDS[0]}/annotations/adam',
-                   json={'label': 'SN', 'status': 'queued'})
-    assert r.status_code == 200 and r.json()['status'] == 'queued'
+def _put(client, uuid, status, author='adam'):
+    return client.put(f'/api/sources/{uuid}/followup',
+                      json={'status': status, 'author': author})
+
+
+def test_followup_round_trips(client):
+    r = _put(client, UUIDS[0], 'queued')
+    assert r.status_code == 200
+    assert r.json() == {**r.json(), 'source_uuid': UUIDS[0], 'status': 'queued',
+                        'author': 'adam'}
+    assert client.get(f'/api/sources/{UUIDS[0]}/followup').json()['status'] == 'queued'
+    assert client.get(f'/api/sources/{UUIDS[0]}').json()['followup']['status'] == 'queued'
+
+
+def test_followup_is_null_until_someone_sets_it(client):
+    assert client.get(f'/api/sources/{UUIDS[1]}/followup').json() is None
+    assert client.get(f'/api/sources/{UUIDS[1]}').json()['followup'] is None
+
+
+def test_followup_is_rejected_outside_the_vocabulary(client):
+    assert _put(client, UUIDS[0], 'observer').status_code == 422
+
+
+def test_followup_is_one_per_object_not_per_author(client):
+    _put(client, UUIDS[1], 'to queue', author='adam')
+    r = _put(client, UUIDS[1], 'observed', author='beth')
+    assert r.json()['status'] == 'observed' and r.json()['author'] == 'beth'
+    assert client.get(f'/api/sources/{UUIDS[1]}/followup').json()['status'] == 'observed'
+
+
+def test_followup_covers_every_detection_of_the_object(client):
+    _put(client, UUIDS[0], 'queued')
+    mate = client.get(f'/api/sources/{UUIDS[2]}/followup').json()
+    assert mate['status'] == 'queued', 'the group-mate carries the same status'
+    assert client.get(f'/api/sources/{UUIDS[1]}/followup').json() is None
+
+
+def test_empty_followup_clears_it_for_the_whole_object(client):
+    _put(client, UUIDS[2], 'observed')
+    r = _put(client, UUIDS[0], '')
+    assert r.json() is None
+    assert client.get(f'/api/sources/{UUIDS[2]}/followup').json() is None
+
+
+def test_followup_does_not_touch_the_verdict(client):
+    client.put(f'/api/sources/{UUIDS[0]}/annotations/adam', json={'label': 'SN'})
+    _put(client, UUIDS[0], 'queued')
     (a,) = client.get(f'/api/sources/{UUIDS[0]}/annotations').json()
-    assert a['status'] == 'queued'
+    assert a['label'] == 'SN' and 'status' not in a
 
 
-def test_status_is_rejected_outside_the_vocabulary(client):
-    r = client.put(f'/api/sources/{UUIDS[0]}/annotations/adam',
-                   json={'label': 'SN', 'status': 'observer'})
+def test_followup_history_records_each_change(client, annotations_con):
+    for st in ('to queue', 'queued', 'observed', ''):
+        _put(client, UUIDS[1], st)
+    rows = annotations_con.execute(
+        'SELECT status FROM followup_history WHERE source_uuid=? ORDER BY id',
+        (UUIDS[1],)).fetchall()
+    assert [r[0] for r in rows] == ['to queue', 'queued', 'observed', None]
+
+
+def test_followup_404s_for_an_unknown_source(client):
+    assert _put(client, 'nope', 'queued').status_code == 404
+
+
+def test_followup_needs_an_author(client):
+    r = client.put(f'/api/sources/{UUIDS[0]}/followup', json={'status': 'queued'})
     assert r.status_code == 422
 
 
-def test_empty_status_clears_it(client):
-    """'nothing' is NULL, and the UI sends '' to mean it."""
-    client.put(f'/api/sources/{UUIDS[0]}/annotations/adam',
-               json={'label': 'SN', 'status': 'observed'})
-    r = client.put(f'/api/sources/{UUIDS[0]}/annotations/adam',
-                   json={'label': 'SN', 'status': ''})
-    assert r.json()['status'] is None
-
-
-def test_a_label_edit_does_not_clear_the_status(client):
-    """The PUT replaces the row, so the client has to resend status -- this
-    pins the server half: what is sent is what is stored."""
-    client.put(f'/api/sources/{UUIDS[0]}/annotations/adam',
-               json={'label': 'SN', 'status': 'queued'})
-    r = client.put(f'/api/sources/{UUIDS[0]}/annotations/adam',
-                   json={'label': 'AGN', 'status': 'queued'})
-    assert r.json() == {**r.json(), 'label': 'AGN', 'status': 'queued'}
-
-
-def test_status_defaults_to_none(client):
-    r = client.put(f'/api/sources/{UUIDS[0]}/annotations/adam',
-                   json={'label': 'SN'})
-    assert r.json()['status'] is None
-
-
-def test_history_records_each_status_change(client):
-    for st in ('to queue', 'queued', 'observed'):
-        client.put(f'/api/sources/{UUIDS[0]}/annotations/adam',
-                   json={'label': 'SN', 'status': st})
-    rows = client.get('/api/annotations/export',
-                      params={'include_history': True, 'author': 'adam'}).json()
-    assert [r['status'] for r in rows['rows']] == ['to queue', 'queued', 'observed']
-
-
-def test_export_carries_status(client):
-    client.put(f'/api/sources/{UUIDS[0]}/annotations/adam',
-               json={'label': 'SN', 'status': 'queued'})
-    assert client.get('/api/annotations/export').json()['rows'][0]['status'] == 'queued'
-    csv_text = client.get('/api/annotations/export', params={'fmt': 'csv'}).text
-    assert 'status' in csv_text.splitlines()[0]
-
-
-def test_table_annotations_carry_status(client):
-    client.put(f'/api/sources/{UUIDS[0]}/annotations/adam',
-               json={'label': 'SN', 'status': 'observed'})
+def test_table_annotations_carry_followup(client):
+    _put(client, UUIDS[1], 'observed', author='beth')
     body = client.get('/api/table/annotations').json()
-    assert body['annotations'][UUIDS[0]][0]['status'] == 'observed'
+    assert body['followup'][UUIDS[1]] == {**body['followup'][UUIDS[1]],
+                                          'status': 'observed', 'author': 'beth'}
+    assert UUIDS[3] not in body['followup']
+
+
+# ── migrating the per-author column ───────────────────────────────────────────
+
+def _legacy_db(path):
+    """An annotations database from before `followup` existed, with the
+    per-author `status` column filled in."""
+    import re
+    import sqlite3
+    from source_db.serving.schema import ANNOTATIONS_SCHEMA
+    con = sqlite3.connect(path)
+    con.executescript(re.sub(
+        r'CREATE (TABLE|INDEX) IF NOT EXISTS (followup|idx_followup|idx_fhist)[^;]*;',
+        '', ANNOTATIONS_SCHEMA))
+    con.executemany(
+        'INSERT INTO annotations (source_uuid, author, label, status, created_at, updated_at) '
+        'VALUES (?,?,?,?,?,?)', [
+            (UUIDS[0], 'adam', 'SN', 'to queue', 't1', 't1'),
+            (UUIDS[0], 'beth', 'SN', 'observed', 't2', 't2'),
+            (UUIDS[0], 'cara', 'AGN', 'queued', 't3', 't3'),
+            (UUIDS[1], 'adam', 'SN', 'queued', 't1', 't1'),
+            (UUIDS[1], 'beth', 'SN', 'queued', 't4', 't4'),
+            (UUIDS[3], 'adam', 'SN', None, 't1', 't1'),
+        ])
+    con.commit()
+    con.close()
+
+
+def test_bootstrap_backfills_followup_from_the_per_author_column(tmp_path):
+    from api import db as api_db
+    path = tmp_path / 'legacy.sqlite'
+    _legacy_db(path)
+    con = api_db.connect_annotations(path)
+    rows = {r[0]: (r[1], r[2]) for r in con.execute(
+        'SELECT source_uuid, status, author FROM followup')}
+    # The furthest-along stage wins, whoever set it ...
+    assert rows[UUIDS[0]] == ('observed', 'beth')
+    # ... and within a stage the latest edit is credited.
+    assert rows[UUIDS[1]] == ('queued', 'beth')
+    assert UUIDS[3] not in rows
+    # One source of truth: the per-author column is consumed ...
+    assert con.execute('SELECT COUNT(*) FROM annotations WHERE status IS NOT NULL'
+                       ).fetchone()[0] == 0
+    # ... so a later clear is not undone by the next open.
+    con.execute('DELETE FROM followup')
+    con.commit()
+    con.close()
+    api_db._bootstrapped.discard(path)
+    con = api_db.connect_annotations(path)
+    assert con.execute('SELECT COUNT(*) FROM followup').fetchone()[0] == 0
+    con.close()
+
+
+def test_sync_groups_makes_every_detection_agree(client, annotations_con, filter_engine):
+    from api import followup
+    # Two detections of one object, set apart (as a backfill would leave them).
+    followup.set_status(annotations_con, [UUIDS[0]], 'to queue', 'adam', record=False)
+    followup.set_status(annotations_con, [UUIDS[2]], 'queued', 'beth', record=False)
+    annotations_con.commit()
+    assert followup.sync_groups(annotations_con, filter_engine) == 1
+    assert client.get(f'/api/sources/{UUIDS[0]}/followup').json() == {
+        **client.get(f'/api/sources/{UUIDS[0]}/followup').json(),
+        'status': 'queued', 'author': 'beth'}
+    assert client.get(f'/api/sources/{UUIDS[2]}/followup').json()['status'] == 'queued'
+
+
+def test_merged_prefers_the_later_stage():
+    from api.followup import merged
+    assert merged(['to queue', 'observed', 'queued']) == 'observed'
+    assert merged(['to queue', 'queued']) == 'queued'
+    assert merged([None, 'to queue']) == 'to queue'
+    assert merged([None, None]) is None
