@@ -134,7 +134,8 @@ should show cutouts and a light curve.
 |---|---|
 | Frontend | `npm run build`, re-copy `web/dist` |
 | Backend | re-copy `api/` and `source_db/`, restart |
-| Catalog rebuilt | re-copy `science.sqlite` and both `.parquet` |
+| Catalog rebuilt | re-copy `science.sqlite` and both `.parquet`, then `python -m api.followup sync` so follow-up statuses agree across any regrouped detections |
+| Annotations schema changed | nothing: the API migrates `annotations.sqlite` in place on its first open. Back the file up first anyway. |
 
 > **Never re-copy `annotations.sqlite` from laptop to host.**
 > After step 3 the host's copy is the live master — it is the only file holding
