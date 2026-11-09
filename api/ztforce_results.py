@@ -91,30 +91,42 @@ def stack_bands(lcs: dict[str, Any], window_days: int) -> dict[str, dict[str, li
     return out
 
 
+# Stored count -> how the note says it.
+_CAUSES = {'n_unavailable': 'not served by IRSA', 'n_download_failed': 'download failed', 'n_unreadable': 'unreadable'}
+
+
 def summarise(lcs: dict[str, Any]) -> dict[str, Any]:
     """Everything stored for one finished run: the page's stacks for every window,
-    the number of good epochs, and a note on epochs that could not be measured.
-    (The epochs themselves stay in ztforce's own cache, under ZTFORCE_DIR.)
+    the number of good epochs, and the epochs that could not be measured, counted
+    by cause and as a note. (The epochs themselves stay in ztforce's own cache,
+    under ZTFORCE_DIR.)
     """
+    counts = _unmeasured_counts(lcs)
     return {
         'stacks': {str(w): stack_bands(lcs, w) for w in WINDOWS_DAYS},
         'n_epochs': sum(int((lc.df['flags'] == 0).sum()) for lc in lcs.values()),
-        'note': _unmeasured_note(lcs),
+        'note': _unmeasured_note(counts),
+        **counts,
     }
 
 
-def _unmeasured_note(lcs: dict[str, Any]) -> str | None:
-    """Which epochs could not be measured, counted from the flags (so it is right
-    whether the run computed the photometry or read ztforce's cache)."""
+def _unmeasured_counts(lcs: dict[str, Any]) -> dict[str, int]:
+    """Epochs that could not be measured, by cause, counted from the flags (so it
+    is right whether the run computed the photometry or read ztforce's cache).
+    A failed download is fetched again by the next run; the others are not."""
     from ztforce._constants import FLAG_DOWNLOAD_FAILED, FLAG_PROCESSING_ERROR, FLAG_UNAVAILABLE
 
-    counts = {'not served by IRSA': 0, 'download failed': 0, 'unreadable': 0}
+    counts = dict.fromkeys(_CAUSES, 0)
     for lc in lcs.values():
         flags = lc.df['flags'].astype(int)
-        counts['not served by IRSA'] += int((flags & FLAG_UNAVAILABLE > 0).sum())
-        counts['download failed'] += int((flags & FLAG_DOWNLOAD_FAILED > 0).sum())
-        counts['unreadable'] += int((flags & FLAG_PROCESSING_ERROR > 0).sum())
-    parts = [f'{n} epochs {what}' for what, n in counts.items() if n]
+        counts['n_unavailable'] += int((flags & FLAG_UNAVAILABLE > 0).sum())
+        counts['n_download_failed'] += int((flags & FLAG_DOWNLOAD_FAILED > 0).sum())
+        counts['n_unreadable'] += int((flags & FLAG_PROCESSING_ERROR > 0).sum())
+    return counts
+
+
+def _unmeasured_note(counts: dict[str, int]) -> str | None:
+    parts = [f'{counts[key]} epochs {what}' for key, what in _CAUSES.items() if counts[key]]
     return ', '.join(parts) or None
 
 

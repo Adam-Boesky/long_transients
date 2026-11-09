@@ -7,6 +7,11 @@ One row per source. The row's life:
     done    -- finished; the page's stacks stored
     error   -- failed; kept with the message until someone retries
 
+A finished run also stores how many epochs it could not measure, by cause. Ones
+whose download failed are fetched again by a re-run, so "run now" re-runs a
+current result that has any; the others (not served by IRSA, unreadable) would
+come out the same.
+
 The "Run ztforce" label is the source of truth for label-driven runs: labelling
 a source queues it, and removing the label before it starts dequeues it. A
 finished result made by an older ztforce (a different ``result_version``) is
@@ -41,7 +46,10 @@ CREATE TABLE IF NOT EXISTS runs (
     n_epochs      INTEGER,
     note          TEXT,                       -- e.g. epochs IRSA could not serve
     error         TEXT,
-    stacks        BLOB                        -- gzipped JSON the page draws
+    stacks        BLOB,                       -- gzipped JSON the page draws
+    n_download_failed INTEGER,                -- unmeasured epochs, by cause (from the flags)
+    n_unavailable     INTEGER,
+    n_unreadable      INTEGER
 );
 CREATE INDEX IF NOT EXISTS runs_queue ON runs (status, priority DESC, requested_at);
 CREATE TABLE IF NOT EXISTS settings (
@@ -50,12 +58,22 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
+# Columns added after the first release, for databases made before them.
+_ADDED_COLUMNS = {'n_download_failed': 'INTEGER', 'n_unavailable': 'INTEGER', 'n_unreadable': 'INTEGER'}
+
 _bootstrapped: set[Path] = set()
 _bootstrap_lock = threading.Lock()
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    have = {r[1] for r in con.execute('PRAGMA table_info(runs)')}
+    for name, decl in _ADDED_COLUMNS.items():
+        if name not in have:
+            con.execute(f'ALTER TABLE runs ADD COLUMN {name} {decl}')
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -68,6 +86,7 @@ def connect(path: Path) -> sqlite3.Connection:
                 # WAL: the worker writes while page requests read.
                 con.execute('PRAGMA journal_mode=WAL')
                 con.executescript(SCHEMA)
+                _migrate(con)
                 con.commit()
             finally:
                 con.close()
@@ -204,6 +223,7 @@ def sync_labels(
 
 def request_now(con: sqlite3.Connection, source_uuid: str, ra: float, dec: float, version: str) -> None:
     """"Run now" from the page: queue at the front, unless a current result exists.
+    A current result with epochs whose download failed is run again to fetch them.
 
     Under `BEGIN IMMEDIATE` for the same reason `claim` is: this reads the row
     and then writes it. Interleaved with the worker, the read could see
@@ -214,7 +234,12 @@ def request_now(con: sqlite3.Connection, source_uuid: str, ra: float, dec: float
     con.execute('BEGIN IMMEDIATE')
     try:
         row = get(con, source_uuid)
-        if row is not None and row['status'] == 'done' and row['version'] == version:
+        if (
+            row is not None
+            and row['status'] == 'done'
+            and row['version'] == version
+            and not row['n_download_failed']
+        ):
             return
         if row is not None and row['status'] == 'running':
             return
@@ -225,7 +250,7 @@ def request_now(con: sqlite3.Connection, source_uuid: str, ra: float, dec: float
                 (source_uuid, ra, dec, _now()),
             )
         else:
-            # A queued source jumps ahead; a stale or failed one is queued again.
+            # A queued source jumps ahead; a stale, failed or incomplete one is queued again.
             con.execute(
                 "UPDATE runs SET status = 'queued', origin = 'manual', priority = 1, error = NULL, "
                 'requested_at = CASE WHEN status = ? THEN requested_at ELSE ? END WHERE source_uuid = ?',
@@ -266,11 +291,15 @@ def finish(
     stacks: bytes,
     n_epochs: int,
     note: str | None,
+    n_download_failed: int | None = None,
+    n_unavailable: int | None = None,
+    n_unreadable: int | None = None,
 ) -> None:
     con.execute(
         "UPDATE runs SET status = 'done', finished_at = ?, version = ?, stacks = ?, "
-        'n_epochs = ?, note = ?, error = NULL, priority = 0 WHERE source_uuid = ?',
-        (_now(), version, stacks, n_epochs, note, source_uuid),
+        'n_epochs = ?, note = ?, n_download_failed = ?, n_unavailable = ?, n_unreadable = ?, '
+        'error = NULL, priority = 0 WHERE source_uuid = ?',
+        (_now(), version, stacks, n_epochs, note, n_download_failed, n_unavailable, n_unreadable, source_uuid),
     )
 
 
@@ -290,5 +319,8 @@ def row_summary(row: sqlite3.Row | None) -> dict[str, Any]:
     """The plain fields of a run row, for responses."""
     if row is None:
         return {'status': 'none'}
-    keys = ('status', 'origin', 'requested_at', 'started_at', 'finished_at', 'version', 'n_epochs', 'note', 'error')
+    keys = (
+        'status', 'origin', 'requested_at', 'started_at', 'finished_at', 'version', 'n_epochs', 'note', 'error',
+        'n_download_failed', 'n_unavailable', 'n_unreadable',
+    )
     return {k: row[k] for k in keys}
