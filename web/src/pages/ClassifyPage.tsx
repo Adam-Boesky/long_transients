@@ -319,14 +319,15 @@ export function ClassifyPage({ member, schema }:
     : { coord_slug: current?.coord_slug ?? null, ra: current?.ra ?? null,
         dec: current?.dec ?? null }
 
-  // Warm the sources around this one while the human reads it (how far:
-  // `AHEAD`/`BEHIND` in useLookahead). This, not raw query speed, is what
-  // makes flipping feel instant.
-  // Credited to the listing the grid is showing -- not the source or stretch
-  // being moved to, since for a render after a change the grid still holds
-  // the previous (settled) stamps. A new source or stretch is a new listing.
+  // Whether the stamps on screen have all settled, credited to the listing
+  // the grid is showing -- not the source or stretch being moved to, since
+  // for a render after a change the grid still holds the previous (settled)
+  // stamps. A new source or stretch is a new listing.
   const [stampsSettled, setStampsSettled] = useState<Cutouts | null>(null)
   const onStampsSettled = useCallback(() => setStampsSettled(cutouts), [cutouts])
+  // Then warm the sources around this one while the human reads it (how far:
+  // `AHEAD`/`BEHIND` in useLookahead). This, not raw query speed, is what
+  // makes flipping feel instant.
   useLookahead(uuid, cutouts !== null && stampsSettled === cutouts,
                (offset) => win.at(position + offset)?.source_uuid, stretch, percent)
 

@@ -35,8 +35,9 @@ MISSING_STATUS = {400, 404}
 # In-flight requests per host, per process; background work gets half.
 # Settings (`.env`) so they can be tuned without a code change. IRSA's 4 is
 # loose on purpose until its limit is measured on a day it is not degraded.
-HOST_LIMITS = {'irsa.ipac.caltech.edu': int(os.environ.get('LT_IRSA_CONCURRENCY', '4'))}
-DEFAULT_HOST_LIMIT = int(os.environ.get('LT_CUTOUT_HOST_CONCURRENCY', '8'))
+# At least 1: a zero-slot semaphore would hang every fetch rather than fail.
+HOST_LIMITS = {'irsa.ipac.caltech.edu': max(1, int(os.environ.get('LT_IRSA_CONCURRENCY', '4')))}
+DEFAULT_HOST_LIMIT = max(1, int(os.environ.get('LT_CUTOUT_HOST_CONCURRENCY', '8')))
 
 
 @dataclass(frozen=True)

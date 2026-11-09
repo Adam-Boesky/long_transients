@@ -28,8 +28,8 @@ type Flight = { ac: AbortController; done: Promise<void>; owner: string }
 const MAX_SETTLED = 5000
 const FALLBACK_MS = 8000
 // How far to warm: sources ahead (Next) and behind (Prev) of the one shown.
-export const AHEAD = 5
-export const BEHIND = 1
+const AHEAD = 5
+const BEHIND = 1
 
 /** Offsets to warm, nearest first, alternating ahead and behind: 1, -1, 2, 3... */
 const OFFSETS = Array.from({ length: Math.max(AHEAD, BEHIND) }, (_, i) => i + 1)
