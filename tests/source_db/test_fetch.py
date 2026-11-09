@@ -121,3 +121,73 @@ def test_is_fits():
     assert fetch.is_fits(FITS)
     assert not fetch.is_fits(FITS[:-1])
     assert not fetch.is_fits(b'<html>' + b' ' * 2874)
+
+
+def _count_in_flight(monkeypatch, host, limit, hold_s=0.05):
+    """Stub urlopen to track peak in-flight requests to `host`."""
+    monkeypatch.setitem(fetch.HOST_LIMITS, host, limit)
+    monkeypatch.setattr(fetch, '_sems', {})
+    state = {'live': 0, 'peak': 0}
+    lock = threading.Lock()
+
+    def urlopen(req, timeout):
+        with lock:
+            state['live'] += 1
+            state['peak'] = max(state['peak'], state['live'])
+        time.sleep(hold_s)
+        with lock:
+            state['live'] -= 1
+        return _Resp(FITS)
+    monkeypatch.setattr(fetch.urllib.request, 'urlopen', urlopen)
+    return state
+
+
+def _in_threads(n, target):
+    threads = [threading.Thread(target=target, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+
+def test_background_work_holds_only_half_the_slots(monkeypatch):
+    state = _count_in_flight(monkeypatch, 'bg.example', 4)
+
+    def prefetch(i):
+        with fetch.priority(background=True):
+            fetch.get(f'http://bg.example/{i}')
+    _in_threads(8, prefetch)
+    assert state['peak'] == 2
+
+
+def test_foreground_keeps_headroom_while_background_is_busy(monkeypatch):
+    state = _count_in_flight(monkeypatch, 'mix.example', 4, hold_s=0.2)
+
+    def either(i):
+        with fetch.priority(background=i < 6):
+            fetch.get(f'http://mix.example/{i}')
+    _in_threads(8, either)
+    assert state['peak'] == 4             # 2 background + 2 foreground
+
+
+def test_a_promoted_request_stops_waiting_for_a_background_slot(monkeypatch):
+    monkeypatch.setitem(fetch.HOST_LIMITS, 'p.example', 2)   # one background slot
+    monkeypatch.setattr(fetch, '_sems', {})
+    monkeypatch.setattr(fetch.urllib.request, 'urlopen', lambda req, timeout: _Resp(FITS))
+    bg = fetch._sem('p.example', background=True)
+    bg.acquire()                          # the only background slot is taken
+    got = []
+
+    def queued():
+        with fetch.priority(background=True) as p:
+            prio.append(p)
+            got.append(fetch.get('http://p.example/x'))
+    prio = []
+    t = threading.Thread(target=queued)
+    t.start()
+    time.sleep(0.2)
+    assert not got                        # stuck behind the background share
+    prio[0].background = False            # a foreground request joined it
+    t.join(timeout=2)
+    bg.release()
+    assert got == [FITS]

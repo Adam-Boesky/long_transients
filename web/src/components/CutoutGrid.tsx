@@ -7,9 +7,9 @@
  * own connection pool and land in its cache, and the server caches the
  * rendered PNG on disk so the FITS fetch is paid once.
  *
- * `usePrefetchCache` warms that cache for the *next* source while the current
- * one is on screen, which is what makes paging feel instant: by the time you
- * press Next the images are already in the browser's HTTP cache and the
+ * `useLookahead` warms that cache for the sources around the current one
+ * while it is on screen, which is what makes paging feel instant: by the time
+ * you press Next the images are already in the browser's HTTP cache and the
  * `<img>` resolves from memory.
  *
  * The reticle and scale bar are DOM overlays rather than pixels baked into
@@ -44,6 +44,9 @@ export interface CutoutGridProps {
   /** Links to the surveys' own image viewers, rendered beside the controls:
    *  "show me more of this image" belongs with the images. */
   links?: { label: string; url: string; help?: string }[]
+  /** Called once every stamp has loaded or failed for good, so the page can
+   *  start warming the next sources without competing with these. */
+  onSettled?: () => void
 }
 
 const STRETCHES = ['linear', 'sqrt', 'log', 'asinh']
@@ -119,7 +122,7 @@ interface Magnified {
 
 export function CutoutGrid({ images, loading, catalog, pixelArcsec,
                             stretch, onStretch, percent, links,
-                            onPercent, regions }: CutoutGridProps) {
+                            onPercent, regions, onSettled }: CutoutGridProps) {
   // Which stamp the enlarge dialog is showing, if any. Enlarging one at a
   // time beats a full-screen view of all six: the thing you want a closer
   // look at is a single band, with the other five still there to compare.
@@ -128,6 +131,21 @@ export function CutoutGrid({ images, loading, catalog, pixelArcsec,
   useEffect(() => {
     try { localStorage.setItem(REGIONS_KEY, JSON.stringify([...ticked])) } catch { /* private window */ }
   }, [ticked])
+  // URLs rather than a counter, so a stamp settling twice (a Retry) or one
+  // left over from the previous source cannot complete the wrong set.
+  const urls = images ? Object.values(images).flatMap((b) => Object.values(b)) : null
+  const urlsKey = urls?.join('|') ?? null
+  const settledUrls = useRef(new Set<string>())
+  const settle = useCallback((url: string) => {
+    settledUrls.current.add(url)
+    if (urlsKey !== null && urlsKey.split('|').every((u) => !u || settledUrls.current.has(u))) {
+      onSettled?.()
+    }
+  }, [urlsKey, onSettled])
+  useEffect(() => {
+    if (urlsKey === '') onSettled?.()     // a source with no stamps at all
+  }, [urlsKey, onSettled])
+
   const drawn: DrawnRegion[] = (regions ?? [])
     .filter((r) => ticked.has(r.key))
     .map((r) => ({ ...r, color: regionColor(r.key) }))
@@ -224,7 +242,7 @@ export function CutoutGrid({ images, loading, catalog, pixelArcsec,
                         psf={mag(catalog, row.prefix, band, 'PSF')}
                         kron={mag(catalog, row.prefix, band, 'Kron')}
                         limit={limitFor(catalog, row.prefix, band)}
-                        onEnlarge={setEnlarged} />
+                        onEnlarge={setEnlarged} onSettled={settle} />
             ))}
           </Fragment>
         ))}
@@ -239,13 +257,14 @@ export function CutoutGrid({ images, loading, catalog, pixelArcsec,
 
 /** One stamp, its band label underneath, and its magnitudes to the right. */
 function BandCell({ url, band, loading, psf, kron, limit, arcsecPerPixel,
-                    drawn, survey, onEnlarge }:
+                    drawn, survey, onEnlarge, onSettled }:
                   { url: string | null; band: string
                     loading?: boolean; psf: Mag; kron: Mag
                     limit: number | null
                     arcsecPerPixel: number | null; drawn: DrawnRegion[]
                     survey: string
-                    onEnlarge: (m: Magnified) => void }) {
+                    onEnlarge: (m: Magnified) => void
+                    onSettled: (url: string) => void }) {
   return (
     <>
       <div>
@@ -257,7 +276,8 @@ function BandCell({ url, band, loading, psf, kron, limit, arcsecPerPixel,
             below does not shift where the button sits. */}
         <div className="cutout-frame" style={{ position: 'relative' }}>
           <Cutout url={url} band={band} loading={loading}
-                  arcsecPerPixel={arcsecPerPixel} drawn={drawn} />
+                  arcsecPerPixel={arcsecPerPixel} drawn={drawn}
+                  onSettled={onSettled} />
           {url && (
             <button
               className="cutout-enlarge"
@@ -436,10 +456,10 @@ function fmt(m: Mag): string {
                         : `${m.value.toFixed(2)} ± ${m.err.toFixed(2)}`
 }
 
-function Cutout({ url, band, loading, arcsecPerPixel, drawn }:
+function Cutout({ url, band, loading, arcsecPerPixel, drawn, onSettled }:
                 { url: string | null; band: string
                   loading?: boolean; arcsecPerPixel: number | null
-                  drawn: DrawnRegion[] }) {
+                  drawn: DrawnRegion[]; onSettled?: (url: string) => void }) {
   const [state, setState] = useState<'idle' | 'ok' | 'error'>('idle')
   // The stamp's native pixel count, which sets the scale bar's length.
   const [naturalPx, setNaturalPx] = useState(0)
@@ -480,6 +500,12 @@ function Cutout({ url, band, loading, arcsecPerPixel, drawn }:
     })
     return () => { live = false }
   }, [state, src, autoRetried])
+
+  // Loaded, or failed with nothing left trying (see the follow-up above).
+  const settled = state === 'ok' || (state === 'error' && reason !== null)
+  useEffect(() => {
+    if (settled && url) onSettled?.(url)
+  }, [settled, url, onSettled])
 
   // A cached image can also finish before React attaches `onLoad` at all, so
   // the ref checks whether it is already complete on mount.

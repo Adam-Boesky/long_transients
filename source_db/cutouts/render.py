@@ -31,10 +31,11 @@ import fcntl
 import hashlib
 import io
 import os
+import threading
 from base64 import b64encode
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -322,11 +323,65 @@ def cached(path: Path) -> Optional[bytes]:
         return None
 
 
+class _Flight:
+    def __init__(self, priority: Optional[fetch.Priority]):
+        self.done = threading.Event()
+        self.priority = priority
+        self.png: Optional[bytes] = None
+        self.error: Optional[BaseException] = None
+
+
+_flights: dict[Path, _Flight] = {}
+_flights_lock = threading.Lock()
+
+
+def cached_or_render(path: Path, produce: Callable[[], Optional[bytes]]) -> Optional[bytes]:
+    """The PNG at `path`, or `produce()`d and stored on a miss; None if nothing to draw.
+
+    Single-flight: concurrent misses for one stamp (a prefetch and the view
+    itself, say) share the first one's render and its outcome, error
+    included, so the upstream service is asked once. A foreground caller
+    joining a background render promotes it.
+    """
+    png = cached(path)
+    if png is not None:
+        return png
+    mine = fetch.current_priority()
+    with _flights_lock:
+        flight = _flights.get(path)
+        leader = flight is None
+        if leader:
+            flight = _flights[path] = _Flight(mine)
+    if not leader:
+        if flight.priority is not None and not (mine is not None and mine.background):
+            flight.priority.background = False
+        flight.done.wait()
+        if flight.error is not None:
+            raise flight.error
+        return flight.png
+    try:
+        # A flight that finished between the miss above and taking the lead.
+        flight.png = cached(path)
+        if flight.png is None:
+            flight.png = produce()
+            if flight.png is not None:
+                store(path, flight.png)
+        return flight.png
+    except BaseException as e:
+        flight.error = e
+        raise
+    finally:
+        with _flights_lock:
+            del _flights[path]
+        flight.done.set()
+
+
 def store(path: Path, png: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Write-then-rename, so a reader never sees a half-written PNG and two
-    # workers rendering the same stamp cannot corrupt each other.
-    tmp = path.with_suffix(f'.{os.getpid()}.tmp')
+    # workers rendering the same stamp cannot corrupt each other. Per thread,
+    # not just per process: the API renders on a thread pool.
+    tmp = path.with_suffix(f'.{os.getpid()}-{threading.get_ident()}.tmp')
     tmp.write_bytes(png)
     tmp.replace(path)
     _account(len(png))

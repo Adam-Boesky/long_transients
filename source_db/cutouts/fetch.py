@@ -8,12 +8,15 @@ reset, a truncated body or a stall. All of these clear on a retry, so:
     retried with jittered exponential backoff inside a time budget;
   - 400/404 return None at once (a missing band is ordinary);
   - at most `HOST_LIMITS[host]` requests are in flight per host, released
-    while backing off.
+    while backing off;
+  - background work (prefetches, run under `priority(background=True)`) may
+    hold only half of a host's slots, so the page being read keeps headroom.
 
 Stdlib only: `requests` is not in the serving requirements.
 """
 from __future__ import annotations
 
+import contextvars
 import http.client
 import random
 import threading
@@ -21,8 +24,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
 MISSING_STATUS = {400, 404}
@@ -55,15 +59,63 @@ class InvalidBody(Exception):
     pass
 
 
-_sems: dict[str, threading.BoundedSemaphore] = {}
+class Priority:
+    """Mutable, so a foreground request that joins queued background work
+    (see `render.cached_or_render`) can promote it."""
+
+    def __init__(self, background: bool):
+        self.background = background
+
+
+_priority: contextvars.ContextVar[Optional[Priority]] = contextvars.ContextVar(
+    'fetch_priority', default=None)
+
+
+@contextmanager
+def priority(background: bool) -> Iterator[Priority]:
+    """Run the enclosed fetches as background (prefetch) or foreground work."""
+    p = Priority(background)
+    token = _priority.set(p)
+    try:
+        yield p
+    finally:
+        _priority.reset(token)
+
+
+def current_priority() -> Optional[Priority]:
+    return _priority.get()
+
+
+_sems: dict[tuple[str, bool], threading.BoundedSemaphore] = {}
 _sems_lock = threading.Lock()
 
 
-def _sem(host: str) -> threading.BoundedSemaphore:
+def _sem(host: str, background: bool = False) -> threading.BoundedSemaphore:
     with _sems_lock:
-        if host not in _sems:
-            _sems[host] = threading.BoundedSemaphore(HOST_LIMITS.get(host, DEFAULT_HOST_LIMIT))
-        return _sems[host]
+        key = (host, background)
+        if key not in _sems:
+            limit = HOST_LIMITS.get(host, DEFAULT_HOST_LIMIT)
+            _sems[key] = threading.BoundedSemaphore(max(1, limit // 2) if background else limit)
+        return _sems[key]
+
+
+@contextmanager
+def _slot(host: str) -> Iterator[None]:
+    """A host slot; background work first takes one of its half-share."""
+    p = _priority.get()
+    bg = None
+    if p is not None and p.background:
+        bg = _sem(host, background=True)
+        while not bg.acquire(timeout=0.05):
+            if not p.background:         # promoted while queued
+                bg = None
+                break
+    try:
+        with _sem(host):
+            yield
+    finally:
+        if bg is not None:
+            bg.release()
 
 
 def is_fits(raw: bytes) -> bool:
@@ -83,12 +135,12 @@ def get(url: str, headers: Optional[dict] = None, *, timeout: float = 60,
     req = urllib.request.Request(url)
     for k, v in (headers or {}).items():
         req.add_header(k, v)
-    sem = _sem(urllib.parse.urlsplit(url).hostname or '')
+    host = urllib.parse.urlsplit(url).hostname or ''
     t0 = time.monotonic()
     for attempt in range(policy.attempts):
         retry_after = None
         try:
-            with sem:
+            with _slot(host):
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     raw = resp.read()
             if validate is not None and not validate(raw):

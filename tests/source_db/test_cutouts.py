@@ -458,3 +458,101 @@ def test_a_zero_budget_disables_the_sweep(tmp_path, monkeypatch):
     for i in range(5):
         render.store(render.cache_path(f'u{i}', 'ztf', 'g', 'log', 99.5), b'q' * 100)
     assert render.cache_size()[0] == 5
+
+
+def test_concurrent_requests_for_one_stamp_fetch_it_once(cutout_client, monkeypatch):
+    # A prefetch and the real view asking for the same uncached stamp at once
+    # must share one upstream fetch.
+    import threading
+    calls = []
+
+    def slow(*a, **k):                   # noqa: ANN001
+        calls.append(a)
+        time.sleep(0.3)
+        return np.arange(61 * 61, dtype=np.float32).reshape(61, 61)
+    monkeypatch.setattr(render, 'fetch_ztf', slow)
+    # The fixture's one in-memory connection is not safe across threads;
+    # the DB lookup is not what this test is about.
+    from api.routers import cutouts as router
+    monkeypatch.setattr(router, '_cutout_inputs', lambda *a: (10.0, -5.0, (501, 15, 3)))
+    codes = []
+    url = f'/api/sources/{UUID}/cutout/ztf/g.png'
+
+    def hit():
+        try:
+            codes.append(cutout_client.get(url).status_code)
+        except BaseException as e:       # noqa: BLE001
+            codes.append(repr(e))
+    threads = [threading.Thread(target=hit) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert codes == [200] * 4
+    assert len(calls) == 1
+
+
+def test_waiters_share_the_leaders_error(tmp_path, monkeypatch):
+    import threading
+    monkeypatch.setattr(render, 'CACHE_DIR', tmp_path)
+    path = tmp_path / 'x.png'
+    calls, errors = [], []
+
+    def failing():
+        calls.append(1)
+        time.sleep(0.2)
+        raise RuntimeError('upstream gave up')
+
+    def hit():
+        try:
+            render.cached_or_render(path, failing)
+        except RuntimeError as e:
+            errors.append(str(e))
+    threads = [threading.Thread(target=hit) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(calls) == 1
+    assert errors == ['upstream gave up'] * 3
+
+
+def test_a_foreground_waiter_promotes_a_background_render(tmp_path, monkeypatch):
+    import threading
+    from source_db.cutouts import fetch
+    monkeypatch.setattr(render, 'CACHE_DIR', tmp_path)
+    path = tmp_path / 'y.png'
+    started, release, seen = threading.Event(), threading.Event(), []
+
+    def produce():
+        started.set()
+        release.wait(2)
+        seen.append(fetch.current_priority().background)
+        return b'png'
+
+    def prefetch():
+        with fetch.priority(background=True):
+            render.cached_or_render(path, produce)
+    t = threading.Thread(target=prefetch)
+    t.start()
+    started.wait(2)
+    view = threading.Thread(target=lambda: render.cached_or_render(path, produce))
+    view.start()
+    time.sleep(0.1)
+    release.set()
+    t.join()
+    view.join()
+    assert seen == [False]                # rendered once, promoted to foreground
+
+
+def test_prefetch_header_runs_the_render_as_background(cutout_client, monkeypatch):
+    from source_db.cutouts import fetch
+    seen = []
+
+    def fake(*a, **k):                   # noqa: ANN001
+        seen.append(fetch.current_priority().background)
+        return np.arange(61 * 61, dtype=np.float32).reshape(61, 61)
+    monkeypatch.setattr(render, 'fetch_ztf', fake)
+    cutout_client.get(f'/api/sources/{UUID}/cutout/ztf/g.png', headers={'X-Prefetch': '1'})
+    cutout_client.get(f'/api/sources/{UUID}/cutout/ztf/r.png')
+    assert seen == [True, False]
