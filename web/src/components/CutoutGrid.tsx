@@ -132,13 +132,19 @@ export function CutoutGrid({ images, loading, catalog, pixelArcsec,
     try { localStorage.setItem(REGIONS_KEY, JSON.stringify([...ticked])) } catch { /* private window */ }
   }, [ticked])
   // URLs rather than a counter, so a stamp settling twice (a Retry) or one
-  // left over from the previous source cannot complete the wrong set.
+  // left over from the previous source cannot complete the wrong set. Fresh
+  // per set of stamps: on a return visit, a stamp that failed last time is
+  // loading again and must not count as settled.
   const urls = images ? Object.values(images).flatMap((b) => Object.values(b)) : null
   const urlsKey = urls?.join('|') ?? null
-  const settledUrls = useRef(new Set<string>())
+  const settledUrls = useRef<{ key: string | null; done: Set<string> }>(
+    { key: null, done: new Set() })
   const settle = useCallback((url: string) => {
-    settledUrls.current.add(url)
-    if (urlsKey !== null && urlsKey.split('|').every((u) => !u || settledUrls.current.has(u))) {
+    const s = settledUrls.current
+    if (s.key !== urlsKey) settledUrls.current = { key: urlsKey, done: new Set() }
+    settledUrls.current.done.add(url)
+    if (urlsKey !== null
+        && urlsKey.split('|').every((u) => !u || settledUrls.current.done.has(u))) {
       onSettled?.()
     }
   }, [urlsKey, onSettled])

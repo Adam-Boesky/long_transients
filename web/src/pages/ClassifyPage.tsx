@@ -322,13 +322,12 @@ export function ClassifyPage({ member, schema }:
   // Warm the sources around this one while the human reads it: the next
   // three and the previous one, nearest first. This, not raw query speed, is
   // what makes flipping feel instant.
-  const [stampsSettled, setStampsSettled] = useState<string | null>(null)
-  // Credited to the source the grid is showing, not the one being navigated
-  // to: for a render after a move, the grid still holds the last source's
-  // (settled) stamps.
-  const onStampsSettled = useCallback(
-    () => setStampsSettled(cutouts?.source_uuid ?? null), [cutouts])
-  useLookahead(uuid, stampsSettled === uuid,
+  // Credited to the listing the grid is showing -- not the source or stretch
+  // being moved to, since for a render after a change the grid still holds
+  // the previous (settled) stamps. A new source or stretch is a new listing.
+  const [stampsSettled, setStampsSettled] = useState<Cutouts | null>(null)
+  const onStampsSettled = useCallback(() => setStampsSettled(cutouts), [cutouts])
+  useLookahead(uuid, cutouts !== null && stampsSettled === cutouts,
                [position + 1, position - 1, position + 2, position + 3]
                  .map((p) => win.at(p)?.source_uuid), stretch, percent)
 
