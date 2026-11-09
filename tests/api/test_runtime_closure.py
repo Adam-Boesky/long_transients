@@ -34,6 +34,7 @@ SERVING = {
     'source_db/cutouts/__init__.py',
     'source_db/cutouts/render.py',          # cutouts are rendered per request
     'source_db/cutouts/epochs.py',          # single-epoch images, per click
+    'source_db/cutouts/fetch.py',           # retrying fetch for both
     'source_db/serving/__init__.py',
     'source_db/serving/filters.py',
     'source_db/serving/schema.py',

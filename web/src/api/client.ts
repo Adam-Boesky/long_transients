@@ -198,11 +198,14 @@ export const getCutouts = (uuid: string,
     } : c)
 
 /** Why an `<img>` failed: its `onError` carries nothing, so ask again with
- *  `fetch` and read the status and the API's `detail`. One short line. */
-export async function explainImageFailure(url: string): Promise<string> {
+ *  `fetch` and read the status and the API's `detail`. One short line.
+ *
+ *  Null when this second request succeeds: the upstream failure was
+ *  transient and the server has the image now, so the caller should reload. */
+export async function explainImageFailure(url: string): Promise<string | null> {
   try {
     const res = await apiFetch(url, { cache: 'no-store' })
-    if (res.ok) return 'the image arrived but could not be decoded'
+    if (res.ok) return null
     const detail = await res.json().then((b) => b?.detail).catch(() => null)
     return typeof detail === 'string' ? `${res.status}: ${detail}`
       : `${res.status} ${res.statusText || 'error'}`
@@ -210,6 +213,8 @@ export async function explainImageFailure(url: string): Promise<string> {
     return `no response from the server (${e instanceof Error ? e.message : String(e)})`
   }
 }
+
+export const UNDECODABLE = 'the image arrived but could not be decoded'
 
 /** `url` with a cache-busting parameter, for retrying an image the browser
  *  may have remembered as failed. The API ignores the extra parameter. */

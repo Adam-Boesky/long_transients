@@ -119,7 +119,10 @@ def get_cutout_png(source_uuid: str, survey: str, band: str,
                              render.source_fingerprint(ra, dec, origin))
     png = render.cached(path)
     if png is None:
-        png = _render_cutout(survey, band, ra, dec, origin, stretch, percent)
+        try:
+            png = _render_cutout(survey, band, ra, dec, origin, stretch, percent)
+        except urllib.error.URLError as e:
+            raise HTTPException(502, f'{survey} image service did not answer: {e}')
         if png is None:
             raise HTTPException(404, f'no {survey} {band} image for {source_uuid}')
         render.store(path, png)

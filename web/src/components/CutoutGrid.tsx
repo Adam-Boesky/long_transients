@@ -18,7 +18,7 @@
  * a stamp is blown up to full screen.
  */
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
-import { explainImageFailure, retryUrl } from '../api/client'
+import { explainImageFailure, retryUrl, UNDECODABLE } from '../api/client'
 import type { QueryRegion } from '../api/types'
 
 const CUTOUT_BANDS = ['g', 'r', 'i'] as const
@@ -448,6 +448,8 @@ function Cutout({ url, band, loading, arcsecPerPixel, drawn }:
   // Bumped by Retry; a new address, so a failure the browser cached is not
   // simply replayed.
   const [attempt, setAttempt] = useState(0)
+  // At most one automatic reload per URL, so an undecodable image cannot loop.
+  const [autoRetried, setAutoRetried] = useState(false)
   const src = url ? retryUrl(url, attempt) : null
 
   // Reset *during render* when the URL changes, not in an effect.
@@ -464,13 +466,20 @@ function Cutout({ url, band, loading, arcsecPerPixel, drawn }:
     setState('idle')
     setReason(null)
     setAttempt(0)
+    setAutoRetried(false)
   }
   useEffect(() => {
     if (state !== 'error' || !src) return
     let live = true
-    void explainImageFailure(src).then((why) => { if (live) setReason(why) })
+    void explainImageFailure(src).then((why) => {
+      if (!live) return
+      // The re-ask succeeded, so the server has the stamp now: show it.
+      if (why === null && !autoRetried) {
+        setAutoRetried(true); setState('idle'); setAttempt((n) => n + 1)
+      } else setReason(why ?? UNDECODABLE)
+    })
     return () => { live = false }
-  }, [state, src])
+  }, [state, src, autoRetried])
 
   // A cached image can also finish before React attaches `onLoad` at all, so
   // the ref checks whether it is already complete on mount.
@@ -530,7 +539,9 @@ function Cutout({ url, band, loading, arcsecPerPixel, drawn }:
       {state === 'ok' && arcsecPerPixel !== null && naturalPx > 0 && (
         <Regions drawn={drawn} fovArcsec={naturalPx * arcsecPerPixel} />
       )}
-      {state === 'error' ? (
+      {/* No verdict until the follow-up request settles: it may still recover
+          the stamp, so until then it reads as loading. */}
+      {state === 'error' && reason !== null ? (
         <ImageFailure reason={reason}
                       onRetry={() => { setState('idle'); setReason(null); setAttempt((n) => n + 1) }} />
       ) : state !== 'ok' && (
@@ -556,8 +567,8 @@ export function ImageFailure({ reason, onRetry, large }:
                   fontSize: large ? 13 : 11, textAlign: 'center' }}>
       <span style={{ color: 'var(--danger, #b42318)', fontWeight: 600 }}>failed</span>
       {/* The reason comes from a second request (an <img> error says
-          nothing), so it appears a moment after the verdict rather than
-          holding it up. */}
+          nothing); callers wait for it, since that request may recover the
+          image instead. */}
       {reason && (
         <span title={reason}
               style={{ color: 'var(--text-dim)', maxWidth: '100%', overflow: 'hidden',

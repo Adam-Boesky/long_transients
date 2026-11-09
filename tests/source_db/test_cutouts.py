@@ -218,6 +218,16 @@ def test_png_404s_when_the_band_has_no_image(cutout_client, monkeypatch):
     assert r.status_code == 404
 
 
+def test_png_502s_when_the_service_gives_up(cutout_client, monkeypatch):
+    from source_db.cutouts import fetch
+
+    def down(*a, **k):                   # noqa: ANN001
+        raise fetch.FetchError('HTTPError after 5 attempts')
+    monkeypatch.setattr(render, 'fetch_ztf', down)
+    r = cutout_client.get(f'/api/sources/{UUID}/cutout/ztf/g.png')
+    assert r.status_code == 502
+
+
 def test_png_renders_and_caches_on_a_miss(cutout_client, monkeypatch):
     calls = []
 

@@ -31,8 +31,6 @@ import fcntl
 import hashlib
 import io
 import os
-import urllib.error
-import urllib.request
 from base64 import b64encode
 from functools import lru_cache
 from pathlib import Path
@@ -40,6 +38,7 @@ from typing import Optional
 
 import numpy as np
 
+from source_db.cutouts import fetch
 from source_db.paths import DEFAULT_OUT_DIR
 
 # 60" across, matching the 240 px PanSTARRS stamp at 0.25"/px that the old
@@ -66,7 +65,9 @@ IBE_DEEP = 'https://irsa.ipac.caltech.edu/ibe/data/ztf/products/deep'
 ZTF_FILTERCODE = {'g': 'zg', 'r': 'zr', 'i': 'zi'}
 
 CACHE_DIR = Path(os.environ.get('LT_CUTOUT_CACHE', DEFAULT_OUT_DIR / 'cutout_cache'))
-TIMEOUT = 120
+# Per socket operation, so it also bounds a stalled transfer; IBE's slowest
+# answer (the metadata search) is ~35 s.
+TIMEOUT = 60
 
 # The cache bounds itself rather than waiting for a cron nobody set up. A
 # running byte total sits beside it and a sweep runs when that total crosses
@@ -98,20 +99,17 @@ def _irsa_auth() -> Optional[str]:
 
 
 def _get(url: str, headers: Optional[dict] = None) -> Optional[bytes]:
-    """Fetch, returning None for a 404 rather than raising.
+    """Fetch with retries (`fetch.get`), returning None for a 400/404.
 
     A missing band is ordinary: ZTF has no i-band reference for most fields,
     and the caller renders "not available" for it.
     """
-    req = urllib.request.Request(url)
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
-    try:
-        return urllib.request.urlopen(req, timeout=TIMEOUT).read()
-    except urllib.error.HTTPError as e:
-        if e.code in (400, 404):
-            return None
-        raise
+    return fetch.get(url, headers, timeout=TIMEOUT)
+
+
+def _get_fits(url: str, headers: Optional[dict] = None) -> Optional[bytes]:
+    """`_get`, also retrying a 200 whose body is not a complete FITS file."""
+    return fetch.get(url, headers, timeout=TIMEOUT, validate=fetch.is_fits)
 
 
 def ztf_cutout_url(field: int, ccd: int, qid: int, band: str,
@@ -142,8 +140,8 @@ def fetch_ztf(field: int, ccd: int, qid: int, band: str,
     auth = _irsa_auth()
     if auth is None:
         return None
-    raw = _get(ztf_cutout_url(field, ccd, qid, band, ra, dec, arcsec),
-               {'Authorization': auth})
+    raw = _get_fits(ztf_cutout_url(field, ccd, qid, band, ra, dec, arcsec),
+                    {'Authorization': auth})
     if not raw:
         return None
     img = _primary_image(raw)
@@ -172,7 +170,7 @@ def fetch_ps1(ra: float, dec: float, filename: str,
     have to be undone or the stretch is applied to the wrong quantity. This
     is the same arithmetic as `get_pstarr_cutout`.
     """
-    raw = _get(ps1_cutout_url(ra, dec, filename, size_px))
+    raw = _get_fits(ps1_cutout_url(ra, dec, filename, size_px))
     if not raw:
         return None
     from astropy.io import fits

@@ -790,8 +790,9 @@ def get_pstarr_cutout(ra, dec, size=240, output_size=None, filter="g", format="f
             
             # Load the WCS
             wcs = WCS(fh[0].header)
+            return flux, wcs
 
         except Exception as e:
             print(f'Pan-STARRS fits url query failed! Exception: {e}')
 
-    return flux, wcs
+    raise RuntimeError(f'Pan-STARRS cutout failed after 3 attempts: {url}')
