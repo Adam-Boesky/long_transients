@@ -43,5 +43,5 @@ Pillow==11.0.0
 # ── forced photometry ────────────────────────────────────────────────────────
 # Adam-Boesky/ztforce, published to PyPI. Installed editable from a local
 # checkout on the development machine; the pinned release here is
-# byte-identical to tag v0.4.0.
-ztforce==0.4.0
+# byte-identical to tag v0.6.0.
+ztforce==0.6.0
