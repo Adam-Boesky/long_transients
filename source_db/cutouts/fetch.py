@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextvars
 import http.client
+import os
 import random
 import threading
 import time
@@ -31,10 +32,11 @@ from typing import Callable, Iterator, Optional
 RETRY_STATUS = {429, 500, 502, 503, 504}
 MISSING_STATUS = {400, 404}
 
-# In-flight requests per host. Loose on purpose until IRSA's limit is known
-# on a day it is not degraded.
-HOST_LIMITS = {'irsa.ipac.caltech.edu': 4}
-DEFAULT_HOST_LIMIT = 8
+# In-flight requests per host, per process; background work gets half.
+# Settings (`.env`) so they can be tuned without a code change. IRSA's 4 is
+# loose on purpose until its limit is measured on a day it is not degraded.
+HOST_LIMITS = {'irsa.ipac.caltech.edu': int(os.environ.get('LT_IRSA_CONCURRENCY', '4'))}
+DEFAULT_HOST_LIMIT = int(os.environ.get('LT_CUTOUT_HOST_CONCURRENCY', '8'))
 
 
 @dataclass(frozen=True)

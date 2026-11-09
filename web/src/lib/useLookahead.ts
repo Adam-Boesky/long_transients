@@ -27,14 +27,22 @@ type Flight = { ac: AbortController; done: Promise<void>; owner: string }
 // cache hit, never a duplicate upstream fetch.
 const MAX_SETTLED = 5000
 const FALLBACK_MS = 8000
+// How far to warm: sources ahead (Next) and behind (Prev) of the one shown.
+export const AHEAD = 5
+export const BEHIND = 1
 
+/** Offsets to warm, nearest first, alternating ahead and behind: 1, -1, 2, 3... */
+const OFFSETS = Array.from({ length: Math.max(AHEAD, BEHIND) }, (_, i) => i + 1)
+  .flatMap((d) => [...(d <= AHEAD ? [d] : []), ...(d <= BEHIND ? [-d] : [])])
+
+/** `neighbour(offset)` is the source that many places from the one shown. */
 export function useLookahead(current: string | undefined, ready: boolean,
-                             around: readonly (string | undefined)[],
+                             neighbour: (offset: number) => string | undefined,
                              stretch: string, percent: number) {
   const settled = useRef(new Set<string>())
   const flights = useRef(new Map<string, Flight>())
   // A primitive, so a new array with the same sources does not restart it.
-  const order = around.filter((u): u is string => !!u)
+  const order = OFFSETS.map(neighbour).filter((u): u is string => !!u)
   const orderKey = order.join(',')
 
   useEffect(() => {

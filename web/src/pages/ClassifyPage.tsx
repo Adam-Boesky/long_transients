@@ -319,17 +319,16 @@ export function ClassifyPage({ member, schema }:
     : { coord_slug: current?.coord_slug ?? null, ra: current?.ra ?? null,
         dec: current?.dec ?? null }
 
-  // Warm the sources around this one while the human reads it: the next
-  // five and the previous one, nearest first. This, not raw query speed, is
-  // what makes flipping feel instant.
+  // Warm the sources around this one while the human reads it (how far:
+  // `AHEAD`/`BEHIND` in useLookahead). This, not raw query speed, is what
+  // makes flipping feel instant.
   // Credited to the listing the grid is showing -- not the source or stretch
   // being moved to, since for a render after a change the grid still holds
   // the previous (settled) stamps. A new source or stretch is a new listing.
   const [stampsSettled, setStampsSettled] = useState<Cutouts | null>(null)
   const onStampsSettled = useCallback(() => setStampsSettled(cutouts), [cutouts])
   useLookahead(uuid, cutouts !== null && stampsSettled === cutouts,
-               [position + 1, position - 1, position + 2, position + 3, position + 4, position + 5]
-                 .map((p) => win.at(p)?.source_uuid), stretch, percent)
+               (offset) => win.at(position + offset)?.source_uuid, stretch, percent)
 
   /** The optical curve with the ztforce run folded in as another survey.
    *  `ztforce` is already in OPTICAL_SURVEYS and has a marker in the palette,
