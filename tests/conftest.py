@@ -12,23 +12,32 @@ Scoping follows the read/write split of the tiers themselves:
 
 Sharing the writable database would make tests order-dependent, which is the
 classic way an API suite starts passing locally and failing in CI.
+
+The real data is out of reach, not just unused: `_data_guard` redirects every
+configured path to a throwaway directory, where `built_db` builds the
+synthetic catalog the app's own startup then loads, and refuses any access to
+`Data/db/` (or any write under `Data/`) for the whole session.
 """
 from __future__ import annotations
 
 import os
 import sys
 from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-# The app's lifespan would otherwise start the ztforce worker against the real
-# databases; tests drive the queue directly.
-os.environ.setdefault('LT_ZTFORCE_WORKER', '0')
+# First, before any application module computes a path: point every data path
+# at a throwaway directory, and refuse the real data outright.
+from tests import _data_guard  # noqa: E402
+# Forced, not defaulted, so a developer's shell cannot turn these back on.
+# Tests drive the ztforce queue directly; the worker would run real photometry.
+os.environ['LT_ZTFORCE_WORKER'] = '0'
 # ...and never read the developer's .env: tests must not depend on local settings.
-os.environ.setdefault('LT_ENV_FILE', '')
+os.environ['LT_ENV_FILE'] = ''
 
 from api import catalog_filters as api_filters  # noqa: E402
 from api import db as api_db  # noqa: E402
@@ -37,6 +46,8 @@ from api.main import app  # noqa: E402
 from source_db.lightcurves import _base  # noqa: E402
 from source_db.serving import build_serving_db  # noqa: E402
 from source_db.spectra import _base as spec_base  # noqa: E402
+
+_data_guard.assert_redirected()
 
 # Deterministic uuids spread across bucket prefixes, so the bucketing in
 # `_base.BucketedWriter` is actually exercised rather than all landing in one
@@ -121,10 +132,15 @@ def _spectra_frames() -> dict[str, pd.DataFrame]:
     return {'sdss_spectra': sdss, 'desi_spectra': desi}
 
 
-@pytest.fixture(scope='session')
-def built_db(tmp_path_factory, monkeypatch_session) -> Path:
-    """A real science.sqlite, built by the real build code from synthetic input."""
-    out = tmp_path_factory.mktemp('db')
+@pytest.fixture(scope='session', autouse=True)
+def built_db(monkeypatch_session) -> Iterator[Path]:
+    """A real science.sqlite, built by the real build code from synthetic input.
+
+    Built into the redirected data directory, so the app's own startup (which
+    reads the configured paths, not the dependency overrides) loads these
+    five sources. Autouse: any test may start the app.
+    """
+    out = _data_guard.TEST_DATA_DIR
 
     pd.DataFrame({
         'source_uuid': UUIDS,
@@ -152,7 +168,8 @@ def built_db(tmp_path_factory, monkeypatch_session) -> Path:
     monkeypatch_session.setattr(build_serving_db, 'current_sdss_keys',
                                 lambda out_dir: {f'{UUIDS[0]}|{SDSS_SPECOBJID}'})
 
-    return build_serving_db.build(out_dir=out)
+    yield build_serving_db.build(out_dir=out)
+    _data_guard.remove_test_data_dir()
 
 
 @pytest.fixture(scope='session')

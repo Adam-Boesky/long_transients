@@ -170,8 +170,14 @@ export const getSource = (uuid: string, signal?: AbortSignal) =>
 // Served gzipped with `Content-Encoding: gzip`; the browser inflates them
 // transparently, so these are ordinary JSON fetches.
 
+const lightCurvePath = (uuid: string) =>
+  `/api/sources/${encodeURIComponent(uuid)}/lightcurve`
+
+/** Served `immutable`, so a prefetch of this URL satisfies `getLightCurve`. */
+export const lightCurveUrl = (uuid: string) => `${API_BASE}${lightCurvePath(uuid)}`
+
 export const getLightCurve = (uuid: string, signal?: AbortSignal) =>
-  get<LightCurve>(`/api/sources/${encodeURIComponent(uuid)}/lightcurve`, {}, signal)
+  get<LightCurve>(lightCurvePath(uuid), {}, signal)
 
 export const getSpectra = (uuid: string, signal?: AbortSignal) =>
   get<Spectra>(`/api/sources/${encodeURIComponent(uuid)}/spectra`, {}, signal)
@@ -183,26 +189,69 @@ export const getSpectra = (uuid: string, signal?: AbortSignal) =>
  * part of the address -- changing either is a different URL and cannot come
  * back from a stale cache.
  */
-export const getCutouts = (uuid: string,
+export function getCutouts(uuid: string,
                            opts: { stretch?: string; percent?: number } = {},
-                           signal?: AbortSignal) =>
-  get<Cutouts>(`/api/sources/${encodeURIComponent(uuid)}/cutouts`,
-               opts as Record<string, string | number>, signal)
-    // The API returns same-origin paths. Prefix them only when the frontend
-    // has been pointed at a different host, so `<img src>` resolves there too.
-    .then((c) => API_BASE ? {
-      ...c,
-      images: Object.fromEntries(Object.entries(c.images).map(([survey, bands]) =>
-        [survey, Object.fromEntries(Object.entries(bands)
-          .map(([band, url]) => [band, `${API_BASE}${url}`]))])),
-    } : c)
+                           signal?: AbortSignal): Promise<Cutouts> {
+  // Fetched once per session: a listing only changes with a catalog rebuild,
+  // and the page and the lookahead both ask for it. Shared, so not tied to
+  // any one caller's signal; a failure is forgotten so it can be retried.
+  const key = `${uuid}|${opts.stretch ?? ''}|${opts.percent ?? ''}`
+  let listing = cutoutListings.get(key)
+  if (!listing) {
+    listing = get<Cutouts>(`/api/sources/${encodeURIComponent(uuid)}/cutouts`,
+                           opts as Record<string, string | number>)
+      // The API returns same-origin paths. Prefix them only when the frontend
+      // has been pointed at a different host, so `<img src>` resolves there too.
+      .then((c) => API_BASE ? {
+        ...c,
+        images: Object.fromEntries(Object.entries(c.images).map(([survey, bands]) =>
+          [survey, Object.fromEntries(Object.entries(bands)
+            .map(([band, url]) => [band, `${API_BASE}${url}`]))])),
+      } : c)
+    listing.catch(() => cutoutListings.delete(key))
+    cutoutListings.set(key, listing)
+    if (cutoutListings.size > MAX_LISTINGS) {
+      cutoutListings.delete(cutoutListings.keys().next().value as string)
+    }
+  }
+  return abortable(listing, signal)
+}
+
+const cutoutListings = new Map<string, Promise<Cutouts>>()
+const MAX_LISTINGS = 256
+
+/** `promise`, rejecting with an AbortError if `signal` fires first. */
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new DOMException('Aborted', 'AbortError'))
+    if (signal.aborted) return abort()
+    signal.addEventListener('abort', abort, { once: true })
+    promise.then(resolve, reject)
+      .finally(() => signal.removeEventListener('abort', abort))
+  })
+}
+
+/** Pull `url` into the browser's HTTP cache as background work: low priority
+ *  here, and `X-Prefetch` has the API give it only a share of its upstream
+ *  slots. The URL must be exactly the one the page will request. True if it
+ *  landed. */
+export async function prefetchUrl(url: string, signal?: AbortSignal): Promise<boolean> {
+  const res = await apiFetch(url, { signal, priority: 'low', headers: { 'X-Prefetch': '1' } })
+  if (!res.ok) return false
+  await res.arrayBuffer()       // the cache entry is complete only once read
+  return true
+}
 
 /** Why an `<img>` failed: its `onError` carries nothing, so ask again with
- *  `fetch` and read the status and the API's `detail`. One short line. */
-export async function explainImageFailure(url: string): Promise<string> {
+ *  `fetch` and read the status and the API's `detail`. One short line.
+ *
+ *  Null when this second request succeeds: the upstream failure was
+ *  transient and the server has the image now, so the caller should reload. */
+export async function explainImageFailure(url: string): Promise<string | null> {
   try {
     const res = await apiFetch(url, { cache: 'no-store' })
-    if (res.ok) return 'the image arrived but could not be decoded'
+    if (res.ok) return null
     const detail = await res.json().then((b) => b?.detail).catch(() => null)
     return typeof detail === 'string' ? `${res.status}: ${detail}`
       : `${res.status} ${res.statusText || 'error'}`
@@ -210,6 +259,8 @@ export async function explainImageFailure(url: string): Promise<string> {
     return `no response from the server (${e instanceof Error ? e.message : String(e)})`
   }
 }
+
+export const UNDECODABLE = 'the image arrived but could not be decoded'
 
 /** `url` with a cache-busting parameter, for retrying an image the browser
  *  may have remembered as failed. The API ignores the extra parameter. */

@@ -6,7 +6,7 @@
  * the reticle marks the same sky in both and they can be compared directly.
  */
 import { useEffect, useRef, useState } from 'react'
-import { explainImageFailure, getEpochImage, isAbort, retryUrl } from '../api/client'
+import { explainImageFailure, getEpochImage, isAbort, retryUrl, UNDECODABLE } from '../api/client'
 import type { EpochImage } from '../api/types'
 import type { EpochClick } from '../charts/LightCurveChart'
 import { ImageFailure, Reticle, ScaleBar } from './CutoutGrid'
@@ -124,13 +124,21 @@ function Panel({ title, url, pixelArcsec, placeholder, error, onRetry }:
   const [failed, setFailed] = useState(false)
   const [reason, setReason] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
+  // At most one automatic reload, so an undecodable image cannot loop.
+  const [autoRetried, setAutoRetried] = useState(false)
   const src = url ? retryUrl(url, attempt) : null
   useEffect(() => {
     if (!failed || !src) return
     let live = true
-    void explainImageFailure(src).then((why) => { if (live) setReason(why) })
+    void explainImageFailure(src).then((why) => {
+      if (!live) return
+      // The re-ask succeeded, so the server has the image now: show it.
+      if (why === null && !autoRetried) {
+        setAutoRetried(true); setFailed(false); setAttempt((n) => n + 1)
+      } else setReason(why ?? UNDECODABLE)
+    })
     return () => { live = false }
-  }, [failed, src])
+  }, [failed, src, autoRetried])
   const side = 'min(44vmin, 460px)'
   return (
     <div>
@@ -140,9 +148,12 @@ function Panel({ title, url, pixelArcsec, placeholder, error, onRetry }:
                     display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {error !== null ? (
           <ImageFailure reason={error} large onRetry={() => onRetry?.()} />
-        ) : failed && src ? (
+        ) : failed && src && reason !== null ? (
           <ImageFailure reason={reason} large
                         onRetry={() => { setFailed(false); setReason(null); setAttempt((n) => n + 1) }} />
+        ) : failed && src ? (
+          // The follow-up request may still recover it: no verdict yet.
+          <span style={{ opacity: 0.55 }}>Loading image…</span>
         ) : src ? (
           <>
             <img key={src} src={src} alt={title}

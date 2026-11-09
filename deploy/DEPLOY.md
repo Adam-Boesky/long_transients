@@ -110,6 +110,8 @@ rest of the site is unaffected.
 | `LT_ZTFORCE_LABEL` | `Run ztforce` | Label that queues a source |
 | `LT_ZTFORCE_CONCURRENCY` | `4` | Sources at once; each opens 8 IRSA downloads |
 | `LT_CUTOUT_MAX_GB` | `20` | Cutout cache budget. `0` disables the sweep. |
+| `LT_IRSA_CONCURRENCY` | `4` | Cutout requests in flight to IRSA at once; prefetches may hold half. IRSA answers bursts with 503s. |
+| `LT_CUTOUT_HOST_CONCURRENCY` | `8` | The same, for every other image service (STScI) |
 | `LT_FILTER_THREADS` | `4` | DuckDB threads |
 | `LT_FILTER_MEMORY_LIMIT` | `2GB` | DuckDB memory ceiling |
 | `LT_MATERIALIZE` | `1` | Copy the catalog into memory at startup: every list, locate and group query 5-10x faster, for ~1.1 GB of resident memory. `0` to query the parquet directly instead. |

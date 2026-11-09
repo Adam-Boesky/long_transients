@@ -46,7 +46,7 @@ import { CatalogPanel } from '../components/CatalogPanel'
 import { CutoutGrid } from '../components/CutoutGrid'
 import { XRayPanel } from '../components/XRayPanel'
 import { bandAbsSigma, isTrue, meanAbsSigma } from '../lib/format'
-import { usePrefetchCache } from '../lib/usePrefetchCache'
+import { useLookahead } from '../lib/useLookahead'
 import { PageHeader } from '../components/chrome'
 import { Badge, Card, GroupNav, NavBar, SORT_OPTIONS } from '../components/ui'
 import { NONE_VALUE, Sidebar } from '../components/Sidebar'
@@ -319,26 +319,17 @@ export function ClassifyPage({ member, schema }:
     : { coord_slug: current?.coord_slug ?? null, ra: current?.ra ?? null,
         dec: current?.dec ?? null }
 
-  // Prefetch the next source while the human reads this one. This, not raw
-  // query speed, is what makes flipping feel instant -- and it matters most
-  // for the cutouts, which are the only assets fetched from a third party.
-  const warmCutouts = usePrefetchCache()
-  // Keyed on the next source's uuid, not on `win` and `position`: the uuid is
-  // the only thing that changes what gets fetched, and depending on the window
-  // object meant every unrelated re-render re-issued all three requests.
-  const nextUuid = win.at(position + 1)?.source_uuid
-  useEffect(() => {
-    if (!nextUuid) return
-    const ac = new AbortController()
-    void getLightCurve(nextUuid, ac.signal).catch(() => {})
-    void getSource(nextUuid, ac.signal).catch(() => {})
-    // Resolve the next source's image addresses, then pull the JPEGs into
-    // the browser cache so pressing Next paints them immediately.
-    void getCutouts(nextUuid, { stretch, percent }, ac.signal)
-      .then((c) => warmCutouts(c.images))
-      .catch(() => {})
-    return () => ac.abort()
-  }, [nextUuid, warmCutouts, stretch, percent])
+  // Whether the stamps on screen have all settled, credited to the listing
+  // the grid is showing -- not the source or stretch being moved to, since
+  // for a render after a change the grid still holds the previous (settled)
+  // stamps. A new source or stretch is a new listing.
+  const [stampsSettled, setStampsSettled] = useState<Cutouts | null>(null)
+  const onStampsSettled = useCallback(() => setStampsSettled(cutouts), [cutouts])
+  // Then warm the sources around this one while the human reads it (how far:
+  // `AHEAD`/`BEHIND` in useLookahead). This, not raw query speed, is what
+  // makes flipping feel instant.
+  useLookahead(uuid, cutouts !== null && stampsSettled === cutouts,
+               (offset) => win.at(position + offset)?.source_uuid, stretch, percent)
 
   /** The optical curve with the ztforce run folded in as another survey.
    *  `ztforce` is already in OPTICAL_SURVEYS and has a marker in the palette,
@@ -684,7 +675,8 @@ export function ClassifyPage({ member, schema }:
                           regions={cutouts?.regions ?? null}
                           stretch={stretch} onStretch={setStretch}
                           percent={percent} onPercent={setPercent}
-                          links={imageLinks(shown.ra, shown.dec)} />
+                          links={imageLinks(shown.ra, shown.dec)}
+                          onSettled={onStampsSettled} />
               <LightCurveChart lightcurve={lcWithZtforce} title="Optical"
                                defaultSurveys={DEFAULT_OPTICAL_SURVEYS}
                                yAxisTitle="Mag"

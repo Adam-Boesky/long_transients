@@ -31,15 +31,15 @@ import fcntl
 import hashlib
 import io
 import os
-import urllib.error
-import urllib.request
+import threading
 from base64 import b64encode
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
+from source_db.cutouts import fetch
 from source_db.paths import DEFAULT_OUT_DIR
 
 # 60" across, matching the 240 px PanSTARRS stamp at 0.25"/px that the old
@@ -66,7 +66,9 @@ IBE_DEEP = 'https://irsa.ipac.caltech.edu/ibe/data/ztf/products/deep'
 ZTF_FILTERCODE = {'g': 'zg', 'r': 'zr', 'i': 'zi'}
 
 CACHE_DIR = Path(os.environ.get('LT_CUTOUT_CACHE', DEFAULT_OUT_DIR / 'cutout_cache'))
-TIMEOUT = 120
+# Per socket operation, so it also bounds a stalled transfer; IBE's slowest
+# answer (the metadata search) is ~35 s.
+TIMEOUT = 60
 
 # The cache bounds itself rather than waiting for a cron nobody set up. A
 # running byte total sits beside it and a sweep runs when that total crosses
@@ -98,20 +100,17 @@ def _irsa_auth() -> Optional[str]:
 
 
 def _get(url: str, headers: Optional[dict] = None) -> Optional[bytes]:
-    """Fetch, returning None for a 404 rather than raising.
+    """Fetch with retries (`fetch.get`), returning None for a 400/404.
 
     A missing band is ordinary: ZTF has no i-band reference for most fields,
     and the caller renders "not available" for it.
     """
-    req = urllib.request.Request(url)
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
-    try:
-        return urllib.request.urlopen(req, timeout=TIMEOUT).read()
-    except urllib.error.HTTPError as e:
-        if e.code in (400, 404):
-            return None
-        raise
+    return fetch.get(url, headers, timeout=TIMEOUT)
+
+
+def _get_fits(url: str, headers: Optional[dict] = None) -> Optional[bytes]:
+    """`_get`, also retrying a 200 whose body is not a complete FITS file."""
+    return fetch.get(url, headers, timeout=TIMEOUT, validate=fetch.is_fits)
 
 
 def ztf_cutout_url(field: int, ccd: int, qid: int, band: str,
@@ -142,8 +141,8 @@ def fetch_ztf(field: int, ccd: int, qid: int, band: str,
     auth = _irsa_auth()
     if auth is None:
         return None
-    raw = _get(ztf_cutout_url(field, ccd, qid, band, ra, dec, arcsec),
-               {'Authorization': auth})
+    raw = _get_fits(ztf_cutout_url(field, ccd, qid, band, ra, dec, arcsec),
+                    {'Authorization': auth})
     if not raw:
         return None
     img = _primary_image(raw)
@@ -172,7 +171,7 @@ def fetch_ps1(ra: float, dec: float, filename: str,
     have to be undone or the stretch is applied to the wrong quantity. This
     is the same arithmetic as `get_pstarr_cutout`.
     """
-    raw = _get(ps1_cutout_url(ra, dec, filename, size_px))
+    raw = _get_fits(ps1_cutout_url(ra, dec, filename, size_px))
     if not raw:
         return None
     from astropy.io import fits
@@ -324,11 +323,65 @@ def cached(path: Path) -> Optional[bytes]:
         return None
 
 
+class _Flight:
+    def __init__(self, priority: Optional[fetch.Priority]):
+        self.done = threading.Event()
+        self.priority = priority
+        self.png: Optional[bytes] = None
+        self.error: Optional[BaseException] = None
+
+
+_flights: dict[Path, _Flight] = {}
+_flights_lock = threading.Lock()
+
+
+def cached_or_render(path: Path, produce: Callable[[], Optional[bytes]]) -> Optional[bytes]:
+    """The PNG at `path`, or `produce()`d and stored on a miss; None if nothing to draw.
+
+    Single-flight: concurrent misses for one stamp (a prefetch and the view
+    itself, say) share the first one's render and its outcome, error
+    included, so the upstream service is asked once. A foreground caller
+    joining a background render promotes it.
+    """
+    png = cached(path)
+    if png is not None:
+        return png
+    mine = fetch.current_priority()
+    with _flights_lock:
+        flight = _flights.get(path)
+        leader = flight is None
+        if leader:
+            flight = _flights[path] = _Flight(mine)
+    if not leader:
+        if flight.priority is not None and not (mine is not None and mine.background):
+            flight.priority.background = False
+        flight.done.wait()
+        if flight.error is not None:
+            raise flight.error
+        return flight.png
+    try:
+        # A flight that finished between the miss above and taking the lead.
+        flight.png = cached(path)
+        if flight.png is None:
+            flight.png = produce()
+            if flight.png is not None:
+                store(path, flight.png)
+        return flight.png
+    except BaseException as e:
+        flight.error = e
+        raise
+    finally:
+        with _flights_lock:
+            del _flights[path]
+        flight.done.set()
+
+
 def store(path: Path, png: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Write-then-rename, so a reader never sees a half-written PNG and two
-    # workers rendering the same stamp cannot corrupt each other.
-    tmp = path.with_suffix(f'.{os.getpid()}.tmp')
+    # workers rendering the same stamp cannot corrupt each other. Per thread,
+    # not just per process: the API renders on a thread pool.
+    tmp = path.with_suffix(f'.{os.getpid()}-{threading.get_ident()}.tmp')
     tmp.write_bytes(png)
     tmp.replace(path)
     _account(len(png))

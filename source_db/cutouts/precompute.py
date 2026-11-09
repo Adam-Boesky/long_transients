@@ -27,7 +27,7 @@ import sys
 import time
 from typing import Optional
 
-from source_db.cutouts import render
+from source_db.cutouts import fetch, render
 
 
 def _one_stamp(uuid: str, survey: str, band: str, ra: float, dec: float,
@@ -75,6 +75,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument('--evict-only', action='store_true',
                     help='evict and exit, rendering nothing')
     args = ap.parse_args(argv)
+    # Nobody is waiting on a batch, so ride out longer IRSA throttling.
+    fetch.DEFAULT_POLICY = fetch.BATCH
 
     if args.evict_only:
         if args.max_gb is None:

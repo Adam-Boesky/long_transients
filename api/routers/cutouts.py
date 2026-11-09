@@ -5,11 +5,11 @@ import sqlite3
 import urllib.error
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from api.db import get_science
 from source_db.constants import QUERY_REGIONS
-from source_db.cutouts import epochs, render
+from source_db.cutouts import epochs, fetch, render
 
 router = APIRouter()
 
@@ -91,7 +91,7 @@ def get_cutouts(source_uuid: str,
 
 
 @router.get('/sources/{source_uuid}/cutout/{survey}/{band}.png')
-def get_cutout_png(source_uuid: str, survey: str, band: str,
+def get_cutout_png(source_uuid: str, survey: str, band: str, request: Request,
                    stretch: str = Query(render.DEFAULT_STRETCH),
                    percent: float = Query(render.DEFAULT_PERCENT, gt=0, le=100),
                    sci: sqlite3.Connection = Depends(get_science)):
@@ -101,6 +101,10 @@ def get_cutout_png(source_uuid: str, survey: str, band: str,
     blocking network IO and the six stamps for a source are requested at
     once. Rendered PNGs are cached on disk, so the upstream fetch is paid
     once per (source, band, stretch).
+
+    A prefetch says so in a header, not the URL, so it warms the browser
+    cache under the address the page will ask for; it then runs as
+    background work upstream.
     """
     if survey not in SURVEYS:
         raise HTTPException(404, f'unknown survey {survey}')
@@ -117,17 +121,25 @@ def get_cutout_png(source_uuid: str, survey: str, band: str,
     ra, dec, origin = ident
     path = render.cache_path(source_uuid, survey, band, stretch, percent,
                              render.source_fingerprint(ra, dec, origin))
-    png = render.cached(path)
+    try:
+        with fetch.priority(background=_is_prefetch(request)):
+            png = render.cached_or_render(
+                path, lambda: _render_cutout(survey, band, ra, dec, origin, stretch, percent))
+    except urllib.error.URLError as e:
+        raise HTTPException(502, f'{survey} image service did not answer: {e}')
     if png is None:
-        png = _render_cutout(survey, band, ra, dec, origin, stretch, percent)
-        if png is None:
-            raise HTTPException(404, f'no {survey} {band} image for {source_uuid}')
-        render.store(path, png)
+        raise HTTPException(404, f'no {survey} {band} image for {source_uuid}')
 
     return Response(content=png, media_type='image/png',
                     # The pixels for a given source and stretch never change,
                     # so the browser should never ask twice.
                     headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+
+
+def _is_prefetch(request: Request) -> bool:
+    """Our own `X-Prefetch: 1`, or the browser's `Sec-Purpose: prefetch`."""
+    return (request.headers.get('x-prefetch') == '1'
+            or 'prefetch' in request.headers.get('sec-purpose', ''))
 
 
 def _cutout_inputs(source_uuid: str, survey: str, band: str,
@@ -231,8 +243,8 @@ def get_epoch_png(source_uuid: str, survey: str, band: str,
     ra, dec = _position(sci, source_uuid)
     path = render.cache_path(source_uuid, f'{survey}-epoch', band, stretch, percent,
                              f'{ra:.6f},{dec:.6f},{mjd:.6f}')
-    png = render.cached(path)
-    if png is None:
+
+    def produce() -> bytes:
         pointing = _ztf_pointing(sci, source_uuid, band, objectid) if survey == 'ztf' else None
         exp = _exposure(survey, band, ra, dec, mjd, pointing)
         origin = _origins(sci, source_uuid).get((survey, band)) if survey == 'ztf' else None
@@ -243,8 +255,9 @@ def get_epoch_png(source_uuid: str, survey: str, band: str,
             raise HTTPException(502, f'{survey} image service did not answer: {e}')
         if img is None:
             raise HTTPException(404, f'{exp.image_id} has no pixels at this position')
-        png = render.render_png(img, stretch, percent)
-        render.store(path, png)
+        return render.render_png(img, stretch, percent)
+
+    png = render.cached_or_render(path, produce)
     return Response(content=png, media_type='image/png',
                     headers={'Cache-Control': 'public, max-age=31536000, immutable'})
 

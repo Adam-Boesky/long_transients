@@ -218,16 +218,7 @@ def _find_ztf(band: str, ra: float, dec: float, hmjd: float,
 
 
 def _get(url: str, headers: Optional[dict] = None) -> Optional[bytes]:
-    """`render._get`, retried once after a 503: IRSA sheds load intermittently."""
-    import time
-    import urllib.error
-    try:
-        return render._get(url, headers)
-    except urllib.error.HTTPError as e:
-        if e.code != 503:
-            raise
-        time.sleep(1.5)
-        return render._get(url, headers)
+    return render._get(url, headers)
 
 
 def _auth() -> dict:
@@ -274,7 +265,7 @@ def fetch_epoch(exp: Exposure, ra: float, dec: float,
     `ref_origin` is the ZTF (field, ccd, qid) of the reference stamp; without
     it the epoch goes onto a north-up 1"/px grid oriented the same way.
     """
-    raw = _get(exp.cutout_url, _auth() if exp.survey == 'ztf' else None)
+    raw = render._get_fits(exp.cutout_url, _auth() if exp.survey == 'ztf' else None)
     if not raw:
         return None
     from astropy.io import fits
@@ -303,8 +294,8 @@ def _ztf_reference_grid(band: str, ra: float, dec: float,
     from astropy.wcs import WCS
     auth = render._irsa_auth()
     if ref_origin is not None and auth is not None:
-        raw = _get(render.ztf_cutout_url(*ref_origin, band, ra, dec),
-                   {'Authorization': auth})
+        raw = render._get_fits(render.ztf_cutout_url(*ref_origin, band, ra, dec),
+                               {'Authorization': auth})
         if raw:
             hdu = fits.open(io.BytesIO(raw))[0]
             if hdu.data is not None:
