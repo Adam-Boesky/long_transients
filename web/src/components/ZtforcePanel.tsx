@@ -146,6 +146,17 @@ export function ZtforcePanel({ sourceUuid, onResult, window: binWindow,
     ? new Set(Object.values(result?.stacks ?? {}).flatMap((w) => Object.keys(w))).size
     : 0
   const muted = { opacity: 0.7 }
+  // Only a finished run reports what it could not measure; a failed download
+  // is the one cause a re-run can fix, so it alone offers Retry.
+  const done = status === 'done'
+  const nFailed = done ? result?.n_download_failed ?? 0 : 0
+  const missing = done
+    ? [
+        [nFailed, 'download failed'],
+        [result?.n_unavailable ?? 0, 'not served by IRSA'],
+        [result?.n_unreadable ?? 0, 'unreadable'],
+      ].filter(([n]) => (n as number) > 0).map(([n, what]) => `${n} ${what}`)
+    : []
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10,
@@ -188,6 +199,7 @@ export function ZtforcePanel({ sourceUuid, onResult, window: binWindow,
         <>
           <span style={{ opacity: 0.75 }}>
             {result?.n_epochs ?? 0} epochs · {nBands} band{nBands === 1 ? '' : 's'}
+            {missing.length > 0 && ` · ${missing.join(' · ')}`}
             {result?.stale && ' · from an older ztforce, re-run queued'}
           </span>
           <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -203,7 +215,16 @@ export function ZtforcePanel({ sourceUuid, onResult, window: binWindow,
         </>
       )}
 
-      {status === 'done' && nBands === 0 && <span style={muted}>no usable epochs</span>}
+      {status === 'done' && nBands === 0 && (
+        <span style={muted}>
+          no usable epochs{missing.length > 0 && ` · ${missing.join(' · ')}`}
+        </span>
+      )}
+
+      {nFailed > 0 && !result?.stale && (
+        <button onClick={runNow} style={buttonStyle}
+                title="Fetch the epochs whose download failed">Retry</button>
+      )}
 
       {queue && (queue.n_queued > 0 || queue.n_running > 0 || queue.paused) && (
         <span style={{ ...muted, marginLeft: 'auto' }}>

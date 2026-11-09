@@ -394,6 +394,12 @@ export interface ZtforceResult {
   n_epochs: number | null
   /** e.g. epochs IRSA could not serve. */
   note: string | null
+  /** Epochs that could not be measured, by cause; null for runs stored before
+   *  the counts were kept. A failed download is fetched again by "run now";
+   *  the other two are permanent. */
+  n_download_failed: number | null
+  n_unavailable: number | null
+  n_unreadable: number | null
   error: string | null
   /** 0-based place in the queue, while queued. */
   queue_position: number | null

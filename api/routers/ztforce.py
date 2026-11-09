@@ -84,7 +84,7 @@ def run_ztforce_now(
     sci: sqlite3.Connection = Depends(get_science),
     con: sqlite3.Connection = Depends(store.get_ztforce_store),
 ) -> dict[str, Any]:
-    """Queue this source at the front, unless it already has a current result."""
+    """Queue this source at the front, unless it already has a current, complete result."""
     ra, dec = _source_coords(sci, source_uuid)
     store.request_now(con, source_uuid, ra, dec, results.result_version())
     ztforce_worker.nudge()

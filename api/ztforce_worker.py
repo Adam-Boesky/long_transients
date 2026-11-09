@@ -171,6 +171,9 @@ class Worker:
                 results.pack(summary['stacks']),
                 summary['n_epochs'],
                 summary['note'],
+                n_download_failed=summary['n_download_failed'],
+                n_unavailable=summary['n_unavailable'],
+                n_unreadable=summary['n_unreadable'],
             )
         finally:
             con.close()
